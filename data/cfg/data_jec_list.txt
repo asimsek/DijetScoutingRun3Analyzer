@@ -1,0 +1,55 @@
+#---- Year: 2024C:
+L1FastJet: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L1FastJet_AK4PFPuppi.txt
+L2Relative: data/jec/2024/RunIII2024Summer24_V2_MC_L2Relative_AK4PUPPI.txt
+L3Absolute: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L3Absolute_AK4PFPuppi.txt
+L2L3Residual: [ -1:-1:data/jec/2024/ReReco24_V9M/ReReco24_Run2024C_nib1_V9M_DATA_L2L3Residual_AK4PFPuppi.txt ]
+Unc: data/jec/2024/Winter24Prompt24_V1_MC_Uncertainty_AK4PFPuppi.txt
+JetVetoMap: [ -1:-1:data/jetvetomap/jetvetomaps_2024BCDEFGHI.json ]
+
+#---- Year: 2024F:
+L1FastJet: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L1FastJet_AK4PFPuppi.txt
+L2Relative: data/jec/2024/RunIII2024Summer24_V2_MC_L2Relative_AK4PUPPI.txt
+L3Absolute: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L3Absolute_AK4PFPuppi.txt
+L2L3Residual: [
+  -1:382298:data/jec/2024/ReReco24_V9M/ReReco24_Run2024F_nib1_V9M_DATA_L2L3Residual_AK4PFPuppi.txt,
+  382298:383247:data/jec/2024/ReReco24_V9M/ReReco24_Run2024F_nib2_V9M_DATA_L2L3Residual_AK4PFPuppi.txt,
+  383247:-1:data/jec/2024/ReReco24_V9M/ReReco24_Run2024F_nib3_V9M_DATA_L2L3Residual_AK4PFPuppi.txt
+]
+Unc: data/jec/2024/Winter24Prompt24_V1_MC_Uncertainty_AK4PFPuppi.txt
+JetVetoMap: [ -1:-1:data/jetvetomap/jetvetomaps_2024BCDEFGHI.json ]
+
+#---- Year: 2024G:
+L1FastJet: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L1FastJet_AK4PFPuppi.txt
+L2Relative: data/jec/2024/RunIII2024Summer24_V2_MC_L2Relative_AK4PUPPI.txt
+L3Absolute: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L3Absolute_AK4PFPuppi.txt
+L2L3Residual: [
+  -1:384934:data/jec/2024/ReReco24_V9M/ReReco24_Run2024G_nib1_V9M_DATA_L2L3Residual_AK4PFPuppi.txt,
+  384934:-1:data/jec/2024/ReReco24_V9M/ReReco24_Run2024G_nib2_V9M_DATA_L2L3Residual_AK4PFPuppi.txt
+]
+Unc: data/jec/2024/Winter24Prompt24_V1_MC_Uncertainty_AK4PFPuppi.txt
+JetVetoMap: [ -1:-1:data/jetvetomap/jetvetomaps_2024BCDEFGHI.json ]
+
+#---- Year: 2024H:
+L1FastJet: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L1FastJet_AK4PFPuppi.txt
+L2Relative: data/jec/2024/RunIII2024Summer24_V2_MC_L2Relative_AK4PUPPI.txt
+L3Absolute: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L3Absolute_AK4PFPuppi.txt
+L2L3Residual: [ -1:-1:data/jec/2024/ReReco24_V9M/ReReco24_Run2024H_nib1_V9M_DATA_L2L3Residual_AK4PFPuppi.txt ]
+Unc: data/jec/2024/Winter24Prompt24_V1_MC_Uncertainty_AK4PFPuppi.txt
+JetVetoMap: [ -1:-1:data/jetvetomap/jetvetomaps_2024BCDEFGHI.json ]
+
+#---- Year: 2024I:
+L1FastJet: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L1FastJet_AK4PFPuppi.txt
+L2Relative: data/jec/2024/RunIII2024Summer24_V2_MC_L2Relative_AK4PUPPI.txt
+L3Absolute: data/jec/2024/Winter24Run3_V1_MC/Winter24Run3_V1_MC_L3Absolute_AK4PFPuppi.txt
+L2L3Residual: [ -1:-1:data/jec/2024/ReReco24_V9M/ReReco24_Run2024I_nib1_V9M_DATA_L2L3Residual_AK4PFPuppi.txt ]
+Unc: data/jec/2024/Winter24Prompt24_V1_MC_Uncertainty_AK4PFPuppi.txt
+JetVetoMap: [ -1:-1:data/jetvetomap/jetvetomaps_2024BCDEFGHI.json ]
+
+#---- Year: 2025C:
+L1FastJet: data/jec/2025/Winter25Prompt25_V2_MC/Winter24Prompt24_V2_MC_L1FastJet_AK4PFPuppi.txt
+L2Relative: data/jec/2025/Winter25Prompt25_V2_MC/Winter24Prompt24_V2_MC_L2Relative_AK4PFPuppi.txt
+L3Absolute: data/jec/2025/Winter25Prompt25_V2_MC/Winter24Prompt24_V2_MC_L3Absolute_AK4PFPuppi.txt
+L2L3Residual: [ -1:-1:data/jec/2025/Winter25Prompt25_V2_MC/Prompt25_Run2025C_V2M_DATA_L2L3Residual_AK4PFPuppi.txt ]
+Unc: data/jec/2025/Winter25Prompt25_V2_MC/Winter24Prompt24_V2_MC_Uncertainty_AK4PFPuppi.txt
+JetVetoMap: [ -1:-1:data/jetvetomap/jetvetomaps_2025CDE_V2M.root ]
+

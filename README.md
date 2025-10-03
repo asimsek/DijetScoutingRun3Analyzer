@@ -12,7 +12,7 @@ cmsenv
 git cms-init
 git clone git@github.com:asimsek/DijetScoutingRun3Analyzer.git
 cd DijetScoutingRun3Analyzer
-scram b -j 8
+scram b clean; scram b -j 8
 ```
 
 

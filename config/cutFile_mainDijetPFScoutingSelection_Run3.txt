@@ -1,0 +1,131 @@
+#### Golden JSON :: https://cms-service-dqmdc.web.cern.ch/CAF/certification/Collisions24/
+JSON data/json/Cert_Collisions2024_378981_386951_Golden.json
+
+############################# Preliminary cut variables (level -1)
+#VariableName                     value1     value2     value3  value4  level
+produceSkim                      0          -          -       -       -1
+produceReducedSkim               1          -          -       -       -1
+
+# Jet selection
+jetFidRegion                     2.5        -          -       -       -1
+tightJetID                       1          -          -       -       -1
+ptCut                            30         -          -       -       -1
+pt0Cut                           60         -          -       -       -1
+pt1Cut                           30         -          -       -       -1
+DeltaR                           1.3        -          -       -       -1
+
+# Wide-jet trigger working point
+pT_WJ1                           60         -          -       -       -1
+pT_WJ2                           30         -          -       -       -1
+eta_WJ1                         -2.5        2.5        -       -       -1
+eta_WJ2                         -2.5        2.5        -       -       -1
+Deta_WJJ                         1.1        -          -       -       -1
+
+# JEC controls
+useJECs                          1          -          -       -       -1
+noJECs                           0          -          -       -       -1
+# shiftJECs: value1=0/1 (off/on), value2 = sign (+1 or -1) used if on
+shiftJECs                        0          1          -       -       -1
+
+################################ Cuts (levels >=0)
+#VariableName                     min1        max1      min2   max2   level   histoNbins min  max   OptionalFlag
+
+# JSON & primary vertices
+PassJSON                         0.5         1         -      -      0       2          -0.5  1.5   SAVE
+nVtx                             0           +inf      -      -      1       50         0     50    SAVE
+nJet                             1           +inf      -      -      1       3          -0.5  2.5   SAVE
+
+# Tight ID on the two leading AK4 jets
+IdTight_j1                       0.5         1.5       -      -      1       2          0     2     SAVE
+IdTight_j2                       0.5         1.5       -      -      1       2          0     2     SAVE
+
+# Wide-jet pT & eta
+pTWJ_j1                          60          +inf      -      -      1       500        0     5000  SAVE
+etaWJ_j1                        -2.5         2.5       -      -      1       50         -2.5  2.5   SAVE
+pTWJ_j2                          30          +inf      -      -      1       500        0     5000  SAVE
+etaWJ_j2                        -2.5         2.5       -      -      1       50         -2.5  2.5   SAVE
+
+# Dijet observables (wide jets)
+deltaETAjj                      -inf         +inf      -      -      1       100        0     3     SAVE
+deltaPHIjj                      -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+mjj                             -inf         +inf      -      -      1       10000      0     10000 SAVE
+mjj_shiftJEC                    -inf         +inf      -      -      1       10000      0     10000 SAVE
+CosThetaStarWJ                  -inf         +inf      -      -      1       200        -1    1     SAVE
+
+# Dijet observables (AK4 narrow jets, leading two)
+Dijet_MassAK4PF                 -inf         +inf      -      -      1       1000       0     10000 SAVE
+deltaETAjjAK4PF                 -inf         +inf      -      -      1       100        0     3     SAVE
+deltaPHIjjAK4PF                 -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+CosThetaStarAK4PF               -inf         +inf      -      -      1       200        -1    1     SAVE
+
+# AK4 jet kinematics & JEC info
+pTAK4PF_j1                      -inf         +inf      -      -      1       500        0     5000  SAVE
+etaAK4PF_j1                     -inf         +inf      -      -      1       50         -2.5  2.5   SAVE
+phiAK4PF_j1                     -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+jetJecAK4PF_j1                  -inf         +inf      -      -      1       90         0     3     SAVE
+jetJecUncAK4PF_j1               -inf         +inf      -      -      1       90         0     3     SAVE
+
+pTAK4PF_j2                      -inf         +inf      -      -      1       500        0     5000  SAVE
+etaAK4PF_j2                     -inf         +inf      -      -      1       50         -2.5  2.5   SAVE
+phiAK4PF_j2                     -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+jetJecAK4PF_j2                  -inf         +inf      -      -      1       90         0     3     SAVE
+jetJecUncAK4PF_j2               -inf         +inf      -      -      1       90         0     3     SAVE
+
+
+# Wide-jet mass & phi
+massWJ_j1                       -inf         +inf      -      -      1       200        0     1000  SAVE
+massWJ_j2                       -inf         +inf      -      -      1       200        0     1000  SAVE
+phiWJ_j1                        -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+phiWJ_j2                        -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+
+# Dijet rapidity variable (yStar ~= 0.5 * |etaj1 - etaj2| if true rapidities not used)
+yWJ_j1                          -inf         +inf      -      -      1       200        -5    5     SAVE
+yWJ_j2                          -inf         +inf      -      -      1       200        -5    5     SAVE
+
+# Jet composition
+neutrHadEnFrac_j1               -inf         +inf      -      -      1       100        0     1     SAVE
+chargedHadEnFrac_j1             -inf         +inf      -      -      1       100        0     1     SAVE
+photonEnFrac_j1                 -inf         +inf      -      -      1       100        0     1     SAVE
+eleEnFract_j1                   -inf         +inf      -      -      1       100        0     1     SAVE
+muEnFract_j1                    -inf         +inf      -      -      1       100        0     1     SAVE
+neutrElectromFrac_j1            -inf         +inf      -      -      1       100        0     1     SAVE
+chargedElectromFrac_j1          -inf         +inf      -      -      1       100        0     1     SAVE
+chargedMult_j1                  -inf         +inf      -      -      1       100        0     100   SAVE
+neutrMult_j1                    -inf         +inf      -      -      1       100        0     100   SAVE
+photonMult_j1                   -inf         +inf      -      -      1       100        0     100   SAVE
+
+neutrHadEnFrac_j2               -inf         +inf      -      -      1       100        0     1     SAVE
+chargedHadEnFrac_j2             -inf         +inf      -      -      1       100        0     1     SAVE
+photonEnFrac_j2                 -inf         +inf      -      -      1       100        0     1     SAVE
+eleEnFract_j2                   -inf         +inf      -      -      1       100        0     1     SAVE
+muEnFract_j2                    -inf         +inf      -      -      1       100        0     1     SAVE
+neutrElectromFrac_j2            -inf         +inf      -      -      1       100        0     1     SAVE
+chargedElectromFrac_j2          -inf         +inf      -      -      1       100        0     1     SAVE
+chargedMult_j2                  -inf         +inf      -      -      1       100        0     100   SAVE
+neutrMult_j2                    -inf         +inf      -      -      1       100        0     100   SAVE
+photonMult_j2                   -inf         +inf      -      -      1       100        0     100   SAVE
+
+# Global event quantities
+NAK4PF                          -inf         +inf      -      -      1       100        0     100   SAVE
+HTAK4PF                         -inf         +inf      -      -      1       500        0     10000 SAVE
+METoverHTAK4PF                  -inf         +inf      -      -      1       1000       0     10000 SAVE
+met                             -inf         +inf      -      -      1       500        0     5000  SAVE
+metSig                          -inf         +inf      -      -      1       100        0     1     SAVE
+
+# --- MET + helpers (saved, no selection) ---
+metphi                          -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
+metOverSumEt                    -inf         +inf      -      -      1       200         0    2     SAVE
+unclusteredEnFracAK4PF          -inf         +inf      -      -      1       200         0    1.5   SAVE
+
+# Minimal DeltaPhi(MET, jets) with the leading N AK4 jets
+minDPhiMetAK4PF                 -inf         +inf      -      -      1       200         0    3.15  SAVE
+
+# Bookkeeping / identifiers
+run                             -inf         +inf      -      -      1       50         0     100000 SAVE
+event                           -inf         +inf      -      -      1       50         0     100000 SAVE
+lumi                            -inf         +inf      -      -      1       50         0     10000  SAVE
+
+# PF-Scouting triggers
+passHLT_PFScoutingHT            -inf         +inf      -      -      1       2          0     2     SAVE
+passHLT_PFScouting_SingleMuon   -inf         +inf      -      -      1       2          0     2     SAVE
+
