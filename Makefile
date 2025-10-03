@@ -44,9 +44,13 @@ endif
 # ROOT headers
 INC += $(ROOTCFLAGS)
 
+# >>> CMSSW JEC headers (so short names resolve, e.g. "JetCorrectorParameters.h")
+INC += -I$(CMSSW_INCDIR)/CondFormats/JetMETObjects/interface
+INC += -I$(CMSSW_INCDIR)/JetMETCorrections/Objects/interface
+
 # Libraries
 LIBS  = -L$(CMSSW_LIBDIR) $(ROOTLIBS)
-LIBS += -lCondFormatsJetMETObjects -lFWCoreMessageLogger
+LIBS += -lCondFormatsJetMETObjects -lJetMETCorrectionsObjects -lFWCoreMessageLogger
 LIBS += -L$(FMT_LIBDIR) -lfmt
 ifdef CLHEP
   LIBS += -L${CLHEP}/lib
@@ -59,7 +63,7 @@ RPATH = -Wl,-rpath,$(CMSSW_LIBDIR) -Wl,-rpath,$(FMT_LIBDIR)
 SRC = ./src
 EXE = main
 
-# Core objects
+# Core objects (keep analysisClass.o and JECTool.o)
 OBJS = \
   $(SRC)/rootNtupleClass.o \
   $(SRC)/baseClass.o \
@@ -77,26 +81,15 @@ $(EXE): $(SRC)/$(EXE).o $(OBJS)
 	$(COMP) $(FLAGS) $(RPATH) -o $@ $(OBJS) $(SRC)/$(EXE).o $(LIBS)
 
 clean:
-	@rm -f $(SRC)/*.o $(SRC)/*.d *.lo core core.* *~ *.exe $(EXE)
+	@rm -f $(SRC)/*.o *.lo core core.* *~ *.exe $(EXE)
 
-# ===== Compilation rules with dep gen (toggle with NO_DEPS=1) =====
-ifeq ($(NO_DEPS),1)
-  DEPFLAGS :=
-else
-  DEPFLAGS := -MMD -MP
-endif
-
+# ===== Compilation rules (NO dependency generation; no .d files) =====
 $(SRC)/%.o: $(SRC)/%.cc
-	$(COMP) $(DEPFLAGS) -c $(INC) $(FLAGS) -o $@ $<
+	$(COMP) -c $(INC) $(FLAGS) -o $@ $<
 $(SRC)/%.o: $(SRC)/%.cpp
-	$(COMP) $(DEPFLAGS) -c $(INC) $(FLAGS) -o $@ $<
+	$(COMP) -c $(INC) $(FLAGS) -o $@ $<
 $(SRC)/%.o: $(SRC)/%.cxx
-	$(COMP) $(DEPFLAGS) -c $(INC) $(FLAGS) -o $@ $<
+	$(COMP) -c $(INC) $(FLAGS) -o $@ $<
 $(SRC)/%.o: $(SRC)/%.C
-	$(COMP) $(DEPFLAGS) -c $(INC) $(FLAGS) -o $@ $<
-
-# Include generated dependency files only if we're generating them
-ifneq ($(strip $(DEPFLAGS)),)
-  -include $(wildcard $(SRC)/*.d)
-endif
+	$(COMP) -c $(INC) $(FLAGS) -o $@ $<
 
