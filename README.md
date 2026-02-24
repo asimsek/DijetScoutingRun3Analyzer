@@ -63,6 +63,56 @@ root -l -q 'TFile f("test_NanoAOD_QCD_n0_reduced_skim.root"); TTree* t=(TTree*)f
 
 
 
+### nTuple production on HTCondor:
+
+#### Dry Run:
+
+```bash
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt --force-new-list --no-submit
+```
+
+
+#### Send to HTCondor:
+
+```bash
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024G_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt --force-new-list --request-memory-mb 4096
+```
+
+
+
+#### Condor Held Reason (Fermilab LPC):
+
+```bash
+condor_q -hold -af HoldReason	
+condor_release -const 'jobstatus==5' -name lpcschedd1
+
+condor_rm -name lpcschedd6 -constraint "Owner==\"$USER\" && regexp(\".*ScoutingPFRun3_Run2024I_ScoutNano_v1_NANOAOD_n[0-9]+\\.sh$\", Cmd)"
+```
+
+
+
+#### Condor output (root) check & Resubmit: 
+
+```bash
+# check only
+python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 
+
+# check total N_Events (all root files)
+python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --total-events --dataset /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD
+
+# re-submit missing ones
+python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --resubmit --request-memory-mb 4096
+```
+
+
+
+
+
+
+
+
 
 
 

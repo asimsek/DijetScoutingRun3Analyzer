@@ -24,8 +24,10 @@ CMSSW_INCDIR := ${CMSSW_RELEASE_BASE}/src
 FMT_BASE   := $(call scram,fmt,FMT_BASE)
 FMT_LIBDIR := $(call scram,fmt,LIBDIR)
 
-# (Optional) Boost headers if you need them in your sources
-# BOOST_BASE := $(call scram,boost,BOOST_BASE)
+# Boost headers (required by jsonParser + CMSSW serialization headers)
+BOOST_BASE    := $(call scram,boost,BOOST_BASE)
+BOOST_INC_TAG := $(call scram,boost,INCLUDE)
+BOOST_INCDIR  := $(shell scram tool info boost 2>/dev/null | awk -F= '/^INCLUDE=/{print $$2}')
 
 # Include paths (project + CMSSW + externals)
 INC  = -I. -I.. -I./include -I$(CMSSW_INCDIR)
@@ -33,8 +35,14 @@ INC  = -I. -I.. -I./include -I$(CMSSW_INCDIR)
 INC += -I${CMSSW_BASE}/src
 # External fmt
 INC += -I$(FMT_BASE)/include
-# Optional extras:
-# INC += -I$(BOOST_BASE)/include
+# Boost include dir from scram (fallback to BOOST_BASE/include)
+ifneq ($(strip $(BOOST_INCDIR)),)
+  INC += -I$(BOOST_INCDIR)
+else ifneq ($(strip $(BOOST_INC_TAG)),)
+  INC += -I$(BOOST_INC_TAG)
+else ifneq ($(strip $(BOOST_BASE)),)
+  INC += -I$(BOOST_BASE)/include
+endif
 
 # Guard CLHEP so it doesn't become "-I/include" when unset
 ifdef CLHEP
