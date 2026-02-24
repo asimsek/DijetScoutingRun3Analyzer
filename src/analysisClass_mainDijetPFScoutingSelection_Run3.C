@@ -17,6 +17,21 @@
 
 using std::size_t;
 
+namespace {
+std::string formatWithCommas(Long64_t value) {
+  const bool negative = value < 0;
+  const unsigned long long absValue =
+      negative ? (static_cast<unsigned long long>(-(value + 1)) + 1ULL)
+               : static_cast<unsigned long long>(value);
+  std::string out = std::to_string(absValue);
+  for (int i = static_cast<int>(out.size()) - 3; i > 0; i -= 3) {
+    out.insert(static_cast<size_t>(i), ",");
+  }
+  if (negative) out.insert(out.begin(), '-');
+  return out;
+}
+}  // namespace
+
 
 // Choose era block: leave empty ("") to take the FIRST block in the list file.
 // If you want a specific era (e.g. "2024H"), set it here:
@@ -132,7 +147,7 @@ void analysisClass::Loop() {
   }
 
   const Long64_t nentries = fChain->GetEntriesFast();
-  std::cout << "[analysisClass] entries = " << nentries << "\n";
+  std::cout << "[analysisClass] entries = " << formatWithCommas(nentries) << "\n";
 
   // Reusable containers
   std::vector<double> jecFactor;
@@ -151,7 +166,7 @@ void analysisClass::Loop() {
     if (ientry < 0) break;
     nb = fChain->GetEntry(jentry); nbytes += nb;
     if (jentry < 10 || jentry % 100000 == 0)
-      std::cout << "[analysisClass] jentry " << jentry << "\n";
+      std::cout << "[analysisClass] jentry " << formatWithCommas(jentry) << "\n";
 
     // --- Short aliases ---
     const bool   isDataEvt  = (isData != 0);         // branch: isData_/I
@@ -190,13 +205,12 @@ void analysisClass::Loop() {
 
     // --- Build JetID ---
     for (size_t i = 0; i < nJets; ++i) {
-      const bool passID =    (nhf[i]      <  0.99)  
-                          && (nemf[i]     <  0.90)
-                          && (cemf[i]     <  0.80)
-                          && (muf[i]      <  0.80)
-                          && (chf[i]      >  0.01)
-                          && (chMult[i]   >  0   )
-                          && ((chMult[i]  +  neMult[i]) > 1 );
+      const int numConstVal = chMult[i] + neMult[i];
+      const bool passID = (std::abs(eta[i]) < 2.6) &&
+                          (numConstVal > 1) &&
+                          (nemf[i] < 0.90) &&
+                          (muf[i] < 0.80) &&
+                          (nhf[i] < 0.99);
 
       jetID[i] = passID ? 1 : 0;
 
@@ -369,8 +383,7 @@ void analysisClass::Loop() {
     fillVariableWithValue("nJet"                      ,(wj1.Pt() > 0.0 && wj2.Pt() > 0.0) ? 2 : 0);
     fillVariableWithValue("met"                       ,met                                       );
     fillVariableWithValue("metphi"                    ,metphi                                    );
-    fillVariableWithValue("metSig"                    ,metSig                                    );
-    fillVariableWithValue("metOverSumEt"              ,metOverSumEt                              );
+    fillVariableWithValue("metSig"                    ,metOverSumEt                              );
     fillVariableWithValue("NAK4PF"                    ,NAK4PF                                    );
     fillVariableWithValue("PassJSON"                  ,passJSON(runNo, lumi, isDataEvt)          );
 
@@ -386,10 +399,10 @@ void analysisClass::Loop() {
       fillVariableWithValue("neutrHadEnFrac_j1"       ,nhf[j0]                                   );
       fillVariableWithValue("chargedHadEnFrac_j1"     ,chf[j0]                                   );
       fillVariableWithValue("photonEnFrac_j1"         ,phf[j0]                                   );
-      fillVariableWithValue("eleEnFract_j1"           ,elf[j0]                                   );
+      // fillVariableWithValue("eleEnFract_j1"           ,elf[j0]                                   );
       fillVariableWithValue("muEnFract_j1"            ,muf[j0]                                   );
       fillVariableWithValue("neutrElectromFrac_j1"    ,nemf[j0]                                  );
-      fillVariableWithValue("chargedElectromFrac_j1"  ,cemf[j0]                                  );
+      // fillVariableWithValue("chargedElectromFrac_j1"  ,cemf[j0]                                  );
       fillVariableWithValue("chargedMult_j1"          ,chMult[j0]                                );
       fillVariableWithValue("neutrMult_j1"            ,neMult[j0]                                );
       fillVariableWithValue("photonMult_j1"           ,phoMult[j0]                               );
@@ -406,10 +419,10 @@ void analysisClass::Loop() {
       fillVariableWithValue("neutrHadEnFrac_j2"       ,nhf[j1]                                   );
       fillVariableWithValue("chargedHadEnFrac_j2"     ,chf[j1]                                   );
       fillVariableWithValue("photonEnFrac_j2"         ,phf[j1]                                   );
-      fillVariableWithValue("eleEnFract_j2"           ,elf[j1]                                   );
+      // fillVariableWithValue("eleEnFract_j2"           ,elf[j1]                                   );
       fillVariableWithValue("muEnFract_j2"            ,muf[j1]                                   );
       fillVariableWithValue("neutrElectromFrac_j2"    ,nemf[j1]                                  );
-      fillVariableWithValue("chargedElectromFrac_j2"  ,cemf[j1]                                  );
+      // fillVariableWithValue("chargedElectromFrac_j2"  ,cemf[j1]                                  );
       fillVariableWithValue("chargedMult_j2"          ,chMult[j1]                                );
       fillVariableWithValue("neutrMult_j2"            ,neMult[j1]                                );
       fillVariableWithValue("photonMult_j2"           ,phoMult[j1]                               );
@@ -426,7 +439,7 @@ void analysisClass::Loop() {
       fillVariableWithValue("etaWJ_j1"                ,wj1.Eta()                                 );
       fillVariableWithValue("massWJ_j1"               ,wj1.M()                                   );
       fillVariableWithValue("phiWJ_j1"                ,wj1.Phi()                                 );
-      fillVariableWithValue("yWJ_j1"                  ,wj1.Rapidity()                            );
+      fillVariableWithValue("rapidityWJ_j1"           ,wj1.Rapidity()                            );
     }
     if (wj2.Pt() > 0.0) {
       fillVariableWithValue("pTWJ_j2"                 ,wj2.Pt()                                  );
@@ -438,7 +451,7 @@ void analysisClass::Loop() {
       fillVariableWithValue("phiWJ_j2"                ,wj2.Phi()                                 );
       fillVariableWithValue("CosThetaStarWJ"          ,TMath::TanH((wj1.Eta() - wj2.Eta()) / 2.0));
       fillVariableWithValue("deltaPHIjj"              ,dPhiWide                                  );
-      fillVariableWithValue("yWJ_j2"                  ,wj2.Rapidity()                            );
+      fillVariableWithValue("rapidityWJ_j2"           ,wj2.Rapidity()                            );
     }
 
     // MET & HT

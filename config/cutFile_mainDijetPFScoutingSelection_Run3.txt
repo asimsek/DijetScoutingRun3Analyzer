@@ -15,7 +15,7 @@ pt0Cut                           60         -          -       -       -1
 pt1Cut                           30         -          -       -       -1
 DeltaR                           1.3        -          -       -       -1
 
-# Wide-jet trigger working point
+# Wide-jet kinematics
 pT_WJ1                           60         -          -       -       -1
 pT_WJ2                           30         -          -       -       -1
 eta_WJ1                         -2.5        2.5        -       -       -1
@@ -80,17 +80,17 @@ phiWJ_j1                        -inf         +inf      -      -      1       200
 phiWJ_j2                        -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
 
 # Dijet rapidity variable (yStar ~= 0.5 * |etaj1 - etaj2| if true rapidities not used)
-yWJ_j1                          -inf         +inf      -      -      1       200        -5    5     SAVE
-yWJ_j2                          -inf         +inf      -      -      1       200        -5    5     SAVE
+rapidityWJ_j1                   -inf         +inf      -      -      1       200        -5    5     SAVE
+rapidityWJ_j2                   -inf         +inf      -      -      1       200        -5    5     SAVE
 
 # Jet composition
 neutrHadEnFrac_j1               -inf         +inf      -      -      1       100        0     1     SAVE
 chargedHadEnFrac_j1             -inf         +inf      -      -      1       100        0     1     SAVE
 photonEnFrac_j1                 -inf         +inf      -      -      1       100        0     1     SAVE
-eleEnFract_j1                   -inf         +inf      -      -      1       100        0     1     SAVE
+# eleEnFract_j1                   -inf         +inf      -      -      1       100        0     1     SAVE
 muEnFract_j1                    -inf         +inf      -      -      1       100        0     1     SAVE
 neutrElectromFrac_j1            -inf         +inf      -      -      1       100        0     1     SAVE
-chargedElectromFrac_j1          -inf         +inf      -      -      1       100        0     1     SAVE
+# chargedElectromFrac_j1          -inf         +inf      -      -      1       100        0     1     SAVE
 chargedMult_j1                  -inf         +inf      -      -      1       100        0     100   SAVE
 neutrMult_j1                    -inf         +inf      -      -      1       100        0     100   SAVE
 photonMult_j1                   -inf         +inf      -      -      1       100        0     100   SAVE
@@ -98,10 +98,10 @@ photonMult_j1                   -inf         +inf      -      -      1       100
 neutrHadEnFrac_j2               -inf         +inf      -      -      1       100        0     1     SAVE
 chargedHadEnFrac_j2             -inf         +inf      -      -      1       100        0     1     SAVE
 photonEnFrac_j2                 -inf         +inf      -      -      1       100        0     1     SAVE
-eleEnFract_j2                   -inf         +inf      -      -      1       100        0     1     SAVE
+# eleEnFract_j2                   -inf         +inf      -      -      1       100        0     1     SAVE
 muEnFract_j2                    -inf         +inf      -      -      1       100        0     1     SAVE
 neutrElectromFrac_j2            -inf         +inf      -      -      1       100        0     1     SAVE
-chargedElectromFrac_j2          -inf         +inf      -      -      1       100        0     1     SAVE
+# chargedElectromFrac_j2          -inf         +inf      -      -      1       100        0     1     SAVE
 chargedMult_j2                  -inf         +inf      -      -      1       100        0     100   SAVE
 neutrMult_j2                    -inf         +inf      -      -      1       100        0     100   SAVE
 photonMult_j2                   -inf         +inf      -      -      1       100        0     100   SAVE

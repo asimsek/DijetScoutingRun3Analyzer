@@ -67,7 +67,7 @@ const std::array<const char*, 35> kNanoInputBranchesData = {
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
-const std::array<const char*, 25> kNanoInputBranchesMC = {
+const std::array<const char*, 24> kNanoInputBranchesMC = {
     "run",
     "luminosityBlock",
     "event",
@@ -89,7 +89,6 @@ const std::array<const char*, 25> kNanoInputBranchesMC = {
     "Jet_chMultiplicity",
     "Jet_neMultiplicity",
     "Jet_rawFactor",
-    "Jet_jetId",
     "Jet_hfEmEF",
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
@@ -102,7 +101,7 @@ constexpr size_t kNRequiredNanoBranchesData = kNanoInputBranchesData.size() - kN
 static_assert(kNanoInputBranchesData.size() >= kNOptionalNanoBranchesData,
               "kNanoInputBranchesData must include optional trailing branches.");
 
-constexpr size_t kNOptionalNanoBranchesMC = 5;
+constexpr size_t kNOptionalNanoBranchesMC = 4;
 constexpr size_t kNRequiredNanoBranchesMC = kNanoInputBranchesMC.size() - kNOptionalNanoBranchesMC;
 static_assert(kNanoInputBranchesMC.size() >= kNOptionalNanoBranchesMC,
               "kNanoInputBranchesMC must include optional trailing branches.");
@@ -206,17 +205,7 @@ void analysisClass::Loop() {
 
   const bool hasTrigJetHT = hasBranch(fChain, kTriggerJetHTBranch);
   const bool hasTrigSingleMuon = hasBranch(fChain, kTriggerSingleMuonBranch);
-  const bool hasMetSumEtMC = useStandardMC && hasBranch(fChain, "PFMET_sumEt");
-
-  if (hasMetSumEtMC) {
-    fChain->SetBranchStatus("PFMET_sumEt", 1);
-  } else if (useStandardMC) {
-    std::cout << "[analysisClass] WARNING: PFMET_sumEt is not available. "
-                 "metSig/unclusteredEnFracAK4PF will be set to -1.\n";
-  } else {
-    std::cout << "[analysisClass] INFO: scouting NanoAOD has no sumEt/PF-candidate-pt branch in this format. "
-                 "Using ScoutingMET_pt/phi approximation for sumEt and metSig.\n";
-  }
+  std::cout << "[analysisClass] INFO: sumEt = scalar sum of jet pT; metSig = MET/sqrt(sumEt).\n";
 
   if (!missingRequired.empty()) {
     std::cerr << "[analysisClass] ERROR: missing required NanoAOD branches:\n";
@@ -246,7 +235,6 @@ void analysisClass::Loop() {
   TTreeReaderValue<Float_t> metPtReader(reader, metPtBranch);
   TTreeReaderValue<Float_t> metPhiReader(reader, metPhiBranch);
   TTreeReaderValue<Int_t> nJetReader(reader, nJetBranch);
-  std::unique_ptr<TTreeReaderValue<Float_t>> metSumEtMCReader;
 
   TTreeReaderArray<Float_t> jetPt(reader, jetPtBranch);
   TTreeReaderArray<Float_t> jetEta(reader, jetEtaBranch);
@@ -274,6 +262,7 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<Int_t>> chHadMultData;
   std::unique_ptr<TTreeReaderArray<Int_t>> neHadMultData;
   std::unique_ptr<TTreeReaderArray<Int_t>> phoMultData;
+  std::unique_ptr<TTreeReaderArray<UChar_t>> nConstituentsData;
 
   std::unique_ptr<TTreeReaderArray<Float_t>> jetChHEFMC;
   std::unique_ptr<TTreeReaderArray<Float_t>> jetNeHEFMC;
@@ -282,16 +271,11 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<Float_t>> jetMuEFMC;
   std::unique_ptr<TTreeReaderArray<Float_t>> jetHFEmEFMC;
   std::unique_ptr<TTreeReaderArray<Float_t>> jetRawFactorMC;
-  std::unique_ptr<TTreeReaderArray<UChar_t>> jetIdMC;
   std::unique_ptr<TTreeReaderArray<UChar_t>> chHadMultMC;
   std::unique_ptr<TTreeReaderArray<UChar_t>> neHadMultMC;
 
   if (useStandardMC) {
     nVtxMCReader = std::make_unique<TTreeReaderValue<UChar_t>>(reader, "PV_npvs");
-    if (hasMetSumEtMC) {
-      metSumEtMCReader = std::make_unique<TTreeReaderValue<Float_t>>(reader, "PFMET_sumEt");
-    }
-
     jetChHEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_chHEF");
     jetNeHEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_neHEF");
     jetNeEmEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_neEmEF");
@@ -302,9 +286,6 @@ void analysisClass::Loop() {
 
     if (hasBranch(fChain, "Jet_rawFactor")) {
       jetRawFactorMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_rawFactor");
-    }
-    if (hasBranch(fChain, "Jet_jetId")) {
-      jetIdMC = std::make_unique<TTreeReaderArray<UChar_t>>(reader, "Jet_jetId");
     }
     if (hasBranch(fChain, "Jet_hfEmEF")) {
       jetHFEmEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_hfEmEF");
@@ -329,6 +310,7 @@ void analysisClass::Loop() {
     chHadMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJetRecluster_nCh");
     neHadMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJetRecluster_nNh");
     phoMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJetRecluster_nPhotons");
+    nConstituentsData = std::make_unique<TTreeReaderArray<UChar_t>>(reader, "ScoutingPFJetRecluster_nConstituents");
   }
 
   std::unique_ptr<TTreeReaderValue<Bool_t>> trigJetHT;
@@ -484,6 +466,7 @@ void analysisClass::Loop() {
 
       int chMultVal = 0;
       int neMultVal = 0;
+      int numConstVal = 0;
       bool passID = false;
 
       if (useStandardMC) {
@@ -499,18 +482,13 @@ void analysisClass::Loop() {
 
         chMultVal = chHadMultMC ? static_cast<int>((*chHadMultMC)[i]) : 0;
         neMultVal = neHadMultMC ? static_cast<int>((*neHadMultMC)[i]) : 0;
+        numConstVal = chMultVal + neMultVal;
 
-        if (jetIdMC) {
-          passID = ((static_cast<int>((*jetIdMC)[i]) & 0x2) != 0);
-        } else {
-          passID = (nhf[i] < 0.99) &&
-                   (nemf[i] < 0.90) &&
-                   (cemf[i] < 0.80) &&
-                   (muf[i] < 0.80) &&
-                   (chf[i] > 0.01) &&
-                   (chMultVal > 0) &&
-                   ((chMultVal + neMultVal) > 1);
-        }
+        passID = (std::abs(eta) < 2.6) &&
+                 (numConstVal > 1) &&
+                 (nemf[i] < 0.90) &&
+                 (muf[i] < 0.80) &&
+                 (nhf[i] < 0.99);
       } else {
         chf[i] = static_cast<double>((*jetChHEFData)[i]);
         nhf[i] = static_cast<double>((*jetNeHEFData)[i]);
@@ -524,13 +502,12 @@ void analysisClass::Loop() {
 
         chMultVal = static_cast<int>((*chHadMultData)[i]);
         neMultVal = static_cast<int>((*neHadMultData)[i]);
-        passID = (nhf[i] < 0.99) &&
+        numConstVal = static_cast<int>((*nConstituentsData)[i]);
+        passID = (std::abs(eta) < 2.6) &&
+                 (numConstVal > 1) &&
                  (nemf[i] < 0.90) &&
-                 (cemf[i] < 0.80) &&
                  (muf[i] < 0.80) &&
-                 (chf[i] > 0.01) &&
-                 (chMultVal > 0) &&
-                 ((chMultVal + neMultVal) > 1);
+                 (nhf[i] < 0.99);
       }
 
       jetID[i] = passID ? 1 : 0;
@@ -683,19 +660,19 @@ void analysisClass::Loop() {
       dPhiAK4 = std::fabs(AK4j1.DeltaPhi(AK4j2));
     }
 
-    double sumEtVal = -1.0;
-    if (metSumEtMCReader) {
-      sumEtVal = static_cast<double>(**metSumEtMCReader);
-    } else if (!useStandardMC) {
-      const double metPx = static_cast<double>(metVal) * std::cos(static_cast<double>(metPhiVal));
-      const double metPy = static_cast<double>(metVal) * std::sin(static_cast<double>(metPhiVal));
-      const double sumEtFromMet = std::abs(metPx) + std::abs(metPy);
-      sumEtVal = (sumEtFromMet > 0.0) ? sumEtFromMet : -1.0;
+    // sumEt = scalar sum of jet pT.
+    double sumEtVal = 0.0;
+    for (size_t i = 0; i < nJets; ++i) {
+      const double pTj = getCorrPt(i);
+      if (pTj > 0.0) sumEtVal += pTj;
+    }
+    if (sumEtVal <= 0.0) sumEtVal = -1.0;
+
+    float metSigVal = -1.0f;
+    if (metVal >= 0.0f && sumEtVal > 0.0) {
+      metSigVal = static_cast<float>(static_cast<double>(metVal) / std::sqrt(sumEtVal));
     }
 
-    const float metSigVal = (sumEtVal > 0.0 && metVal >= 0.0f)
-                                ? static_cast<float>(metVal / sumEtVal)
-                                : -1.0f;
     float unclusteredEnFracVal = (sumEtVal > 0.0)
                                      ? static_cast<float>((sumEtVal - htAK4RawForUnclustered) / sumEtVal)
                                      : -1.0f;
@@ -759,10 +736,10 @@ void analysisClass::Loop() {
       fillVariableWithValue("neutrHadEnFrac_j1", nhf[j0]);
       fillVariableWithValue("chargedHadEnFrac_j1", chf[j0]);
       fillVariableWithValue("photonEnFrac_j1", phf[j0]);
-      fillVariableWithValue("eleEnFract_j1", elf[j0]);
+      //fillVariableWithValue("eleEnFract_j1", elf[j0]);
       fillVariableWithValue("muEnFract_j1", muf[j0]);
       fillVariableWithValue("neutrElectromFrac_j1", nemf[j0]);
-      fillVariableWithValue("chargedElectromFrac_j1", cemf[j0]);
+      // fillVariableWithValue("chargedElectromFrac_j1", cemf[j0]);
       fillVariableWithValue("chargedMult_j1", getChMultOut(j0));
       fillVariableWithValue("neutrMult_j1", getNeMultOut(j0));
       fillVariableWithValue("photonMult_j1", getPhoMultOut(j0));
@@ -787,10 +764,10 @@ void analysisClass::Loop() {
       fillVariableWithValue("neutrHadEnFrac_j2", nhf[j1]);
       fillVariableWithValue("chargedHadEnFrac_j2", chf[j1]);
       fillVariableWithValue("photonEnFrac_j2", phf[j1]);
-      fillVariableWithValue("eleEnFract_j2", elf[j1]);
+      //fillVariableWithValue("eleEnFract_j2", elf[j1]);
       fillVariableWithValue("muEnFract_j2", muf[j1]);
       fillVariableWithValue("neutrElectromFrac_j2", nemf[j1]);
-      fillVariableWithValue("chargedElectromFrac_j2", cemf[j1]);
+      // fillVariableWithValue("chargedElectromFrac_j2", cemf[j1]);
       fillVariableWithValue("chargedMult_j2", getChMultOut(j1));
       fillVariableWithValue("neutrMult_j2", getNeMultOut(j1));
       fillVariableWithValue("photonMult_j2", getPhoMultOut(j1));
@@ -813,7 +790,7 @@ void analysisClass::Loop() {
       fillVariableWithValue("etaWJ_j1", wj1.Eta());
       fillVariableWithValue("massWJ_j1", wj1.M());
       fillVariableWithValue("phiWJ_j1", wj1.Phi());
-      fillVariableWithValue("yWJ_j1", wj1.Rapidity());
+      fillVariableWithValue("rapidityWJ_j1", wj1.Rapidity());
     }
 
     if (wj2.Pt() > 0.0) {
@@ -826,7 +803,7 @@ void analysisClass::Loop() {
       fillVariableWithValue("phiWJ_j2", wj2.Phi());
       fillVariableWithValue("CosThetaStarWJ", TMath::TanH((wj1.Eta() - wj2.Eta()) / 2.0));
       fillVariableWithValue("deltaPHIjj", dPhiWide);
-      fillVariableWithValue("yWJ_j2", wj2.Rapidity());
+      fillVariableWithValue("rapidityWJ_j2", wj2.Rapidity());
     }
 
     const double METoverHTAK4PF = (HTAK4PF > 0.0) ? double(metVal / HTAK4PF) : 0.0;
