@@ -105,7 +105,11 @@ void baseClass::init()
 
   if (produceReducedSkim_) {
     reduced_skim_file_ = new TFile(((*outputFileName_) + "_reduced_skim.root").c_str(), "RECREATE");
+    TDirectory* reduced_root_tuple_dir = reduced_skim_file_->mkdir("rootTupleTree");
+    reduced_root_tuple_dir->cd();
     reduced_skim_tree_ = new TTree("tree", "Reduced Skim");
+    reduced_skim_tree_->SetDirectory(reduced_root_tuple_dir);
+    reduced_skim_file_->cd();
 
     hReducedCount_ = new TH1I("EventCounter", "Event Counter", 3, -0.5, 2.5);
     hReducedCount_->GetXaxis()->SetBinLabel(1, "all events");
@@ -1175,9 +1179,12 @@ bool baseClass::writeReducedSkimTree()
   if (!produceReducedSkim_) return true;
 
   reduced_skim_file_->cd();
-  reduced_skim_file_->mkdir("rootTupleTree");
-  reduced_skim_file_->cd("rootTupleTree");
-  reduced_skim_tree_->Write();
+  TDirectory* reduced_root_tuple_dir = reduced_skim_file_->GetDirectory("rootTupleTree");
+  if (reduced_root_tuple_dir == nullptr) {
+    reduced_root_tuple_dir = reduced_skim_file_->mkdir("rootTupleTree");
+  }
+  reduced_root_tuple_dir->cd();
+  reduced_skim_tree_->Write("tree", TObject::kOverwrite);
 
   reduced_skim_file_->cd();
   TDirectory* dir1 = reduced_skim_file_->mkdir("DijetFilter");

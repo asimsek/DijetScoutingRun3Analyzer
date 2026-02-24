@@ -121,7 +121,7 @@ std::string formatWithCommas(Long64_t value) {
                : static_cast<unsigned long long>(value);
   std::string out = std::to_string(absValue);
   for (int i = static_cast<int>(out.size()) - 3; i > 0; i -= 3) {
-    out.insert(static_cast<size_t>(i), ",");
+    out.insert(static_cast<size_t>(i), ".");
   }
   if (negative) out.insert(out.begin(), '-');
   return out;
