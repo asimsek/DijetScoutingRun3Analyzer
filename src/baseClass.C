@@ -44,15 +44,19 @@ baseClass::baseClass(std::string* inputList,
 
 baseClass::~baseClass()
 {
-  if (!writeCutHistos())        { STDOUT("ERROR: writeCutHistos did not complete successfully."); }
-  if (!writeCutEfficFile())     { STDOUT("ERROR: writeStatFile did not complete successfully."); }
-  if (!writeUserHistos())       { STDOUT("ERROR: writeUserHistos did not complete successfully."); }
+  // if (!writeCutHistos())        { STDOUT("ERROR: writeCutHistos did not complete successfully."); }
+  // if (!writeCutEfficFile())     { STDOUT("ERROR: writeStatFile did not complete successfully."); }
+  // if (!writeUserHistos())       { STDOUT("ERROR: writeUserHistos did not complete successfully."); }
   if (!writeSkimTree())         { STDOUT("ERROR: writeSkimTree did not complete successfully."); }
   if (!writeReducedSkimTree())  { STDOUT("ERROR: writeReducedSkimTree did not complete successfully."); }
 
-  output_root_->Close();
+  // if (output_root_) output_root_->Close();
   if (produceSkim_)         skim_file_->Close();
   if (produceReducedSkim_)  reduced_skim_file_->Close();
+
+  // Keep only skim/reduced outputs; remove legacy main ROOT and cut-efficiency DAT files.
+  std::remove(((*outputFileName_) + ".root").c_str());
+  std::remove(((*cutEfficFile_) + ".dat").c_str());
 }
 
 //--------------------------------------------------------------------------------------------------
@@ -73,8 +77,13 @@ void baseClass::init()
 
   Init(tree_);
 
-  // Output ROOT file
-  output_root_ = new TFile(((*outputFileName_) + ".root").c_str(), "RECREATE");
+  // Remove stale legacy outputs from previous runs.
+  std::remove(((*outputFileName_) + ".root").c_str());
+  std::remove(((*cutEfficFile_) + ".dat").c_str());
+
+  // Output ROOT file (disabled to keep only _reduced_skim.root output)
+  // output_root_ = new TFile(((*outputFileName_) + ".root").c_str(), "RECREATE");
+  output_root_ = nullptr;
 
   // --- Skim ---
   produceSkim_  = (int(getSkimPreCutValue("produceSkim")) == 1);

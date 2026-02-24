@@ -5,6 +5,7 @@ JSON data/json/Cert_Collisions2024_378981_386951_Golden.json
 #VariableName                     value1     value2     value3  value4  level
 produceSkim                      0          -          -       -       -1
 produceReducedSkim               1          -          -       -       -1
+maxEvents                        0          -          -       -       -1
 
 # Jet selection
 jetFidRegion                     2.5        -          -       -       -1
@@ -105,6 +106,23 @@ chargedMult_j2                  -inf         +inf      -      -      1       100
 neutrMult_j2                    -inf         +inf      -      -      1       100        0     100   SAVE
 photonMult_j2                   -inf         +inf      -      -      1       100        0     100   SAVE
 
+# Recluster AK4 ParticleNet (leading two jets)
+particleNet_prob_b_j1           -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_bb_j1          -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_c_j1           -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_cc_j1          -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_g_j1           -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_uds_j1         -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_undef_j1       -inf         +inf      -      -      1       100        0     1     SAVE
+
+particleNet_prob_b_j2           -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_bb_j2          -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_c_j2           -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_cc_j2          -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_g_j2           -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_uds_j2         -inf         +inf      -      -      1       100        0     1     SAVE
+particleNet_prob_undef_j2       -inf         +inf      -      -      1       100        0     1     SAVE
+
 # Global event quantities
 NAK4PF                          -inf         +inf      -      -      1       100        0     100   SAVE
 HTAK4PF                         -inf         +inf      -      -      1       500        0     10000 SAVE
@@ -114,7 +132,6 @@ metSig                          -inf         +inf      -      -      1       100
 
 # --- MET + helpers (saved, no selection) ---
 metphi                          -inf         +inf      -      -      1       200        -3.15 3.15  SAVE
-metOverSumEt                    -inf         +inf      -      -      1       200         0    2     SAVE
 unclusteredEnFracAK4PF          -inf         +inf      -      -      1       200         0    1.5   SAVE
 
 # Minimal DeltaPhi(MET, jets) with the leading N AK4 jets
