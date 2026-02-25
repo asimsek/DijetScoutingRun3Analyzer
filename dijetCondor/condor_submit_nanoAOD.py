@@ -17,6 +17,10 @@ DEFAULT_TREE_NAME = "Events"
 DEFAULT_EOS_PATH = "/store/group/lpcjj/Run3PFScouting/nanoAODnTuples"
 DEFAULT_CUT_FILE = "config/cutFile_mainDijetPFScoutingSelection_Run3.txt"
 DEFAULT_REQUEST_MEMORY_MB = 4096
+DEFAULT_SUBMIT_WORKERS = 8
+DEFAULT_XROOTD_REDIRECTOR = "root://cmsxrootd.fnal.gov"
+DEFAULT_CMS_CONNECT_IMAGE = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
+#DEFAULT_XROOTD_REDIRECTOR = "root://cms-xrd-global.cern.ch"
 
 COLOR_RESET = "\033[0m"
 COLOR_BRIGHT_RED = "\033[91m"
@@ -222,7 +226,7 @@ def ensure_das_input_list(
     seen = set()
     for entry in files_raw:
         if entry.startswith("/store/"):
-            entry = f"root://cms-xrd-global.cern.ch/{entry}"
+            entry = f"{DEFAULT_XROOTD_REDIRECTOR}/{entry}"
         if entry not in seen:
             files.append(entry)
             seen.add(entry)
@@ -399,7 +403,20 @@ xrdcp -f {job_name}_reduced_skim.root root://cmseos.fnal.gov/{eos_file}
 """
 
 
-def create_job_jdl(cmssw_ver: str, sh_file_name: str, request_memory_mb: int) -> str:
+def create_job_jdl(
+    cmssw_ver: str,
+    sh_file_name: str,
+    request_memory_mb: int,
+    use_cms_connect: bool,
+    cms_connect_image: str,
+) -> str:
+    cms_connect_block = ""
+    if use_cms_connect:
+        cms_connect_block = (
+            f'+SingularityImage = "{cms_connect_image}"\n'
+            "Requirements = (HAS_CVMFS_cms_cern_ch =?= true)\n"
+        )
+
     return f"""universe = vanilla
 Executable = {sh_file_name}
 Should_Transfer_Files = YES
@@ -413,7 +430,7 @@ Log = cjob_$(Cluster)_$(Process).log
 stream_output = True
 stream_error = True
 use_x509userproxy = true
-+JobFlavour = "nextweek"
+{cms_connect_block}+JobFlavour = "nextweek"
 Queue 1
 """
 
@@ -422,23 +439,44 @@ def create_submit_all(condor_folder: Path, n_jobs: int, info: DatasetInfo) -> No
     submit_path = condor_folder / "submit_all.py"
     submit_path.write_text(
         f"""#!/usr/bin/env python3
+import shlex
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from tqdm import tqdm
 
-with tqdm(total={n_jobs}, unit="job") as pbar:
-    for i in range({n_jobs}):
-        jdl = "{info.dataset_type}_{info.year}_{info.reco_type}_n{{}}.jdl".format(i)
-        proc = subprocess.run(
-            ["bash", "-lc", f"condor_submit -terse {{jdl}}"],
-            check=True,
-            text=True,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-        cluster_id = proc.stdout.strip().splitlines()[-1] if proc.stdout.strip() else ""
-        if cluster_id:
-            pbar.set_postfix_str(cluster_id)
-        pbar.update(1)
+N_WORKERS = {DEFAULT_SUBMIT_WORKERS}
+
+
+def submit_one(jdl):
+    cmd = ["condor_submit", "-terse"]
+    cmd.append(jdl)
+    shell_cmd = " ".join(shlex.quote(part) for part in cmd)
+    proc = subprocess.run(
+        ["bash", "-lc", shell_cmd],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    return jdl, proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+
+
+def main():
+    jdls = ["{info.dataset_type}_{info.year}_{info.reco_type}_n{{}}.jdl".format(i) for i in range({n_jobs})]
+
+    with ThreadPoolExecutor(max_workers=max(1, N_WORKERS)) as executor:
+        futures = [executor.submit(submit_one, jdl) for jdl in jdls]
+        with tqdm(total=len(jdls), unit="job") as pbar:
+            for future in as_completed(futures):
+                jdl, rc, out, err = future.result()
+                if rc == 0:
+                    cluster_id = out.splitlines()[-1] if out else ""
+                    if cluster_id:
+                        pbar.set_postfix_str(cluster_id)
+                pbar.update(1)
+
+
+if __name__ == "__main__":
+    main()
 """
     )
     submit_path.chmod(0o755)
@@ -455,6 +493,8 @@ def create_condor_job_files(
     scram_arch: str,
     eos_path: str,
     request_memory_mb: int,
+    use_cms_connect: bool,
+    cms_connect_image: str,
 ) -> None:
     for idx, list_rel in enumerate(list_rel_paths):
         job_name = f"{info.dataset_type}_{info.year}_Condor_n{idx}"
@@ -483,6 +523,8 @@ def create_condor_job_files(
                 cmssw_ver=cmssw_ver,
                 sh_file_name=sh_name,
                 request_memory_mb=request_memory_mb,
+                use_cms_connect=use_cms_connect,
+                cms_connect_image=cms_connect_image,
             )
         )
 
@@ -505,6 +547,16 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=DEFAULT_REQUEST_MEMORY_MB,
         help=f"Condor request_memory in MB (default: {DEFAULT_REQUEST_MEMORY_MB}).",
+    )
+    parser.add_argument(
+        "--cms-connect",
+        action="store_true",
+        help="Enable CMS Connect JDL settings (EL9 Singularity image + CVMFS requirement).",
+    )
+    parser.add_argument(
+        "--cms-connect-image",
+        default=DEFAULT_CMS_CONNECT_IMAGE,
+        help=f'Container image used with --cms-connect (default: "{DEFAULT_CMS_CONNECT_IMAGE}").',
     )
     parser.add_argument("--no-submit", action="store_true", help="Prepare files but do not submit.")
     return parser.parse_args()
@@ -559,15 +611,19 @@ def main() -> None:
         scram_arch=args.scram_arch,
         eos_path=args.eos_path,
         request_memory_mb=args.request_memory_mb,
+        use_cms_connect=args.cms_connect,
+        cms_connect_image=args.cms_connect_image,
     )
     create_submit_all(condor_folder, len(chunks), info)
 
     log_info(f"Condor folder: {condor_folder}")
     log_info(f"Number of jobs: {len(chunks)}")
+    if args.cms_connect:
+        log_info(f'CMS Connect mode enabled: +SingularityImage="{args.cms_connect_image}"')
     if args.no_submit:
         log_info("--no-submit is set. Skipping Condor submission.")
     else:
-        submit_jobs(condor_folder)
+        submit_jobs(condor_folder=condor_folder)
 
 
 if __name__ == "__main__":

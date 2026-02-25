@@ -30,6 +30,15 @@ def parse_args() -> argparse.Namespace:
         default="",
         help="Optional DAS dataset name. If provided, expected event count is fetched from DAS and compared.",
     )
+    parser.add_argument(
+        "--request-memory-mb",
+        type=int,
+        default=0,
+        help=(
+            "If >0 and used with --resubmit, set request_memory in missing-job .jdl files before submission. "
+            "Existing request_memory is replaced; if absent, it is added."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -189,6 +198,59 @@ def write_missing_list(cjobs_dir: Path, missing_roots: List[str], missing_jdls: 
     return out_path
 
 
+def update_jdl_request_memory(jdl_path: Path, memory_mb: int) -> bool:
+    text = jdl_path.read_text()
+    lines = text.splitlines()
+
+    request_re = re.compile(r"^\s*request_memory\s*=", re.IGNORECASE)
+    new_line = f"request_memory = {memory_mb}"
+    changed = False
+    found = False
+    new_lines: List[str] = []
+
+    for line in lines:
+        if request_re.match(line):
+            found = True
+            if line.strip() != new_line:
+                new_lines.append(new_line)
+                changed = True
+            else:
+                new_lines.append(line)
+            continue
+        new_lines.append(line)
+
+    if not found:
+        insert_idx = None
+        queue_re = re.compile(r"^\s*queue\b", re.IGNORECASE)
+        for i, line in enumerate(new_lines):
+            if queue_re.match(line):
+                insert_idx = i
+                break
+        if insert_idx is None:
+            new_lines.append(new_line)
+        else:
+            new_lines.insert(insert_idx, new_line)
+        changed = True
+
+    if changed:
+        jdl_path.write_text("\n".join(new_lines) + "\n")
+    return changed
+
+
+def update_missing_jdls_request_memory(missing_jdls: List[Path], memory_mb: int) -> None:
+    if memory_mb <= 0:
+        return
+    updated = 0
+    for jdl in missing_jdls:
+        try:
+            if update_jdl_request_memory(jdl, memory_mb):
+                updated += 1
+        except Exception as exc:
+            print(f"[WARN] Failed to update request_memory for {jdl.name}: {exc}")
+    print(f"[INFO] request_memory  : {memory_mb} MB")
+    print(f"[INFO] jdl updated     : {updated}/{len(missing_jdls)}")
+
+
 def resubmit_missing(cjobs_dir: Path, missing_jdls: List[Path]) -> None:
     if not missing_jdls:
         print("[INFO] No missing jobs to resubmit.")
@@ -235,6 +297,8 @@ def main() -> int:
 
     if args.total_events and args.resubmit:
         print("[WARN] --total-events used with --resubmit. Resubmission is disabled for this run.")
+    if args.request_memory_mb > 0 and not args.resubmit:
+        print("[WARN] --request-memory-mb is set but --resubmit is not enabled. No .jdl will be modified.")
 
     jdl_files = get_jdl_files(cjobs_dir)
     print(f"[INFO] cjobs directory : {cjobs_dir}")
@@ -287,6 +351,8 @@ def main() -> int:
             return 3
 
     if args.resubmit and not args.total_events:
+        if args.request_memory_mb > 0:
+            update_missing_jdls_request_memory(missing_jdls, args.request_memory_mb)
         resubmit_missing(cjobs_dir, missing_jdls)
 
     return 0
