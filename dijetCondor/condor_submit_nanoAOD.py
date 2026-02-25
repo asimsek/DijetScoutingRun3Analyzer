@@ -524,7 +524,7 @@ def create_condor_job_files(
     cms_connect_requirements: str,
 ) -> None:
     for idx, list_rel in enumerate(list_rel_paths):
-        job_name = f"{name_token}_Condor_n{idx}"
+        job_name = f"{name_token}_n{idx}"
 
         sh_name = f"{name_token}_n{idx}.sh"
         sh_path = condor_folder / sh_name

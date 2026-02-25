@@ -21,6 +21,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("eos_output_dir", help="Path to directory containing *_reduced_skim.root files.")
     parser.add_argument("--resubmit", action="store_true", help="Resubmit missing jobs using corresponding .jdl files.")
     parser.add_argument(
+        "--check-subdirs",
+        action="store_true",
+        help="Also scan sub-directories under eos_output_dir for *_reduced_skim.root files.",
+    )
+    parser.add_argument(
         "--total-events",
         action="store_true",
         help="Compute total number of entries over all *_reduced_skim.root files in eos_output_dir.",
@@ -92,9 +97,52 @@ def build_expected_map(cjobs_dir: Path, jdl_files: List[Path]) -> Tuple[Dict[str
     return expected_to_jdl, unresolved
 
 
-def get_existing_root_files(eos_dir: Path) -> List[Path]:
-    # Intentionally simple and fast: only check this directory level.
+def get_existing_root_files(eos_dir: Path, recursive: bool = False) -> List[Path]:
+    if recursive:
+        return sorted([p for p in eos_dir.rglob("*_reduced_skim.root") if p.is_file()])
+    # Default is intentionally simple and fast: only this directory level.
     return sorted([p for p in eos_dir.glob("*_reduced_skim.root") if p.is_file()])
+
+
+def _extract_job_index(root_name: str) -> Optional[int]:
+    m = re.search(r"_n(\d+)_reduced_skim\.root$", root_name)
+    if not m:
+        return None
+    try:
+        return int(m.group(1))
+    except ValueError:
+        return None
+
+
+def resolve_missing_with_fallback(
+    expected_roots: List[str],
+    existing_root_names: List[str],
+) -> Tuple[List[str], Dict[str, str]]:
+    existing_set = set(existing_root_names)
+    missing_exact = [name for name in expected_roots if name not in existing_set]
+
+    used_existing = {name for name in expected_roots if name in existing_set}
+    pool = [name for name in existing_root_names if name.endswith("_reduced_skim.root") and name not in used_existing]
+    fallback_matches: Dict[str, str] = {}
+
+    for expected in missing_exact:
+        candidate = None
+        idx = _extract_job_index(expected)
+        if idx is not None:
+            idx_suffix = f"_n{idx}_reduced_skim.root"
+            for name in pool:
+                if name.endswith(idx_suffix):
+                    candidate = name
+                    break
+        if candidate is None and pool:
+            # Final fallback: consume any remaining *_reduced_skim.root.
+            candidate = pool[0]
+        if candidate is not None:
+            fallback_matches[expected] = candidate
+            pool.remove(candidate)
+
+    missing_final = [name for name in missing_exact if name not in fallback_matches]
+    return missing_final, fallback_matches
 
 
 def _iter_with_progress(items: List[Path], desc: str):
@@ -317,11 +365,14 @@ def main() -> int:
         if len(unresolved_jdls) > 10:
             print(f"  ... and {len(unresolved_jdls) - 10} more")
 
-    existing_root_files = get_existing_root_files(eos_dir)
-    existing_roots = {p.name for p in existing_root_files}
-    print(f"[INFO] existing roots  : {len(existing_roots)}")
+    existing_root_files = get_existing_root_files(eos_dir, recursive=args.check_subdirs)
+    print(f"[INFO] check subdirs   : {'yes' if args.check_subdirs else 'no'}")
+    existing_root_names = sorted({p.name for p in existing_root_files})
+    print(f"[INFO] existing roots  : {len(existing_root_names)}")
 
-    missing_roots = sorted([name for name in expected_map.keys() if name not in existing_roots])
+    missing_roots, fallback_matches = resolve_missing_with_fallback(sorted(expected_map.keys()), existing_root_names)
+    if fallback_matches:
+        print(f"[INFO] fallback match  : {len(fallback_matches)}")
     missing_jdls = [expected_map[name] for name in missing_roots]
 
     print(f"[INFO] missing roots   : {len(missing_roots)}")
