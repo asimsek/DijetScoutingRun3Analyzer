@@ -19,7 +19,7 @@ DEFAULT_CUT_FILE = "config/cutFile_mainDijetPFScoutingSelection_Run3.txt"
 DEFAULT_REQUEST_MEMORY_MB = 4096
 DEFAULT_SUBMIT_WORKERS = 8
 DEFAULT_XROOTD_REDIRECTOR = "root://cmsxrootd.fnal.gov"
-DEFAULT_CMS_CONNECT_IMAGE = "/cvmfs/unpacked.cern.ch/registry.hub.docker.com/cmssw/el9:x86_64"
+DEFAULT_MAX_NAME_TOKEN_LEN = 80
 #DEFAULT_XROOTD_REDIRECTOR = "root://cms-xrd-global.cern.ch"
 
 COLOR_RESET = "\033[0m"
@@ -172,6 +172,18 @@ def dataset_info(dataset: str, era: str) -> DatasetInfo:
     )
 
 
+def build_name_token(dataset: str, info: DatasetInfo, max_len: int = DEFAULT_MAX_NAME_TOKEN_LEN) -> str:
+    full = f"{info.dataset_type}_{info.year}_{info.reco_type}"
+    if len(full) <= max_len:
+        return full
+
+    parts = [p for p in dataset.split("/") if p]
+    first = sanitize_token(parts[0]) if parts else info.dataset_type
+    last = sanitize_token(parts[-1]) if parts else info.reco_type
+    compact = f"{first}_{last}"
+    return compact[:max_len]
+
+
 def resolve_input_list_path(raw_path: str, config_path: Path, repo_root: Path, cmssw_base: Path) -> Path:
     expanded = Path(os.path.expandvars(raw_path))
     if expanded.is_absolute():
@@ -297,6 +309,20 @@ def read_input_files(input_list_path: Path) -> List[str]:
     return files
 
 
+def build_cms_connect_requirements(scram_arch: str) -> str:
+    major = None
+    match = re.search(r"el(\d+)_", scram_arch)
+    if not match:
+        match = re.search(r"slc(\d+)_", scram_arch)
+    if match:
+        major = int(match.group(1))
+
+    base = '(Arch=="X86_64") && (OpSys=="LINUX") && (OpSysMajorVer==9)'
+    if major is None:
+        return f"Requirements = {base}"
+    return f"Requirements = {base} && (OpSysMajorVer == {major})"
+
+
 def prepare_framework(repo_root: Path, sample_file: str, tree_name: str) -> None:
     log_info("Generating rootNtupleClass from sample file...")
     run_cmd(
@@ -314,9 +340,9 @@ def split_into_chunks(items: List[str], chunk_size: int) -> List[List[str]]:
     return [items[i:i + chunk_size] for i in range(0, len(items), chunk_size)]
 
 
-def create_condor_folder(script_dir: Path, info: DatasetInfo) -> Tuple[Path, str]:
+def create_condor_folder(script_dir: Path, name_token: str) -> Tuple[Path, str]:
     date_time = datetime.now().strftime("%d%B%Y_%H")
-    condor_folder = script_dir / f"cjobs_{info.dataset_type}_{info.year}_{info.reco_type}_{date_time}"
+    condor_folder = script_dir / f"cjobs_{name_token}_{date_time}"
     condor_folder.mkdir(parents=True, exist_ok=True)
     return condor_folder, date_time
 
@@ -324,15 +350,16 @@ def create_condor_folder(script_dir: Path, info: DatasetInfo) -> Tuple[Path, str
 def write_chunk_lists(
     repo_root: Path,
     chunks: List[List[str]],
+    name_token: str,
     info: DatasetInfo,
     date_time: str,
 ) -> List[str]:
-    list_dir = repo_root / "lists" / info.dataset_type / f"{info.dataset_type}_{info.year}_{info.reco_type}_{date_time}"
+    list_dir = repo_root / "lists" / info.dataset_type / f"{name_token}_{date_time}"
     list_dir.mkdir(parents=True, exist_ok=True)
 
     rel_paths: List[str] = []
     for idx, chunk in enumerate(chunks):
-        file_name = f"{info.dataset_type}_{info.year}_{info.reco_type}_n{idx}.txt"
+        file_name = f"{name_token}_n{idx}.txt"
         list_path = list_dir / file_name
         list_path.write_text("\n".join(chunk) + "\n")
         rel_paths.append(list_path.relative_to(repo_root).as_posix())
@@ -342,6 +369,7 @@ def write_chunk_lists(
 def build_cmssw_tarball(cmssw_base: Path, condor_folder: Path) -> str:
     cmssw_ver = cmssw_base.name
     tar_file = condor_folder / f"{cmssw_ver}.tar.gz"
+    analyzer_rel = f"{cmssw_ver}/src/DijetScoutingRun3Analyzer"
     log_info(f"Creating tarball: {tar_file}")
     run_cmd(
         [
@@ -353,6 +381,7 @@ def build_cmssw_tarball(cmssw_base: Path, condor_folder: Path) -> str:
             "--exclude=Limits",
             "--exclude=*.root",
             "--exclude=*.tar.gz",
+            f"--exclude=cjobs_*",
             "-C",
             str(cmssw_base.parent),
             cmssw_ver,
@@ -408,14 +437,11 @@ def create_job_jdl(
     sh_file_name: str,
     request_memory_mb: int,
     use_cms_connect: bool,
-    cms_connect_image: str,
+    cms_connect_requirements: str,
 ) -> str:
     cms_connect_block = ""
     if use_cms_connect:
-        cms_connect_block = (
-            f'+SingularityImage = "{cms_connect_image}"\n'
-            "Requirements = (HAS_CVMFS_cms_cern_ch =?= true)\n"
-        )
+        cms_connect_block = f"{cms_connect_requirements}\n"
 
     return f"""universe = vanilla
 Executable = {sh_file_name}
@@ -435,7 +461,7 @@ Queue 1
 """
 
 
-def create_submit_all(condor_folder: Path, n_jobs: int, info: DatasetInfo) -> None:
+def create_submit_all(condor_folder: Path, n_jobs: int, name_token: str) -> None:
     submit_path = condor_folder / "submit_all.py"
     submit_path.write_text(
         f"""#!/usr/bin/env python3
@@ -461,7 +487,7 @@ def submit_one(jdl):
 
 
 def main():
-    jdls = ["{info.dataset_type}_{info.year}_{info.reco_type}_n{{}}.jdl".format(i) for i in range({n_jobs})]
+    jdls = ["{name_token}_n{{}}.jdl".format(i) for i in range({n_jobs})]
 
     with ThreadPoolExecutor(max_workers=max(1, N_WORKERS)) as executor:
         futures = [executor.submit(submit_one, jdl) for jdl in jdls]
@@ -486,6 +512,7 @@ def create_condor_job_files(
     condor_folder: Path,
     cmssw_ver: str,
     list_rel_paths: List[str],
+    name_token: str,
     cfg: JobConfig,
     info: DatasetInfo,
     cut_file: str,
@@ -494,12 +521,12 @@ def create_condor_job_files(
     eos_path: str,
     request_memory_mb: int,
     use_cms_connect: bool,
-    cms_connect_image: str,
+    cms_connect_requirements: str,
 ) -> None:
     for idx, list_rel in enumerate(list_rel_paths):
-        job_name = f"{info.dataset_type}_{info.year}_Condor_n{idx}"
+        job_name = f"{name_token}_Condor_n{idx}"
 
-        sh_name = f"{info.dataset_type}_{info.year}_{info.reco_type}_n{idx}.sh"
+        sh_name = f"{name_token}_n{idx}.sh"
         sh_path = condor_folder / sh_name
         sh_path.write_text(
             create_job_shell(
@@ -516,7 +543,7 @@ def create_condor_job_files(
         )
         sh_path.chmod(0o755)
 
-        jdl_name = f"{info.dataset_type}_{info.year}_{info.reco_type}_n{idx}.jdl"
+        jdl_name = f"{name_token}_n{idx}.jdl"
         jdl_path = condor_folder / jdl_name
         jdl_path.write_text(
             create_job_jdl(
@@ -524,7 +551,7 @@ def create_condor_job_files(
                 sh_file_name=sh_name,
                 request_memory_mb=request_memory_mb,
                 use_cms_connect=use_cms_connect,
-                cms_connect_image=cms_connect_image,
+                cms_connect_requirements=cms_connect_requirements,
             )
         )
 
@@ -551,12 +578,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--cms-connect",
         action="store_true",
-        help="Enable CMS Connect JDL settings (EL9 Singularity image + CVMFS requirement).",
-    )
-    parser.add_argument(
-        "--cms-connect-image",
-        default=DEFAULT_CMS_CONNECT_IMAGE,
-        help=f'Container image used with --cms-connect (default: "{DEFAULT_CMS_CONNECT_IMAGE}").',
+        help="Enable CMS Connect JDL requirements (x86_64 Linux + OpSysMajorVer from --scram-arch).",
     )
     parser.add_argument("--no-submit", action="store_true", help="Prepare files but do not submit.")
     return parser.parse_args()
@@ -590,20 +612,26 @@ def main() -> None:
     cfg = parse_config(cfg_path)
     input_list_path = resolve_input_list_path(cfg.input_list, cfg_path, repo_root, cmssw_base)
     input_files = read_input_files(input_list_path)
+    name_token = build_name_token(cfg.dataset, info)
+    full_token = f"{info.dataset_type}_{info.year}_{info.reco_type}"
+    if name_token != full_token:
+        log_info(f"Dataset token shortened for filenames: {name_token}")
 
     update_analyzer_era(repo_root, cfg.analyzer_script, cfg.era)
     update_json_path(repo_root, args.cut_file, cfg.golden_json)
 
     prepare_framework(repo_root, sample_file=input_files[0], tree_name=args.tree_name)
     chunks = split_into_chunks(input_files, cfg.interval)
-    condor_folder, date_time = create_condor_folder(script_dir, info)
-    list_rel_paths = write_chunk_lists(repo_root, chunks, info, date_time)
+    condor_folder, date_time = create_condor_folder(script_dir, name_token)
+    list_rel_paths = write_chunk_lists(repo_root, chunks, name_token, info, date_time)
     cmssw_ver = build_cmssw_tarball(cmssw_base, condor_folder)
+    cms_connect_requirements = build_cms_connect_requirements(args.scram_arch)
 
     create_condor_job_files(
         condor_folder=condor_folder,
         cmssw_ver=cmssw_ver,
         list_rel_paths=list_rel_paths,
+        name_token=name_token,
         cfg=cfg,
         info=info,
         cut_file=args.cut_file,
@@ -612,14 +640,14 @@ def main() -> None:
         eos_path=args.eos_path,
         request_memory_mb=args.request_memory_mb,
         use_cms_connect=args.cms_connect,
-        cms_connect_image=args.cms_connect_image,
+        cms_connect_requirements=cms_connect_requirements,
     )
-    create_submit_all(condor_folder, len(chunks), info)
+    create_submit_all(condor_folder, len(chunks), name_token)
 
     log_info(f"Condor folder: {condor_folder}")
     log_info(f"Number of jobs: {len(chunks)}")
     if args.cms_connect:
-        log_info(f'CMS Connect mode enabled: +SingularityImage="{args.cms_connect_image}"')
+        log_info(f"CMS Connect mode enabled: {cms_connect_requirements}")
     if args.no_submit:
         log_info("--no-submit is set. Skipping Condor submission.")
     else:

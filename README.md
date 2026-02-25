@@ -1,9 +1,9 @@
 # Dijet Scouting Run3 Analyzer
 
+**This framework is only tested for Fermilab LPC machines. It might need some adjustments for Lxplus.**
 
 
-
-
+## Setup Environment:
 
 ```bash
 cmsrel CMSSW_15_0_6
@@ -16,13 +16,11 @@ scram b clean; scram b -j 8
 ```
 
 
-### NanoAOD analyzer Test:
+## Local Test - NanoAOD nTuple Maker:
 
-#### Data:
+### For Data:
 
 ```bash
-cd CMSSW_15_0_6/src/DijetScoutingRun3Analyzer
-
 cat > /tmp/nano_test_2024H.txt << 'EOF'
 root://cms-xrd-global.cern.ch//store/data/Run2024H/ScoutingPFRun3/NANOAOD/ScoutNano-v1/2520000/03e073d9-ab61-450d-aa10-fa050e94a16b.root
 EOF
@@ -40,7 +38,7 @@ root -l -q -e 'TFile f("test_NanoAOD_2024H_n0_reduced_skim.root"); TTree* t=(TTr
 ```
 
 
-#### QCD MC:
+### For QCD MC:
 
 ```bash
 cd CMSSW_15_0_6/src/DijetScoutingRun3Analyzer
@@ -63,32 +61,47 @@ root -l -q 'TFile f("test_NanoAOD_QCD_n0_reduced_skim.root"); TTree* t=(TTree*)f
 
 
 
-### nTuple production on HTCondor:
+## nTuple production on HTCondor:
 
-#### Send to HTCondor:
+#### Create & Send jobs to Condor:
+
+##### Data:
 
 ```bash
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024G_cfg.txt --force-new-list --request-memory-mb 4096 --cms-connect
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt --force-new-list --request-memory-mb 4096 --cms-connect
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt --force-new-list --request-memory-mb 4096 --cms-connect
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024C_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024D_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024E_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024F_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024G_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt --force-new-list --request-memory-mb 4096
 ```
-
 
 > [!TIP]
-> Use `--cms-connect` with the `condor_submit_nanoAOD.py` if you're working on the CMS Connect machines for HTCondor. This is for compatibility.<br>
-> Use `--no-submit` for **dryRun**.
+> Use `--no-submit` for **dryRun** (create files without sending jobs to condor).
 
 
-
-#### Condor Held Reason (Fermilab LPC):
+##### QCD MC:
 
 ```bash
-condor_q -hold -af HoldReason
-condor_release -const 'jobstatus==5' -name lpcschedd6
-
-condor_rm -name lpcschedd6 -constraint "Owner==\"$USER\" && regexp(\".*ScoutingPFRun3_Run2024I_ScoutNano_v1_NANOAOD_n[0-9]+\\.sh$\", Cmd)"
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT50to80_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT80to120_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT120to170_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT170to300_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT300to470_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT470to600_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT600to800_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT800to1000_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT1000to1500_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT1500to2000_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT2000to2500_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT2500to3000_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT3000toInf_cfg.txt --force-new-list
 ```
 
+> [!WARNING]
+> A dummy (or real) GoldenJSON file definition in the MC config files is necessary to avoid any possible issues.<br>
+> GoldenJSON won't be used for MC samples.
 
 
 #### Condor output (root) check & Resubmit: 
@@ -101,37 +114,8 @@ python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOA
 python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --total-events --dataset /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD
 
 # re-submit missing ones
-python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --resubmit --request-memory-mb 4096
+python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --resubmit --request-memory-mb 5096
 ```
-
-
-
-
-### CMS Connect Usage:
-
-**Login to CMS Connect from LPC area:**
-
-```bash
-ssh asimsek@login.uscms.org
-```
-
-**Change the grid cerificate - Delete the old ones in .globus**
-
-```bash
-copy_certificates
-```
-
-```bash
-voms-proxy-init -voms cms -out $HOME/x509proxy
-```
-
-
-
-
-
-
-
-
 
 
 

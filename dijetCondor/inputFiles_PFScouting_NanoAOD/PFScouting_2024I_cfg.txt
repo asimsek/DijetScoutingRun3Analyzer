@@ -1,5 +1,5 @@
 Dataset=/ScoutingPFRun3/Run2024I-ScoutNano-v1/NANOAOD
-InputList=$CMSSW_BASE/src/lists/nanoAOD/PFScouting/ScoutingPFRun3__Run2024I-ScoutNano-v1__NANOAOD.txt
+InputList=lists/nanoAOD/PFScouting/ScoutingPFRun3__Run2024I-ScoutNano-v1__NANOAOD.txt
 Interval=10
 analyzerScript=analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C
 goldenJSON=data/json/Cert_Collisions2024_378981_386951_Golden.json

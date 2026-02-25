@@ -69,8 +69,8 @@ mv tmp.h rootNtupleClass.h
 
 if [ -f "rootNtupleClass.h" ] && [ -f "rootNtupleClass.C" ]; then
     echo "Moving rootNtupleClass.h/C to ./include/ and ./src/ directories ..."
-    mv -i rootNtupleClass.h include/
-    mv -i rootNtupleClass.C src/
+    mv -f rootNtupleClass.h include/rootNtupleClass.h
+    mv -f rootNtupleClass.C src/rootNtupleClass.C
     #if [ -f "include/rootNtupleClass.h" ] && [ -f "src/rootNtupleClass.C" ]; then echo "... done."; fi;
 
     #echo "Creating src/analysisClass.C ..."
