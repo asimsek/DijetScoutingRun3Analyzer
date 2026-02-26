@@ -30,7 +30,8 @@ __pycache__
 src/*.d
 src/*.o
 
-rootNtupleClass.h
+dijetCondor/reports_condor
+include/rootNtupleClass.h
 main
 cjobs_*
 *.tar.gz
