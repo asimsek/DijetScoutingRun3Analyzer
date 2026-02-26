@@ -18,9 +18,9 @@ DEFAULT_EOS_PATH = "/store/group/lpcjj/Run3PFScouting/nanoAODnTuples"
 DEFAULT_CUT_FILE = "config/cutFile_mainDijetPFScoutingSelection_Run3.txt"
 DEFAULT_REQUEST_MEMORY_MB = 4096
 DEFAULT_SUBMIT_WORKERS = 8
-DEFAULT_XROOTD_REDIRECTOR = "root://cmsxrootd.fnal.gov"
+#DEFAULT_XROOTD_REDIRECTOR = "root://cmsxrootd.fnal.gov"
+DEFAULT_XROOTD_REDIRECTOR = "root://cms-xrd-global.cern.ch"
 DEFAULT_MAX_NAME_TOKEN_LEN = 80
-#DEFAULT_XROOTD_REDIRECTOR = "root://cms-xrd-global.cern.ch"
 
 COLOR_RESET = "\033[0m"
 COLOR_BRIGHT_RED = "\033[91m"

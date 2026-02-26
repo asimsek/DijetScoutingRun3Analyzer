@@ -143,6 +143,7 @@ int baseClass::readInputList()
 
   NBeforeSkim_ = 0;
   int count_line = 0;
+  bool skipSkimLookup = false;
 
   STDOUT("baseClass::readinputList(): inputList_ = " << *inputList_);
 
@@ -161,12 +162,32 @@ int baseClass::readInputList()
     STDOUT("Adding file: " << pName);
     chain->Add(pName);
 
-    const int NBeforeSkim = getGlobalInfoNstart(pName);
-    NBeforeSkim_ += NBeforeSkim;
-    STDOUT("Initial number of events: NBeforeSkim, NBeforeSkim_ = " << NBeforeSkim << ", " << NBeforeSkim_);
+    // NanoAOD/NanoAODSIM files do not carry skim counter histograms.
+    // Skip skim histogram lookup entirely to avoid costly remote file opens
+    // during input-list initialization.
+    if (count_line == 1) {
+      const std::string firstPath(pName);
+      if (firstPath.find("/NANOAOD/") != std::string::npos ||
+          firstPath.find("/NANOAODSIM/") != std::string::npos ||
+          firstPath.find("NANOAOD") != std::string::npos) {
+        skipSkimLookup = true;
+        skimWasMade_ = false;
+        STDOUT("NanoAOD input detected: skipping skim histogram lookup.");
+      }
+    }
 
-    // Retrieve HLT path names from the first file
-    if (count_line == 1) getHltMap(pName);
+    // For NanoAOD inputs skim counter histograms are typically absent.
+    // Once skimWasMade_ becomes false, avoid reopening every remaining file
+    // just to check missing skim histograms again.
+    if (skimWasMade_ && !skipSkimLookup) {
+      const int NBeforeSkim = getGlobalInfoNstart(pName);
+      NBeforeSkim_ += NBeforeSkim;
+      STDOUT("Initial number of events: NBeforeSkim, NBeforeSkim_ = " << NBeforeSkim << ", " << NBeforeSkim_);
+    }
+
+    // NanoAOD does not provide dijets/TriggerNames histogram, but legacy
+    // non-NanoAOD workflows still rely on this map from the first input file.
+    if (count_line == 1 && !skipSkimLookup) getHltMap(pName);
   }
 
   tree_ = chain;

@@ -93,6 +93,32 @@ const std::array<const char*, 24> kNanoInputBranchesMC = {
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
+const std::array<const char*, 24> kNanoInputBranchesMonitoring = {
+    "run",
+    "luminosityBlock",
+    "event",
+    "PV_npvs",
+    "Rho_fixedGridRhoFastjetAll",
+    "PFMET_pt",
+    "PFMET_phi",
+    "nJet",
+    "Jet_pt",
+    "Jet_eta",
+    "Jet_phi",
+    "Jet_mass",
+    "Jet_area",
+    "Jet_chHEF",
+    "Jet_neHEF",
+    "Jet_neEmEF",
+    "Jet_chEmEF",
+    "Jet_muEF",
+    "Jet_chMultiplicity",
+    "Jet_neMultiplicity",
+    "Jet_rawFactor",
+    "Jet_hfEmEF",
+    "DST_PFScouting_JetHT",
+    "DST_PFScouting_SingleMuon"};
+
 const char* kTriggerJetHTBranch = "DST_PFScouting_JetHT";
 const char* kTriggerSingleMuonBranch = "DST_PFScouting_SingleMuon";
 
@@ -105,6 +131,12 @@ constexpr size_t kNOptionalNanoBranchesMC = 4;
 constexpr size_t kNRequiredNanoBranchesMC = kNanoInputBranchesMC.size() - kNOptionalNanoBranchesMC;
 static_assert(kNanoInputBranchesMC.size() >= kNOptionalNanoBranchesMC,
               "kNanoInputBranchesMC must include optional trailing branches.");
+
+constexpr size_t kNOptionalNanoBranchesMonitoring = 4;
+constexpr size_t kNRequiredNanoBranchesMonitoring =
+    kNanoInputBranchesMonitoring.size() - kNOptionalNanoBranchesMonitoring;
+static_assert(kNanoInputBranchesMonitoring.size() >= kNOptionalNanoBranchesMonitoring,
+              "kNanoInputBranchesMonitoring must include optional trailing branches.");
 
 bool hasBranch(TTree* tree, const char* bname) {
   return tree && bname && tree->GetBranch(bname);
@@ -166,20 +198,47 @@ void analysisClass::Loop() {
   if (fChain == nullptr) return;
 
   const bool hasGenWeight = hasBranch(fChain, "genWeight");
-  const bool useStandardMC = hasGenWeight;
-  const bool isDataSample = !hasGenWeight;
+  const bool hasScoutingRecoJets = hasBranch(fChain, "ScoutingPFJetRecluster_pt");
+  const bool hasStandardRecoJets = hasBranch(fChain, "Jet_pt");
 
-  if (useStandardMC) {
-    if (!hasBranch(fChain, "Jet_pt")) {
+  enum class InputSampleMode {
+    kMC,
+    kScoutingData,
+    kMonitoringData
+  };
+  InputSampleMode inputMode = InputSampleMode::kScoutingData;
+
+  if (hasGenWeight) {
+    if (!hasStandardRecoJets) {
       std::cerr << "[analysisClass] ERROR: MC mode selected (genWeight present) but missing 'Jet_pt'.\n";
       return;
     }
+    inputMode = InputSampleMode::kMC;
+  } else if (hasScoutingRecoJets) {
+    inputMode = InputSampleMode::kScoutingData;
+  } else if (hasStandardRecoJets) {
+    inputMode = InputSampleMode::kMonitoringData;
   } else {
-    if (!hasBranch(fChain, "ScoutingPFJetRecluster_pt")) {
-      std::cerr << "[analysisClass] ERROR: Data mode selected (no genWeight) but missing 'ScoutingPFJetRecluster_pt'.\n";
-      return;
-    }
+    std::cerr << "[analysisClass] ERROR: Data mode selected but neither 'ScoutingPFJetRecluster_pt' "
+              << "nor 'Jet_pt' is available.\n";
+    return;
   }
+
+  const bool useStandardMC = (inputMode == InputSampleMode::kMC);
+  const bool useMonitoringData = (inputMode == InputSampleMode::kMonitoringData);
+  const bool useStandardLikeJets = useStandardMC || useMonitoringData;
+  const bool isDataSample = !hasGenWeight;
+
+  std::cout << "[analysisClass] Input mode: "
+            << (useStandardMC ? "MC"
+                              : (useMonitoringData ? "MonitoringData" : "ScoutingData"))
+            << "\n";
+  std::cout << "[analysisClass] Strategy: "
+            << (useStandardMC ? "MC standard branches + MC JEC list"
+                              : (useMonitoringData
+                                     ? "Monitoring standard branches + DATA JEC list"
+                                     : "Scouting branches + DATA JEC list"))
+            << "\n";
 
   std::vector<std::string> missingRequired;
   fChain->SetBranchStatus("*", 0);
@@ -197,6 +256,8 @@ void analysisClass::Loop() {
 
   if (useStandardMC) {
     enableBranches(kNanoInputBranchesMC, kNRequiredNanoBranchesMC);
+  } else if (useMonitoringData) {
+    enableBranches(kNanoInputBranchesMonitoring, kNRequiredNanoBranchesMonitoring);
   } else {
     enableBranches(kNanoInputBranchesData, kNRequiredNanoBranchesData);
   }
@@ -221,15 +282,15 @@ void analysisClass::Loop() {
   TTreeReaderValue<UInt_t> luminosityBlock(reader, "luminosityBlock");
   TTreeReaderValue<ULong64_t> event(reader, "event");
 
-  const char* rhoBranch = useStandardMC ? "Rho_fixedGridRhoFastjetAll" : "ScoutingRho_fixedGridRhoFastjetAll";
-  const char* metPtBranch = useStandardMC ? "PFMET_pt" : "ScoutingMET_pt";
-  const char* metPhiBranch = useStandardMC ? "PFMET_phi" : "ScoutingMET_phi";
-  const char* nJetBranch = useStandardMC ? "nJet" : "nScoutingPFJetRecluster";
-  const char* jetPtBranch = useStandardMC ? "Jet_pt" : "ScoutingPFJetRecluster_pt";
-  const char* jetEtaBranch = useStandardMC ? "Jet_eta" : "ScoutingPFJetRecluster_eta";
-  const char* jetPhiBranch = useStandardMC ? "Jet_phi" : "ScoutingPFJetRecluster_phi";
-  const char* jetMassBranch = useStandardMC ? "Jet_mass" : "ScoutingPFJetRecluster_mass";
-  const char* jetAreaBranch = useStandardMC ? "Jet_area" : "ScoutingPFJetRecluster_area";
+  const char* rhoBranch = useStandardLikeJets ? "Rho_fixedGridRhoFastjetAll" : "ScoutingRho_fixedGridRhoFastjetAll";
+  const char* metPtBranch = useStandardLikeJets ? "PFMET_pt" : "ScoutingMET_pt";
+  const char* metPhiBranch = useStandardLikeJets ? "PFMET_phi" : "ScoutingMET_phi";
+  const char* nJetBranch = useStandardLikeJets ? "nJet" : "nScoutingPFJetRecluster";
+  const char* jetPtBranch = useStandardLikeJets ? "Jet_pt" : "ScoutingPFJetRecluster_pt";
+  const char* jetEtaBranch = useStandardLikeJets ? "Jet_eta" : "ScoutingPFJetRecluster_eta";
+  const char* jetPhiBranch = useStandardLikeJets ? "Jet_phi" : "ScoutingPFJetRecluster_phi";
+  const char* jetMassBranch = useStandardLikeJets ? "Jet_mass" : "ScoutingPFJetRecluster_mass";
+  const char* jetAreaBranch = useStandardLikeJets ? "Jet_area" : "ScoutingPFJetRecluster_area";
 
   TTreeReaderValue<Float_t> rhoValReader(reader, rhoBranch);
   TTreeReaderValue<Float_t> metPtReader(reader, metPtBranch);
@@ -274,7 +335,7 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<UChar_t>> chHadMultMC;
   std::unique_ptr<TTreeReaderArray<UChar_t>> neHadMultMC;
 
-  if (useStandardMC) {
+  if (useStandardLikeJets) {
     nVtxMCReader = std::make_unique<TTreeReaderValue<UChar_t>>(reader, "PV_npvs");
     jetChHEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_chHEF");
     jetNeHEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_neHEF");
@@ -398,8 +459,8 @@ void analysisClass::Loop() {
     const int runNoEvt = static_cast<int>(*run);
     const int lumiEvt = static_cast<int>(*luminosityBlock);
     const ULong64_t evtNoEvt = *event;
-    const int nvtxEvt = useStandardMC ? static_cast<int>(**nVtxMCReader)
-                                      : static_cast<int>(**nVtxDataReader);
+    const int nvtxEvt = useStandardLikeJets ? static_cast<int>(**nVtxMCReader)
+                                            : static_cast<int>(**nVtxDataReader);
     const float rhoVal = *rhoValReader;
     const float metVal = *metPtReader;
     const float metPhiVal = *metPhiReader;
@@ -455,11 +516,11 @@ void analysisClass::Loop() {
       const double area = jetArea[i];
 
       double rawFactor = 0.0;
-      if (useStandardMC && jetRawFactorMC) {
+      if (useStandardLikeJets && jetRawFactorMC) {
         rawFactor = static_cast<double>((*jetRawFactorMC)[i]);
       }
       rawPt[i] = pt * (1.0 - rawFactor);
-      if (useStandardMC) {
+      if (useStandardLikeJets) {
         const double oneMinusRaw = (1.0 - rawFactor);
         if (std::fabs(oneMinusRaw) > 1e-8) jecFacInput[i] = 1.0 / oneMinusRaw;
       }
@@ -469,7 +530,7 @@ void analysisClass::Loop() {
       int numConstVal = 0;
       bool passID = false;
 
-      if (useStandardMC) {
+      if (useStandardLikeJets) {
         chf[i] = static_cast<double>((*jetChHEFMC)[i]);
         nhf[i] = static_cast<double>((*jetNeHEFMC)[i]);
         muf[i] = static_cast<double>((*jetMuEFMC)[i]);
@@ -680,34 +741,34 @@ void analysisClass::Loop() {
     if (unclusteredEnFracVal < -1.0f) unclusteredEnFracVal = -1.0f;
 
     auto getChMultOut = [&](size_t idx) -> int {
-      return useStandardMC ? static_cast<int>((*chHadMultMC)[idx]) : static_cast<int>((*chHadMultData)[idx]);
+      return useStandardLikeJets ? static_cast<int>((*chHadMultMC)[idx]) : static_cast<int>((*chHadMultData)[idx]);
     };
     auto getNeMultOut = [&](size_t idx) -> int {
-      return useStandardMC ? static_cast<int>((*neHadMultMC)[idx]) : static_cast<int>((*neHadMultData)[idx]);
+      return useStandardLikeJets ? static_cast<int>((*neHadMultMC)[idx]) : static_cast<int>((*neHadMultData)[idx]);
     };
     auto getPhoMultOut = [&](size_t idx) -> int {
-      return useStandardMC ? 0 : static_cast<int>((*phoMultData)[idx]);
+      return useStandardLikeJets ? 0 : static_cast<int>((*phoMultData)[idx]);
     };
     auto getPNetBOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetBData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetBData)[idx]);
     };
     auto getPNetBBOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetBBData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetBBData)[idx]);
     };
     auto getPNetCOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetCData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetCData)[idx]);
     };
     auto getPNetCCOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetCCData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetCCData)[idx]);
     };
     auto getPNetGOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetGData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetGData)[idx]);
     };
     auto getPNetUDSOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetUDSData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetUDSData)[idx]);
     };
     auto getPNetUndefOut = [&](size_t idx) -> double {
-      return useStandardMC ? -1.0 : static_cast<double>((*jetPNetUndefData)[idx]);
+      return useStandardLikeJets ? -1.0 : static_cast<double>((*jetPNetUndefData)[idx]);
     };
 
     resetCuts();

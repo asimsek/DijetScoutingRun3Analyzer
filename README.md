@@ -14,7 +14,7 @@ cmsrel CMSSW_15_0_6
 cd CMSSW_15_0_6/src
 cmsenv
 git cms-init
-git clone git@github.com:asimsek/DijetScoutingRun3Analyzer.git
+git clone https://github.com/asimsek/DijetScoutingRun3Analyzer.git
 cd DijetScoutingRun3Analyzer
 scram b clean; scram b -j 8
 ```
@@ -43,7 +43,7 @@ scram b clean; scram b -j 8
 > **Run the following commands inside the main directory:** `cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer`<br>
 
 
-### For Data:
+### For Scouting Data:
 
 ```bash
 ## Create a temporary list:
@@ -66,6 +66,32 @@ make clean && make -j8
 
 ## Optional: Validate the output:
 root -l -q -e 'TFile f("test_NanoAOD_2024H_n0_reduced_skim.root"); TTree* t=(TTree*)f.Get("rootTupleTree/tree"); if(t) t->Print(); else f.ls();'
+```
+
+
+### For Monitoring Data:
+
+```bash
+## Create a temporary list:
+cat > /tmp/nano_test_monitoring_2024H.txt << 'EOF'
+root://cms-xrd-global.cern.ch//store/data/Run2024I/ScoutingPFMonitor/NANOAOD/PromptReco-v1/000/386/508/00000/8d57403b-0253-4f30-9624-494d9c843bb5.root
+EOF
+
+## Framework uses `analysisClass.C` file to process data.
+## Therefore, create a symbolic link (`symlink`/`soft link`) to use any of your "analysisClass" as `analysisClass.C`:
+ln -sf analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C src/analysisClass.C
+
+## Generate the ROOT reader class (`rootNtupleClass.*`) so branch declarations and addresses match the NanoAOD file/tree you are about to process:
+yes | ./scripts/make_rootNtupleClass.sh -f root://cms-xrd-global.cern.ch//store/data/Run2024I/ScoutingPFMonitor/NANOAOD/PromptReco-v1/000/386/508/00000/8d57403b-0253-4f30-9624-494d9c843bb5.root -t Events
+
+## Compile your analyzer:
+make clean && make -j8
+
+## Start nTuple production:
+./main /tmp/nano_test_monitoring_2024H.txt config/cutFile_mainDijetPFScoutingSelection_Run3.txt Events test_monitoring_NanoAOD_2024H_n0 test_monitoring_NanoAOD_2024H_n0
+
+## Optional: Validate the output:
+root -l -q -e 'TFile f("test_monitoring_NanoAOD_2024H_n0_reduced_skim.root"); TTree* t=(TTree*)f.Get("rootTupleTree/tree"); if(t) t->Print(); else f.ls();'
 ```
 
 
@@ -108,7 +134,8 @@ root -l -q 'TFile f("test_NanoAOD_QCD_n0_reduced_skim.root"); TTree* t=(TTree*)f
 #### Create & Send jobs to Condor:
 
 > [!CAUTION]
-> **Run the HTCondor scripts/commands inside the `dijetCondor` directory:** `cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer/dijetCondor`<br>
+> **Run the HTCondor scripts/commands inside the `dijetCondor` directory:**<br>
+> `cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer/dijetCondor`<br>
 
 ##### Data (PFScouting):
 
@@ -134,7 +161,7 @@ python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024E_cfg.txt --force-new-list --request-memory-mb 4096
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024F_cfg.txt --force-new-list --request-memory-mb 4096
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024G_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list --request-memory-mb 4096 --cms-connect
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024I_cfg.txt --force-new-list --request-memory-mb 4096
 ```
 
@@ -186,8 +213,7 @@ python3 check_condor_outputs.py cjobs_QCD_Bin-PT-120to170_TuneCP5_13p6TeV_pythia
 > Use `--check-subdirs` to include sub-folders of the given directory for the root file search.
 > Use `--total-events --dataset /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD` in order to check total `N_Events` (all root files) and compare it with the dataset.<br>
 > Use `--resubmit --request-memory-mb 4096` to resubmit jobs for the missing files and request more memory for them.<br>
-> Only target EOS folder can be given (without `cjobs_` folder) to count the event number and compare with the dataset.<br> 
-> Even single root file can be given for this purpose.<br>
+> Only target EOS folder can be given (without `cjobs_` folder) to count the event number and compare with the dataset - even single root file can be given for this purpose.
 
 
 #### Processed Lumi Calculation:
@@ -302,7 +328,7 @@ LPC Condor resources are limited and might take very long due to the `user-prior
 
 #### Registration & Instructions:
 
-**Register to [ci-connect](https://www.ci-connect.net/)**
+Register to **[ci-connect](https://www.ci-connect.net/)**
 
 > [!CAUTION]
 > `ci-connect` is the new platform and `cilogon` is deprecated.
@@ -360,6 +386,9 @@ echo "cms.org.cms" > ~/.ciconnect/defaultproject
  + [Rucio WebUI](https://cms-rucio-webui.cern.ch/r2d2/request)
  + [LPC EOS Guidelines](https://www.uscms.org/uscms_at_work/computing/LPC/usingEOSAtLPC.shtml)
 
+
+--
+--
 
 
 
