@@ -13,22 +13,33 @@ from typing import Dict, List, Optional, Tuple
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Check missing Condor output ROOT files from a cjobs_* directory and an EOS output directory. "
-            "Optionally resubmit missing jobs."
+            "Mode A: check missing Condor outputs using cjobs_dir + eos_output_dir. "
+            "Mode B: with a single path (directory or .root file), count entries automatically."
         )
     )
-    parser.add_argument("cjobs_dir", help="Path to cjobs_* directory containing .jdl/.sh files.")
-    parser.add_argument("eos_output_dir", help="Path to directory containing *_reduced_skim.root files.")
+    parser.add_argument(
+        "path1",
+        help=(
+            "Mode A: cjobs_* directory. "
+            "Mode B: target directory or single .root file for entry counting."
+        ),
+    )
+    parser.add_argument(
+        "path2",
+        nargs="?",
+        default="",
+        help="Mode A only: eos output directory containing *_reduced_skim.root files.",
+    )
     parser.add_argument("--resubmit", action="store_true", help="Resubmit missing jobs using corresponding .jdl files.")
     parser.add_argument(
         "--check-subdirs",
         action="store_true",
-        help="Also scan sub-directories under eos_output_dir for *_reduced_skim.root files.",
+        help="Also scan sub-directories under the target output directory for *_reduced_skim.root files.",
     )
     parser.add_argument(
         "--total-events",
         action="store_true",
-        help="Compute total number of entries over all *_reduced_skim.root files in eos_output_dir.",
+        help="Compute total number of entries over discovered ROOT files (enabled automatically in single-path mode).",
     )
     parser.add_argument(
         "--dataset",
@@ -246,6 +257,30 @@ def write_missing_list(cjobs_dir: Path, missing_roots: List[str], missing_jdls: 
     return out_path
 
 
+def report_total_events(root_files: List[Path], dataset: str = "") -> int:
+    if not root_files:
+        print("[WARN] No ROOT files found for event counting.")
+        return 4
+
+    try:
+        total_events, files_in_chain, tree_used = sum_events_fast(root_files, show_progress=True)
+        print(f"[INFO] event tree      : {tree_used}")
+        print(f"[INFO] files in chain : {format_with_dots(files_in_chain)}")
+        if dataset:
+            expected_events = query_dataset_expected_events(dataset)
+            diff = expected_events - total_events
+            print(f"[INFO] dataset         : {dataset}")
+            print(f"[INFO] expected events : {format_with_dots(expected_events)}")
+            print(f"[INFO] counted events  : {format_with_dots(total_events)}")
+            print(f"[INFO] difference      : {format_with_dots(diff)}")
+        else:
+            print(f"[INFO] counted events  : {format_with_dots(total_events)}")
+    except Exception as exc:
+        print(f"[ERROR] failed to sum events: {exc}", file=sys.stderr)
+        return 3
+    return 0
+
+
 def update_jdl_request_memory(jdl_path: Path, memory_mb: int) -> bool:
     text = jdl_path.read_text()
     lines = text.splitlines()
@@ -329,9 +364,49 @@ def resubmit_missing(cjobs_dir: Path, missing_jdls: List[Path]) -> None:
 def main() -> int:
     args = parse_args()
 
-    cjobs_dir = Path(args.cjobs_dir).expanduser().resolve()
-    eos_dir = Path(args.eos_output_dir).expanduser().resolve()
+    path1 = Path(args.path1).expanduser().resolve()
+    path2 = args.path2.strip()
 
+    # Mode B: single path -> automatic entry counting for a directory or one .root file
+    if not path2:
+        if not path1.exists():
+            print(f"[ERROR] path not found: {path1}", file=sys.stderr)
+            return 2
+        if args.resubmit:
+            print("[WARN] --resubmit is ignored in single-path mode.")
+        if args.request_memory_mb > 0:
+            print("[WARN] --request-memory-mb is ignored in single-path mode.")
+        if not args.total_events:
+            print("[INFO] single-path mode: enabling event counting.")
+            args.total_events = True
+        if not args.total_events:
+            return 0
+
+        if path1.is_file():
+            print(f"[INFO] input mode      : single ROOT file")
+            print(f"[INFO] root file       : {path1}")
+            return report_total_events([path1], dataset=args.dataset)
+
+        if path1.is_dir():
+            recursive_used = args.check_subdirs
+            root_files = get_existing_root_files(path1, recursive=recursive_used)
+            if not root_files and not recursive_used:
+                # Auto-fallback for convenience in single-path mode.
+                root_files = get_existing_root_files(path1, recursive=True)
+                recursive_used = True
+                if root_files:
+                    print("[INFO] no top-level ROOT files found, switching to recursive scan.")
+            print(f"[INFO] input mode      : directory")
+            print(f"[INFO] directory       : {path1}")
+            print(f"[INFO] check subdirs   : {'yes' if recursive_used else 'no'}")
+            return report_total_events(root_files, dataset=args.dataset)
+
+        print(f"[ERROR] unsupported path type: {path1}", file=sys.stderr)
+        return 2
+
+    # Mode A: original cjobs + eos directory logic
+    cjobs_dir = path1
+    eos_dir = Path(path2).expanduser().resolve()
     if not cjobs_dir.exists() or not cjobs_dir.is_dir():
         print(f"[ERROR] cjobs directory not found: {cjobs_dir}", file=sys.stderr)
         return 2
@@ -384,22 +459,9 @@ def main() -> int:
     print(f"[INFO] missing list file: {out_list}")
 
     if args.total_events:
-        try:
-            total_events, files_in_chain, tree_used = sum_events_fast(existing_root_files, show_progress=True)
-            print(f"[INFO] event tree      : {tree_used}")
-            print(f"[INFO] files in chain : {format_with_dots(files_in_chain)}")
-            if args.dataset:
-                expected_events = query_dataset_expected_events(args.dataset)
-                diff = expected_events - total_events
-                print(f"[INFO] dataset         : {args.dataset}")
-                print(f"[INFO] expected events : {format_with_dots(expected_events)}")
-                print(f"[INFO] counted events  : {format_with_dots(total_events)}")
-                print(f"[INFO] difference      : {format_with_dots(diff)}")
-            else:
-                print(f"[INFO] counted events  : {format_with_dots(total_events)}")
-        except Exception as exc:
-            print(f"[ERROR] failed to sum events: {exc}", file=sys.stderr)
-            return 3
+        rc = report_total_events(existing_root_files, dataset=args.dataset)
+        if rc != 0:
+            return rc
 
     if args.resubmit and not args.total_events:
         if args.request_memory_mb > 0:

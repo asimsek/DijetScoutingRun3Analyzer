@@ -34,6 +34,26 @@ inline std::string valueAfterColon(const std::string& line) {
   return trim(line.substr(pos + 1));
 }
 
+// Allow values like:
+//   Key: [ a:b:path1,
+//          c:d:path2 ]
+// to be specified across multiple lines in cfg files.
+std::string readPossiblyMultilineBracketValue(std::ifstream& fin, std::string value) {
+  value = trim(value);
+  const bool hasOpen = (value.find('[') != std::string::npos);
+  const bool hasClose = (value.find(']') != std::string::npos);
+  if (!(hasOpen && !hasClose)) return value;
+
+  std::string next;
+  while (std::getline(fin, next)) {
+    std::string t = trim(next);
+    if (t.empty()) continue;
+    value += " " + t;
+    if (t.find(']') != std::string::npos) break;
+  }
+  return trim(value);
+}
+
 // Parse bracket content like: [ -1:-1:path, 382298:383247:path, ... ]
 // Choose entry that matches runNo (start <= runNo < end), or the (-1:-1:...) fallback.
 std::string pickResidualFromBracket(const std::string& bracketSpec, long runNo) {
@@ -134,12 +154,19 @@ Resolved resolveList(const std::string& listFile,
 
     if (!inBlock) continue;
 
-    if (starts_with(s, "L1FastJet:"))    current.L1  = trim(valueAfterColon(s));
-    else if (starts_with(s, "L2Relative:")) current.L2  = trim(valueAfterColon(s));
-    else if (starts_with(s, "L3Absolute:")) current.L3  = trim(valueAfterColon(s));
-    else if (starts_with(s, "L2L3Residual:")) current.L2L3Residual = trim(valueAfterColon(s));
-    else if (starts_with(s, "Unc:"))       current.Unc = trim(valueAfterColon(s));
-    else if (starts_with(s, "JetVetoMap:")) current.JetVetoMap = trim(valueAfterColon(s));
+    if (starts_with(s, "L1FastJet:")) {
+      current.L1 = trim(valueAfterColon(s));
+    } else if (starts_with(s, "L2Relative:")) {
+      current.L2 = trim(valueAfterColon(s));
+    } else if (starts_with(s, "L3Absolute:")) {
+      current.L3 = trim(valueAfterColon(s));
+    } else if (starts_with(s, "L2L3Residual:")) {
+      current.L2L3Residual = readPossiblyMultilineBracketValue(fin, valueAfterColon(s));
+    } else if (starts_with(s, "Unc:")) {
+      current.Unc = trim(valueAfterColon(s));
+    } else if (starts_with(s, "JetVetoMap:")) {
+      current.JetVetoMap = readPossiblyMultilineBracketValue(fin, valueAfterColon(s));
+    }
   }
   if (inBlock && !current.tag.empty()) blocks.push_back(current);
 

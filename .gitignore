@@ -30,9 +30,9 @@ __pycache__
 src/*.d
 src/*.o
 
+rootNtupleClass.h
 main
-dijetCondor/cjobs_*
-include/rootNtupleClass.h
+cjobs_*
 *.tar.gz
 lists/
 

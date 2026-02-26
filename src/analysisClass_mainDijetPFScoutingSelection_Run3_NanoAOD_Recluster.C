@@ -26,7 +26,7 @@ using std::size_t;
 
 namespace {
 
-const std::string era = "2024";
+const std::string era = "2024G";
 const std::string dataList = "data/cfg/data_jec_list.txt";
 const std::string mcList = "data/cfg/mc_jec_list.txt";
 

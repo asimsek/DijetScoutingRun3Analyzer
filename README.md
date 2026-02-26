@@ -107,15 +107,27 @@ python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT3000toIn
 #### Condor output (root) check & Resubmit: 
 
 ```bash
-# check only
+# Data
 python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1
 
-# check total N_Events (all root files)
-python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --total-events --dataset /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD
-
-# re-submit missing ones
-python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --resubmit --request-memory-mb 5096
+# QCD MC
+python3 check_condor_outputs.py cjobs_QCD_Bin-PT-50to80_TuneCP5_13p6TeV_pythia8_NANOAODSIM_25February2026_10 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/QCD_Bin-PT-50to80_TuneCP5_13p6TeV_pythia8 --check-subdirs
 ```
+
+
+> [!TIP]
+> Use `--check-subdirs` to include sub-folders of the given directory for the root file search.
+> Use `--total-events --dataset /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD` in order to check total N_Events (all root files) and compare it with the dataset.<br>
+> Use `--resubmit --request-memory-mb 4096` to resubmit jobs for the missing files and request more memory for them.<br>
+> Only target EOS folder can be given (without `cjobs` folder) to count the event number and compare with the dataset. Even single root file can be given for this purpose.<br>
+
+
+#### Merge MC Samples:
+
+```bash
+python3 merge_samples.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples --sample-glob "QCD_Bin-PT-*"
+```
+
 
 
 
