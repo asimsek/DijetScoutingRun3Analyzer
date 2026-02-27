@@ -161,7 +161,7 @@ python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024E_cfg.txt --force-new-list --request-memory-mb 4096
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024F_cfg.txt --force-new-list --request-memory-mb 4096
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024G_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list --request-memory-mb 4096 --cms-connect
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list --request-memory-mb 4096
 python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024I_cfg.txt --force-new-list --request-memory-mb 4096
 ```
 
@@ -312,8 +312,8 @@ condor_rm -name lpcschedd5 -constraint "Owner==\"$USER\" && regexp(\".*QCD_Bin-P
 condor_q -better-analyze <jobID>
 ```
 
---
---
+---
+---
 
 
 
@@ -372,8 +372,8 @@ echo "cms.org.cms" > ~/.ciconnect/defaultproject
 ```
 
 
---
---
+---
+---
 
 ## Useful Links
 
@@ -387,8 +387,6 @@ echo "cms.org.cms" > ~/.ciconnect/defaultproject
  + [LPC EOS Guidelines](https://www.uscms.org/uscms_at_work/computing/LPC/usingEOSAtLPC.shtml)
 
 
---
---
 
 
 

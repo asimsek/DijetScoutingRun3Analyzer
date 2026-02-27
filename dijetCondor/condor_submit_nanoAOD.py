@@ -18,9 +18,10 @@ DEFAULT_EOS_PATH = "/store/group/lpcjj/Run3PFScouting/nanoAODnTuples"
 DEFAULT_CUT_FILE = "config/cutFile_mainDijetPFScoutingSelection_Run3.txt"
 DEFAULT_REQUEST_MEMORY_MB = 4096
 DEFAULT_SUBMIT_WORKERS = 8
-#DEFAULT_XROOTD_REDIRECTOR = "root://cmsxrootd.fnal.gov"
-DEFAULT_XROOTD_REDIRECTOR = "root://cms-xrd-global.cern.ch"
+#DEFAULT_XROOTD_REDIRECTOR = "root://cmsxrootd.fnal.gov/"
+DEFAULT_XROOTD_REDIRECTOR = "root://cms-xrd-global.cern.ch/"
 DEFAULT_MAX_NAME_TOKEN_LEN = 80
+
 
 COLOR_RESET = "\033[0m"
 COLOR_BRIGHT_RED = "\033[91m"
@@ -467,13 +468,18 @@ def create_submit_all(condor_folder: Path, n_jobs: int, name_token: str) -> None
         f"""#!/usr/bin/env python3
 import shlex
 import subprocess
-from concurrent.futures import ThreadPoolExecutor, as_completed
+import sys
+import time
+from pathlib import Path
 from tqdm import tqdm
 
-N_WORKERS = {DEFAULT_SUBMIT_WORKERS}
+N_RETRIES = 3
+RETRY_SLEEP_S = 0.5
+SUBMIT_DELAY_S = 0.5
+PREFIX = "{name_token}_n"
 
 
-def submit_one(jdl):
+def _submit_once(jdl):
     cmd = ["condor_submit", "-terse"]
     cmd.append(jdl)
     shell_cmd = " ".join(shlex.quote(part) for part in cmd)
@@ -483,22 +489,62 @@ def submit_one(jdl):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
     )
-    return jdl, proc.returncode, proc.stdout.strip(), proc.stderr.strip()
+    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+
+
+def submit_one(jdl):
+    last_out = ""
+    last_err = ""
+    for attempt in range(1, N_RETRIES + 1):
+        rc, out, err = _submit_once(jdl)
+        if rc == 0:
+            return True, out, err, attempt
+        last_out = out
+        last_err = err
+        if attempt < N_RETRIES:
+            time.sleep(RETRY_SLEEP_S * attempt)
+    return False, last_out, last_err, N_RETRIES
+
+
+def jdl_sort_key(name):
+    try:
+        tail = name.rsplit("_n", 1)[1]
+        return int(tail.split(".jdl", 1)[0])
+    except Exception:
+        return 10**12
 
 
 def main():
-    jdls = ["{name_token}_n{{}}.jdl".format(i) for i in range({n_jobs})]
+    jdls = sorted(
+        [p.name for p in Path(".").glob("*.jdl") if p.name.startswith(PREFIX)],
+        key=jdl_sort_key,
+    )
+    if not jdls:
+        print("No JDL files found for submission.", file=sys.stderr)
+        raise SystemExit(0)
 
-    with ThreadPoolExecutor(max_workers=max(1, N_WORKERS)) as executor:
-        futures = [executor.submit(submit_one, jdl) for jdl in jdls]
-        with tqdm(total=len(jdls), unit="job") as pbar:
-            for future in as_completed(futures):
-                jdl, rc, out, err = future.result()
-                if rc == 0:
-                    cluster_id = out.splitlines()[-1] if out else ""
-                    if cluster_id:
-                        pbar.set_postfix_str(cluster_id)
-                pbar.update(1)
+    submitted = 0
+    failed = 0
+
+    with tqdm(total=len(jdls), unit="job") as pbar:
+        for jdl in jdls:
+            ok, out, err, attempt = submit_one(jdl)
+            if ok:
+                submitted += 1
+                cluster_id = out.splitlines()[-1] if out else ""
+                if cluster_id:
+                    pbar.set_postfix_str(cluster_id)
+            else:
+                failed += 1
+                msg = err or out or "unknown condor_submit error"
+                print(f"[WARN] submit failed for {{jdl}} after {{attempt}} attempts: {{msg}}", file=sys.stderr)
+                pbar.set_postfix_str(f"failed={{failed}}")
+            pbar.update(1)
+            time.sleep(SUBMIT_DELAY_S)
+
+    print(f"Submitted {{submitted}}/{{len(jdls)}} jobs.")
+    if failed:
+        print(f"[WARN] Failed submissions: {{failed}}", file=sys.stderr)
 
 
 if __name__ == "__main__":
