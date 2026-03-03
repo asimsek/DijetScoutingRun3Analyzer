@@ -312,6 +312,30 @@ condor_rm -name lpcschedd5 -constraint "Owner==\"$USER\" && regexp(\".*QCD_Bin-P
 condor_q -better-analyze <jobID>
 ```
 
+#### Dataset Event Count Cross-Check:
+
+> [!CAUTION]
+> **Run this command inside the `dijetCondor` directory:**<br>
+> `cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer/dijetCondor`<br>
+
+```bash
+# Data (Scouting)
+python3 check_dataset_entries.py /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD --workers 8 --backend root
+
+# Data (Monitoring)
+python3 check_dataset_entries.py /ScoutingPFMonitor/Run2024H-PromptReco-v1/NANOAOD --workers 8 --backend root
+
+# QCD MC
+python3 check_dataset_entries.py /QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24NanoAOD-140X_mcRun3_2024_realistic_v26-v2/NANOAODSIM --workers 8 --backend root
+```
+
+> [!TIP]
+> This script opens all ROOT files in the given DAS dataset, counts the total number of entries in the `Events` tree, and compares the summed value with DAS `nevents`.<br>
+> `--backend root` is recommended on `LPC/CMSSW` setups.<br>
+> `--workers` controls the parallel file checks, and `--tree` can be used if the input tree name is different from `Events`.
+
+
+
 ---
 ---
 

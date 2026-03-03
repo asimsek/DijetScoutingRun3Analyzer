@@ -311,17 +311,12 @@ def read_input_files(input_list_path: Path) -> List[str]:
 
 
 def build_cms_connect_requirements(scram_arch: str) -> str:
-    major = None
-    match = re.search(r"el(\d+)_", scram_arch)
-    if not match:
-        match = re.search(r"slc(\d+)_", scram_arch)
-    if match:
-        major = int(match.group(1))
-
-    base = '(Arch=="X86_64") && (OpSys=="LINUX") && (OpSysMajorVer==9)'
-    if major is None:
-        return f"Requirements = {base}"
-    return f"Requirements = {base} && (OpSysMajorVer == {major})"
+    _ = scram_arch
+    return '\n'.join([
+        '+REQUIRED_OS      = "rhel9"',
+        '+SingularityImage = "/cvmfs/singularity.opensciencegrid.org/cmssw/cms:rhel9-x86_64"',
+        'Requirements      = HAS_SINGULARITY == True',
+    ])
 
 
 def prepare_framework(repo_root: Path, sample_file: str, tree_name: str) -> None:

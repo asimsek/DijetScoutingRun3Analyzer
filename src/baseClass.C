@@ -1,5 +1,7 @@
 #define baseClass_cxx
 #include "baseClass.h"
+#include <cstdlib>
+#include <TParameter.h>
 
 //
 // Optional: event-count histograms that indicate the number of events originally processed.
@@ -1212,13 +1214,36 @@ bool baseClass::writeReducedSkimTree()
   TDirectory* dir2 = dir1->mkdir("EventCount");
   reduced_skim_file_->cd("DijetFilter/EventCount");
 
-  const int nEntRoottuple = fChain->GetEntriesFast();
-  const int nEntTot       = (skimWasMade_ ? NBeforeSkim_ : nEntRoottuple);
+  const Long64_t nEntRoottuple = fChain->GetEntriesFast();
+  const Long64_t nEntTot       = (skimWasMade_ ? static_cast<Long64_t>(NBeforeSkim_) : nEntRoottuple);
+  const Long64_t nReducedEntries = reduced_skim_tree_->GetEntriesFast();
 
   hReducedCount_->SetBinContent(1, nEntTot);
   hReducedCount_->SetBinContent(2, nEntRoottuple);
-  hReducedCount_->SetBinContent(3, NAfterReducedSkim_);
+  hReducedCount_->SetBinContent(3, nReducedEntries);
   hReducedCount_->Write();
+
+  reduced_skim_file_->cd();
+  TDirectory* metadata_dir = reduced_skim_file_->GetDirectory("metaData");
+  if (metadata_dir == nullptr) {
+    metadata_dir = reduced_skim_file_->mkdir("metaData");
+  }
+  metadata_dir->cd();
+
+  TParameter<Long64_t> expected_events_param("expectedEvents", nEntRoottuple);
+  TParameter<Long64_t> actual_events_param("actualEvents", nReducedEntries);
+  expected_events_param.Write();
+  actual_events_param.Write();
+
+  if (nReducedEntries != nEntRoottuple) {
+    const std::string reduced_file_name = (*outputFileName_) + "_reduced_skim.root";
+    std::cerr << "[baseClass] ERROR: reduced skim event-count mismatch for output file '"
+              << reduced_file_name << "'. expected=" << nEntRoottuple
+              << ", actual=" << nReducedEntries
+              << ". File will not be transferred to EOS." << std::endl;
+    reduced_skim_file_->Close();
+    std::exit(2);
+  }
 
   return true;
 }
