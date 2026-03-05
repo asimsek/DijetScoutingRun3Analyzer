@@ -15,6 +15,11 @@ from typing import Iterable, Sequence
 
 TREE_PATH_DEFAULT = "rootTupleTree/tree"
 EVENT_COUNTER_PATH = "DijetFilter/EventCount/EventCounter"
+
+DELTA_ETA_CUT_VAL = "1.1"
+ETA_CUT_VAL = "2.5"
+DEFAULT_MIN_MJJ = 944.0
+
 DEFAULT_SELECTION = "dijet"
 DEFAULT_DATA_EXTRA_CUT = None
 DEFAULT_MC_EXTRA_CUT = None
@@ -24,7 +29,7 @@ DEFAULT_CMS_LABEL = "CMS"
 DEFAULT_EXTRA_LABEL = "Preliminary"
 DEFAULT_SQRT_S = "13.6 TeV"
 DEFAULT_OUTPUT_FORMATS = ("pdf",)
-DEFAULT_MIN_MJJ = 944.0
+
 ANSI_RESET = "\033[0m"
 ANSI_BRIGHT_YELLOW = "\033[93m"
 ANSI_BRIGHT_RED = "\033[91m"
@@ -112,17 +117,27 @@ PLOT_SPECS = {
         "title": "#Delta#eta_{jj}",
         "bins": 60,
         "xmin": 0.0,
-        "xmax": 1.1,
+        "xmax": f"{DELTA_ETA_CUT_VAL}",
         "units": "",
         "logy": True,
         "ratio_range": (0.6, 1.4),
+    },
+    "deltaPHIjj": {
+        "expr": "deltaPHIjj",
+        "title": "|#Delta#phi_{jj}|",
+        "bins": 64,
+        "xmin": 0.0,
+        "xmax": 3.14,
+        "units": "",
+        "logy": True,
+        "ratio_range": (0., 3.0),
     },
     "phiWJ_j1": {
         "expr": "phiWJ_j1",
         "title": "Leading wide-jet #phi",
         "bins": 64,
-        "xmin": -3.2,
-        "xmax": 3.2,
+        "xmin": -3.14,
+        "xmax": 3.14,
         "units": "",
         "logy": False,
         "ratio_range": (0.6, 1.4),
@@ -131,8 +146,8 @@ PLOT_SPECS = {
         "expr": "phiWJ_j2",
         "title": "Subleading wide-jet #phi",
         "bins": 64,
-        "xmin": -3.2,
-        "xmax": 3.2,
+        "xmin": -3.14,
+        "xmax": 3.14,
         "units": "",
         "logy": False,
         "ratio_range": (0.6, 1.4),
@@ -151,17 +166,17 @@ SELECTION_PRESETS = {
     "dijet": {
         "data": (
             "PassJSON == 1 && nJet > 1 && IdTight_j1 > 0.5 && IdTight_j2 > 0.5 "
-            "&& pTWJ_j1 > 60 && pTWJ_j2 > 30 "
-            "&& TMath::Abs(etaWJ_j1) < 2.5 && TMath::Abs(etaWJ_j2) < 2.5 "
-            "&& TMath::Abs(deltaETAjj) < 1.1 "
-            f"&& mjj > {DEFAULT_MIN_MJJ:.0f}"
+            " && pTWJ_j1 > 60 && pTWJ_j2 > 30 "
+            f" && TMath::Abs(etaWJ_j1) < {ETA_CUT_VAL} && TMath::Abs(etaWJ_j2) < {ETA_CUT_VAL} "
+            f" && TMath::Abs(deltaETAjj) < {DELTA_ETA_CUT_VAL} "
+            f" && mjj > {DEFAULT_MIN_MJJ:.0f}"
         ),
         "mc": (
             "nJet > 1 && IdTight_j1 > 0.5 && IdTight_j2 > 0.5 "
-            "&& pTWJ_j1 > 60 && pTWJ_j2 > 30 "
-            "&& TMath::Abs(etaWJ_j1) < 2.5 && TMath::Abs(etaWJ_j2) < 2.5 "
-            "&& TMath::Abs(deltaETAjj) < 1.1 "
-            f"&& mjj > {DEFAULT_MIN_MJJ:.0f}"
+            " && pTWJ_j1 > 60 && pTWJ_j2 > 30 "
+            f" && TMath::Abs(etaWJ_j1) < {ETA_CUT_VAL} && TMath::Abs(etaWJ_j2) < {ETA_CUT_VAL} "
+            f" && TMath::Abs(deltaETAjj) < {DELTA_ETA_CUT_VAL} "
+            f" && mjj > {DEFAULT_MIN_MJJ:.0f}"
         ),
     },
 }

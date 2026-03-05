@@ -9,7 +9,12 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
-from plot_kinematics import DEFAULT_OUTPUT_FORMATS, PLOT_SPECS
+from plot_kinematics import (
+    DEFAULT_MIN_MJJ,
+    DEFAULT_OUTPUT_FORMATS,
+    DELTA_ETA_CUT_VAL,
+    PLOT_SPECS,
+)
 
 
 DEFAULT_REQUEST_MEMORY_MB = 4096
@@ -60,6 +65,26 @@ def resolve_plot_names(raw_value: str) -> list[str]:
 
 def make_timestamp() -> str:
     return datetime.now().strftime("%d%B%Y_%H")
+
+
+def format_tag_number(value: object) -> str:
+    text = str(value).strip()
+    try:
+        numeric = float(text)
+        text = f"{numeric:g}"
+    except ValueError:
+        pass
+    text = text.replace(".", "p")
+    text = text.replace("-", "m")
+    text = "".join(ch for ch in text if ch.isalnum() or ch in ("p", "m"))
+    return text or "x"
+
+
+def make_run_label() -> str:
+    timestamp = make_timestamp()
+    deta_tag = format_tag_number(DELTA_ETA_CUT_VAL)
+    mjj_tag = format_tag_number(DEFAULT_MIN_MJJ)
+    return f"plots_deta{deta_tag}_M{mjj_tag}GeV_{timestamp}"
 
 
 def eos_to_xrd_path(path: str) -> str:
@@ -286,18 +311,19 @@ def main() -> int:
     repo_root = script_dir.parent
     cmssw_base = Path(args.cmssw_base).resolve()
     plot_names = resolve_plot_names(args.plots)
-    timestamp = make_timestamp()
-    eos_output_dir = f"{DEFAULT_EOS_OUTPUT_BASE.rstrip('/')}/{timestamp}"
+    run_label = make_run_label()
+    eos_output_dir = f"{DEFAULT_EOS_OUTPUT_BASE.rstrip('/')}/{run_label}"
 
     if args.workdir:
         requested_workdir = Path(args.workdir)
         workdir = requested_workdir if requested_workdir.is_absolute() else script_dir / requested_workdir
         workdir = workdir.resolve()
     else:
-        workdir = (script_dir / f"cjobs_plot_kinematics_{timestamp}").resolve()
+        workdir = (script_dir / f"cjobs_plot_kinematics_{run_label}").resolve()
     workdir.mkdir(parents=True, exist_ok=True)
     cmssw_ver = build_cmssw_tarball(cmssw_base, workdir)
 
+    log_info(f"Run label        : {run_label}")
     log_info(f"Workdir          : {workdir}")
     log_info(f"Plot jobs        : {len(plot_names)}")
     log_info(f"Tree             : {DEFAULT_TREE_PATH}")

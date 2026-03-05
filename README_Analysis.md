@@ -38,14 +38,17 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 > For `2024` QCD MC reduced-ntuple lists, use the `XSDB` cross sections: `50to80=16730000.0`, `80to120=2506000.0`, `120to170=439800.0`, `170to300=113300.0`, `300to470=7581.0`, `470to600=623.3`, `600to800=178.7`, `800to1000=30.62`, `1000to1500=9.306`, `1500to2000=0.5015`, `2000to2500=0.04264`, `2500to3000=0.004454`, `3000=0.0005539`.
 
 
+---
 
 
 ## Trigger Efficiency
 
-
 ```bash
 python3 plot_trigger_efficiency.py --monitoring-list ../lists/reducedNtuple_lists/ScoutingPFMonitor_Run2024H_reduced.txt --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --lumi-pb 5490 --year "2024H"
 ```
+
+
+---
 
 
 ## Kinematic Plots
@@ -65,12 +68,13 @@ nohup python3 plot_kinematics.py --plot etaWJ_j2        --data-list ../lists/red
 nohup python3 plot_kinematics.py --plot deltaETAjj      --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/deltaETAjj.log 2>&1 &
 nohup python3 plot_kinematics.py --plot phiWJ_j1        --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/phiWJ_j1.log 2>&1 &
 nohup python3 plot_kinematics.py --plot phiWJ_j2        --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/phiWJ_j2.log 2>&1 &
+nohup python3 plot_kinematics.py --plot deltaPHIjj      --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/deltaPHIjj.log 2>&1 &
 
 ## Check the last logs of a background job:
 tail -n 50 logs/mjj.log
 ```
 
-*Built-in plot names are:* `mjj`, `Dijet_MassAK4PF`, `pTWJ_j1`, `pTWJ_j2`, `etaWJ_j1`, `etaWJ_j2`, `deltaETAjj`, `phiWJ_j1`, `phiWJ_j2`
+*Built-in plot names are:* `mjj`, `Dijet_MassAK4PF`, `pTWJ_j1`, `pTWJ_j2`, `etaWJ_j1`, `etaWJ_j2`, `deltaETAjj`, `phiWJ_j1`, `phiWJ_j2`, `deltaPHIjj`
 
 
 > [!IMPORTANT]
@@ -82,6 +86,7 @@ tail -n 50 logs/mjj.log
 > Luminosity information is available on the [PdmV Twiki Page](https://twiki.cern.ch/twiki/bin/viewauth/CMS/PdmVRun3Analysis#2024_Analysis_Summary_Table).<br>
 
 
+---
 
 
 #### Submit Plot Jobs to Condor
@@ -96,7 +101,22 @@ python3 condor_submit_kinematics.py --data-list ../lists/reducedNtuple_lists/Sco
 
 
 ---
+
+
+### Compare Cross-section: Run3 vs Run2
+
+```bash
+python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016ALL_DatavsQDCMC/histo_data_mjj_fromTree.root --run3-root ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root --run2-data-hist h_dat_rebin --run2-mc-hist h_MC_rebin --run3-data-hist h_data_mjj --run3-mc-hist h_mc_total_mjj --lumi-run2-fb 27.225 --lumi-run3-fb 5.490 --year-run2 2016 --year-run3 2024H --output-dir Run3vsRun2_Comparison --output-prefix Run3vsRun2_2024H
+```
+
+
+
+
+
 ---
+---
+
+
 
 
 
