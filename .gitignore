@@ -36,8 +36,12 @@ main
 cjobs_*
 *.tar.gz
 lists/
+logs/
+trigger_efficiency/
+trigger_efficiency*/
 
 !Makefile
 !.gitignore
+!README_Analysis.md
 
 

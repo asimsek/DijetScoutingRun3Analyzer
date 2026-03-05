@@ -1,4 +1,8 @@
-# Dijet Scouting Run3 Analyzer
+# Dijet Scouting Run3 nTuple-Maker
+
+> [!IMPORTANT]
+> This document covers the nTuple production workflow.<br>
+> The analysis workflow is documented in [`README_Analysis.md`](README_Analysis.md).
 
 > [!IMPORTANT]
 > This framework is only tested for Fermilab LPC machines.<br>
