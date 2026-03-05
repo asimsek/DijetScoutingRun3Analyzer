@@ -25,6 +25,7 @@ __init__.py
 __pycache__
 *.pyc
 *.root
+*.pdf
 *.dat
 
 src/*.d
@@ -45,5 +46,5 @@ Run3vsRun2_Comparison*/
 !Makefile
 !.gitignore
 !README_Analysis.md
-
+!inputs/*/*.root
 
