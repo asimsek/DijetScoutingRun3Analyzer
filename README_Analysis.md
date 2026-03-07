@@ -109,7 +109,70 @@ python3 condor_submit_kinematics.py --data-list ../lists/reducedNtuple_lists/Sco
 python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016ALL_DatavsQDCMC/histo_data_mjj_fromTree.root --run3-root ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root --run2-data-hist h_dat_rebin --run2-mc-hist h_MC_rebin --run3-data-hist h_data_mjj --run3-mc-hist h_mc_total_mjj --lumi-run2-fb 27.225 --lumi-run3-fb 5.490 --year-run2 2016 --year-run3 2024H --output-dir Run3vsRun2_Comparison --output-prefix Run3vsRun2_2024H
 ```
 
+---
+---
 
+
+## Fit Method:
+
+### CMS Dijet Function Family
+
+```bash
+python3 ../python/BinnedFit.py -c ../config/dijet_3param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_dijet_Only2024H_M944_deta1p3_06March2026/dijet_3Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_dijet_Only2024H_M944_deta1p3_06March2026/dijet_4Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_5param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_dijet_Only2024H_M944_deta1p3_06March2026/dijet_5Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 5704 --year 2024H --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_dijet_Only2024H_M944_deta1p3_06March2026/dijet_6Param --fit-spectrum --robust-fit --linearX
+```
+
+> [!NOTE]
+> Resonance shapes can be plotted on top of the distribution by adding the following arguments into the main fitting command line.
+> `--mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root`
+
+
+> [!TIP]
+> Various `config` files (under `$CMSSW_BASE/src/DijetScoutingRun3Analyzer/config` folder) can be used to fit the data with different parametric function familites: `dijet.config`, `dijet_ModExp4Param.config`, `dijet_Atlas.config`, `ModDijet_4param.config`, etc.<br>
+
+
+### Modified Exponential (ModExp) Function Family
+
+```bash
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp3Param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modExp_Only2024H_M944_deta1p3_06March2026/modExp_3Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp4Param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modExp_Only2024H_M944_deta1p3_06March2026/modExp_4Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modExp_Only2024H_M944_deta1p3_06March2026/modExp_5Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp6Param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modExp_Only2024H_M944_deta1p3_06March2026/modExp_6Param --fit-spectrum --robust-fit --linearX
+```
+
+### ATLAS Function Family
+
+
+```bash
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas4Param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_ATLAS_Only2024H_M944_deta1p3_06March2026/ATLAS_4Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_ATLAS_Only2024H_M944_deta1p3_06March2026/ATLAS_5Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_ATLAS_Only2024H_M944_deta1p3_06March2026/ATLAS_6Param --fit-spectrum --robust-fit --linearX
+```
+
+
+
+### Modified Dijet (ModDijet) Function Family
+
+
+```bash
+python3 ../python/BinnedFit.py -c ../config/ModDijet_3param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modDijet_Only2024H_M944_deta1p3_06March2026/modDijet_3Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/ModDijet_4param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modDijet_Only2024H_M944_deta1p3_06March2026/modDijet_4Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/ModDijet_5param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modDijet_Only2024H_M944_deta1p3_06March2026/modDijet_5Param --fit-spectrum --robust-fit --linearX
+
+python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 5704 --year 2024H ../inputs/PFScouting2024H_deta1p3_05March2026_02/dataVsQCD_mjj.root -b PFDijet2024 -d fits_modDijet_Only2024H_M944_deta1p3_06March2026/modDijet_6Param --fit-spectrum --robust-fit --linearX
+```
 
 
 

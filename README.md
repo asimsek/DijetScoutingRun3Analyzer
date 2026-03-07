@@ -1,10 +1,12 @@
 # Dijet Scouting Run3 nTuple-Maker
 
+
 > [!IMPORTANT]
 > This document covers the nTuple production workflow.<br>
 > The analysis workflow is documented in [`README_Analysis.md`](README_Analysis.md).
 
-> [!IMPORTANT]
+
+> [!WARNING]
 > This framework is only tested for Fermilab LPC machines.<br>
 > It might need some adjustments for Lxplus.
 
@@ -17,12 +19,133 @@
 cmsrel CMSSW_15_0_6
 cd CMSSW_15_0_6/src
 cmsenv
-git cms-init
+
+## Clone COMBINE tool
+git -c advice.detachedHead=false clone --depth 1 --branch v10.5.1 https://github.com/cms-analysis/HiggsAnalysis-CombinedLimit.git HiggsAnalysis/CombinedLimit
+cd $CMSSW_BASE/src/HiggsAnalysis/CombinedLimit
+scramv1 b clean; scramv1 b -j$(nproc --ignore=2)
+
+## Clone Combine Harvester tool
+cd $CMSSW_BASE/src/
+git clone https://github.com/cms-analysis/CombineHarvester.git CombineHarvester
+cd CombineHarvester/
+git checkout v3.0.0-pre1
+scram b clean; scram b -j$(nproc --ignore=2)
+
+## Clone Dijet Framework
 git clone https://github.com/asimsek/DijetScoutingRun3Analyzer.git
-cd DijetScoutingRun3Analyzer
-scram b clean; scram b -j 8
+cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer
+scram b clean; scram b -j$(nproc --ignore=2)
 ```
 
+---
+
+### Pull the necessary/custom files for Higgs Combine Tool from a different repo:
+
+**From your new COMBINE area:**
+
+```bash
+cd $CMSSW_BASE/src/HiggsAnalysis/CombinedLimit
+
+# Add an extra repo for the necessary files (will remove at the end)
+git remote add cmsdijetfunctions https://github.com/asimsek/CMSDijetFunctions.git 2>/dev/null || true
+
+# Validate:
+git remote -v
+
+# Set the branch
+git fetch --depth 1 cmsdijetfunctions main
+```
+
+**Now define the explicit list of files you want to copy and check them out:**
+
+```bash
+# Create a minimal list for your need:
+FILES=(
+  'src/RooDijet*.cc'
+  'src/RooModExp*.cc'
+  'src/RooAtlas*.cc'
+  'src/RooModDijet*.cc'
+  'interface/RooDijet*.h'
+  'interface/RooModExp*.h'
+  'interface/RooAtlas*.h'
+  'interface/RooModDijet*.h'
+)
+
+git restore --source=cmsdijetfunctions/main --worktree -- "${FILES[@]}"
+```
+
+### Remove the newly added remote (cmsdijetfunctions) repo and validate:
+
+```bash
+# Remove:
+git remote remove cmsdijetfunctions 2>/dev/null || true
+
+# Validate:
+git remote -v
+```
+
+---
+
+#### Register the new classes:
+
+**Add the following to the `src/classes_def.xml` file (just before `</lcgdict>` line):**
+
+```xml
+  <class name="RooDijetBinPdf" />
+  <class name="RooDijet5ParamBinPdf" />
+  <class name="RooDijet6ParamBinPdf" />
+  <class name="RooDijet5ParamPolyExtBinPdf" />
+  <class name="RooDijet6ParamPolyExtBinPdf" />
+  <class name="RooDijet7ParamPolyExtBinPdf" />
+  <class name="RooModExp3ParamBinPdf" />
+  <class name="RooModExp4ParamBinPdf" />
+  <class name="RooModExpBinPdf" />
+  <class name="RooModExp6ParamBinPdf" />
+  <class name="RooAtlas4ParamBinPdf" />
+  <class name="RooAtlasBinPdf" />
+  <class name="RooAtlas6ParamBinPdf" />
+  <class name="RooModDijet3ParamBinPdf" />
+  <class name="RooModDijet4ParamBinPdf" />
+  <class name="RooModDijet5ParamBinPdf" />
+  <class name="RooModDijet6ParamBinPdf" />
+```
+
+
+**Add the following to the `src/classes.h` file (end of the file is fine):**
+
+```c
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijetBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijet5ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijet6ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijet5ParamPolyExtBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijet6ParamPolyExtBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijet7ParamPolyExtBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModExp3ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModExp4ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModExpBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModExp6ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooAtlas4ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooAtlasBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooAtlas6ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModDijet3ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModDijet4ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModDijet5ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooModDijet6ParamBinPdf.h"
+```
+
+---
+
+### Rebuild
+
+```bash
+cd $CMSSW_BASE/src/HiggsAnalysis/CombinedLimit
+
+scramv1 b clean; scramv1 b -j$(nproc --ignore=2)
+```
+
+
+---
 ---
 
 ## Important Notes before the nTuple production:
@@ -160,13 +283,13 @@ python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_202
 ##### Data (PFMonitoring - for Trigger Efficiency):
 
 ```bash
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024C_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024D_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024E_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024F_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024G_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024I_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024C_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024D_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024E_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024F_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024G_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024I_cfg.txt --force-new-list
 ```
 
 > [!TIP]
@@ -202,15 +325,14 @@ python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT3000toIn
 #### Condor output (root) check & re-submit: 
 
 ```bash
-# Data
-python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1
+# Data (Scouting)
+python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_05March2026_13 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 --total-events --dataset /ScoutingPFRun3/Run2024G-ScoutNano-v1/NANOAOD
 
-python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024H_ScoutNano_v1_NANOAOD_24February2026_12 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1
+# Data (Monitoring)
+python3 check_condor_outputs.py cjobs_ScoutingPFMonitor_Run2024H_PromptReco_v1_NANOAOD_03March2026_02 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ScoutingPFMonitor_Run2024H_PromptReco_v1 --total-events --dataset /ScoutingPFMonitor/Run2024H-PromptReco-v1/NANOAOD
 
 # QCD MC
-python3 check_condor_outputs.py cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_25February2026_10 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8 --check-subdirs
-
-python3 check_condor_outputs.py cjobs_QCD_Bin-PT-120to170_TuneCP5_13p6TeV_pythia8_NANOAODSIM_25February2026_10 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/QCD_Bin-PT-120to170_TuneCP5_13p6TeV_pythia8 --check-subdirs
+python3 check_condor_outputs.py cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_03March2026_04 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8 --check-subdirs --total-events --dataset /QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24NanoAOD-140X_mcRun3_2024_realistic_v26-v2/NANOAODSIM
 ```
 
 > [!TIP]
@@ -316,6 +438,7 @@ condor_rm -name lpcschedd5 -constraint "Owner==\"$USER\" && regexp(\".*QCD_Bin-P
 condor_q -better-analyze <jobID>
 ```
 
+
 #### Dataset Event Count Cross-Check:
 
 > [!CAUTION]
@@ -337,7 +460,6 @@ python3 check_dataset_entries.py /QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/Run
 > This script opens all ROOT files in the given DAS dataset, counts the total number of entries in the `Events` tree, and compares the summed value with DAS `nevents`.<br>
 > `--backend root` is recommended on `LPC/CMSSW` setups.<br>
 > `--workers` controls the parallel file checks, and `--tree` can be used if the input tree name is different from `Events`.
-
 
 
 ---
