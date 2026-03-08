@@ -16,26 +16,31 @@
 ## Setup Environment:
 
 ```bash
+source /cvmfs/cms.cern.ch/cmsset_default.sh
+
 cmsrel CMSSW_15_0_6
 cd CMSSW_15_0_6/src
 cmsenv
 
 ## Clone COMBINE tool
 git -c advice.detachedHead=false clone --depth 1 --branch v10.5.1 https://github.com/cms-analysis/HiggsAnalysis-CombinedLimit.git HiggsAnalysis/CombinedLimit
-cd $CMSSW_BASE/src/HiggsAnalysis/CombinedLimit
-scramv1 b clean; scramv1 b -j$(nproc --ignore=2)
 
-## Clone Combine Harvester tool
-cd $CMSSW_BASE/src/
-git clone https://github.com/cms-analysis/CombineHarvester.git CombineHarvester
-cd CombineHarvester/
+## Clone Combine Harvester
+git clone https://github.com/cms-analysis/CombineHarvester.git
+cd CombineHarvester
 git checkout v3.0.0-pre1
-scram b clean; scram b -j$(nproc --ignore=2)
+cd ..
 
-## Clone Dijet Framework
+## Dijet Framework
 git clone https://github.com/asimsek/DijetScoutingRun3Analyzer.git
-cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer
-scram b clean; scram b -j$(nproc --ignore=2)
+
+## CMSSW_15_X: fix for CombineHarvester BuildFiles
+sed -i 's/name="python"/name="python3"/g' \
+  CombineHarvester/CombinePdfs/bin/BuildFile.xml \
+  CombineHarvester/CombineTools/bin/BuildFile.xml
+
+## Build once from CMSSW src
+scram b clean; scram b -j"$(nproc --ignore=2)"
 ```
 
 ---
@@ -93,6 +98,7 @@ git remote -v
 
 ```xml
   <class name="RooDijetBinPdf" />
+  <class name="RooDijet3ParamBinPdf" />
   <class name="RooDijet5ParamBinPdf" />
   <class name="RooDijet6ParamBinPdf" />
   <class name="RooDijet5ParamPolyExtBinPdf" />
@@ -116,6 +122,7 @@ git remote -v
 
 ```c
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijetBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijet3ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet5ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet6ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet5ParamPolyExtBinPdf.h"
@@ -325,19 +332,28 @@ python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT3000toIn
 #### Condor output (root) check & re-submit: 
 
 ```bash
+cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer/dijetCondor
+
+# Build once
+c++ -O3 -march=native -DNDEBUG -o check_condor_outputs check_condor_outputs.cpp $(root-config --cflags --libs)
+```
+
+```bash
 # Data (Scouting)
-python3 check_condor_outputs.py cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_05March2026_13 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 --total-events --dataset /ScoutingPFRun3/Run2024G-ScoutNano-v1/NANOAOD
+./check_condor_outputs cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_05March2026_13 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 --config inputFiles_PFScouting_NanoAOD/PFScouting_2024G_cfg.txt
 
 # Data (Monitoring)
-python3 check_condor_outputs.py cjobs_ScoutingPFMonitor_Run2024H_PromptReco_v1_NANOAOD_03March2026_02 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ScoutingPFMonitor_Run2024H_PromptReco_v1 --total-events --dataset /ScoutingPFMonitor/Run2024H-PromptReco-v1/NANOAOD
+./check_condor_outputs cjobs_ScoutingPFMonitor_Run2024H_PromptReco_v1_NANOAOD_03March2026_02 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ScoutingPFMonitor_Run2024H_PromptReco_v1 --config inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt
 
 # QCD MC
-python3 check_condor_outputs.py cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_03March2026_04 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8 --check-subdirs --total-events --dataset /QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24NanoAOD-140X_mcRun3_2024_realistic_v26-v2/NANOAODSIM
+./check_condor_outputs cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_03March2026_04 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8 --config inputFiles_QCD_NanoAOD/QCDMC_2024_PT80to120_cfg.txt --check-subdirs
 ```
 
 > [!TIP]
-> Use `--check-subdirs` to include sub-folders of the given directory for the root file search.
-> Use `--total-events --dataset /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD` in order to check total `N_Events` (all root files) and compare it with the dataset.<br>
+> Use `--check-subdirs` to include sub-folders of the given directory for the root file search.<br>
+> Use `--job-start` and `--job-end` in order to give a range that requested to be checked.<br>
+> Use `--noPerFile`: skip per-job matching and do only total event comparison.<br>
+> Use `--threads N`: override the C++ worker count. If omitted, it uses hardware concurrency.<br>
 > Use `--resubmit --request-memory-mb 4096` to resubmit jobs for the missing files and request more memory for them.<br>
 > Only target EOS folder can be given (without `cjobs_` folder) to count the event number and compare with the dataset - even single root file can be given for this purpose.
 
@@ -535,8 +551,6 @@ echo "cms.org.cms" > ~/.ciconnect/defaultproject
  + [Rucio CLI Twiki](https://twiki.cern.ch/twiki/bin/view/CMS/TheRucioCLI)
  + [Rucio WebUI](https://cms-rucio-webui.cern.ch/r2d2/request)
  + [LPC EOS Guidelines](https://www.uscms.org/uscms_at_work/computing/LPC/usingEOSAtLPC.shtml)
-
-
 
 
 

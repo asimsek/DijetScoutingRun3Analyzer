@@ -43,9 +43,10 @@ trigger_efficiency*/
 Run3vsRun2_Comparison/
 Run3vsRun2_Comparison*/
 Limits/fits_*
+check_condor_outputs
 
 !Makefile
 !.gitignore
 !README_Analysis.md
 !inputs/*/*.root
-
+!check_condor_outputs.cpp
