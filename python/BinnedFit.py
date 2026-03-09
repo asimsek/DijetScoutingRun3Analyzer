@@ -10,6 +10,7 @@ import os
 import random
 import sys
 import math
+import re
 
 densityCorr = False
 
@@ -182,16 +183,26 @@ def _is_fit_good(fr, edm_max=1e-3):
     return (status == 0) and (cov_qual >= 2) and (edm <= edm_max)
 
 def _fit_rank_tuple(fr):
-    # Prefer converged fits, then better covariance, then lower NLL.
+    # Prefer converged fits, then valid MINUIT status, then better covariance,
+    # then lower EDM, and only then lower NLL.
     good = 0 if _is_fit_good(fr) else 1
+    status = fr.status() if hasattr(fr, "status") else 999
     covq = fr.covQual() if hasattr(fr, "covQual") else -1
+    edm = fr.edm() if hasattr(fr, "edm") else 1e99
+    if not math.isfinite(edm):
+        edm = 1e99
     nll = fr.minNll() if hasattr(fr, "minNll") else 1e99
     if not math.isfinite(nll):
         nll = 1e99
-    return (good, -covq, nll)
+    return (good, status, -covq, edm, nll)
 
 def _set_var_value_clamped(var, value):
-    if var is None or var.isConstant():
+    if var is None:
+        return
+    try:
+        if var.isConstant():
+            return
+    except Exception:
         return
     v = value
     try:
@@ -203,14 +214,39 @@ def _set_var_value_clamped(var, value):
             v = vmax
     except Exception:
         pass
-    var.setVal(v)
+    try:
+        var.setVal(v)
+    except Exception:
+        pass
+
+def _safe_workspace_var(workspace, name):
+    if workspace is None:
+        return None
+    try:
+        v = workspace.var(name)
+    except Exception:
+        return None
+    if v is None:
+        return None
+    # PyROOT may hand back a null C++ object that raises on method access.
+    try:
+        _ = v.GetName()
+    except Exception:
+        return None
+    return v
 
 def _apply_fit_result_to_workspace(workspace, fr):
     if fr is None or workspace is None or not hasattr(fr, "floatParsFinal"):
         return
     for p in _iter_roo_collection(fr.floatParsFinal()):
-        wv = workspace.var(p.GetName())
-        if wv is not None and (not wv.isConstant()):
+        wv = _safe_workspace_var(workspace, p.GetName())
+        if wv is None:
+            continue
+        try:
+            is_const = wv.isConstant()
+        except Exception:
+            continue
+        if not is_const:
             wv.setVal(p.getVal())
             if hasattr(wv, "setError") and hasattr(p, "getError"):
                 wv.setError(p.getError())
@@ -220,7 +256,7 @@ def _capture_ranges(workspace, names):
     if workspace is None:
         return ranges
     for n in names:
-        v = workspace.var(n)
+        v = _safe_workspace_var(workspace, n)
         if v is None:
             continue
         try:
@@ -233,18 +269,23 @@ def _restore_ranges(workspace, ranges):
     if workspace is None:
         return
     for n, r in ranges.items():
-        v = workspace.var(n)
+        v = _safe_workspace_var(workspace, n)
         if v is not None:
-            v.setRange(r[0], r[1])
+            try:
+                v.setRange(r[0], r[1])
+            except Exception:
+                pass
 
 def _widen_ranges(workspace, names, factor=2.0):
     if workspace is None:
         return
     for n in names:
-        v = workspace.var(n)
-        if v is None or v.isConstant():
+        v = _safe_workspace_var(workspace, n)
+        if v is None:
             continue
         try:
+            if v.isConstant():
+                continue
             old_min = v.getMin()
             old_max = v.getMax()
             width = max(old_max - old_min, 1e-9)
@@ -297,30 +338,68 @@ def _run_fit_ladder(pdf, data, fitRange='Full', useWeight=False, strategy=2, eps
             rt.gErrorIgnoreLevel = old_error_level
 
 def _get_seedable_vars(workspace, box):
-    names = [
-        'p1_%s' % box,
-        'p2_%s' % box,
-        'Ntot_bkg_%s' % box,
-    ]
+    names = ['Ntot_bkg_%s' % box]
+    # Seed all available shape parameters, not only p1/p2.
+    for i in range(1, 10):
+        names.append('p%d_%s' % (i, box))
+    names.extend(['meff_%s' % box, 'seff_%s' % box])
     out = []
     for n in names:
-        v = workspace.var(n) if workspace is not None else None
-        if v is not None and (not v.isConstant()):
-            out.append(n)
+        v = _safe_workspace_var(workspace, n)
+        if v is None:
+            continue
+        try:
+            if not v.isConstant():
+                out.append(n)
+        except Exception:
+            continue
     return out
 
 def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
     seeds = []
     base = {}
     for n in seed_names:
-        base[n] = workspace.var(n).getVal()
+        v = _safe_workspace_var(workspace, n)
+        if v is None:
+            continue
+        try:
+            base[n] = v.getVal()
+        except Exception:
+            continue
+    if len(base) == 0:
+        return seeds
+    seed_names = [n for n in seed_names if n in base]
     seeds.append(dict(base))
+    
+    reduced = dict(base)
+    changed = False
+    for n in seed_names:
+        m = re.match(r'^p(\d+)_', n)
+        if not m:
+            continue
+        idx = int(m.group(1))
+        if idx >= 4:
+            v = _safe_workspace_var(workspace, n)
+            if v is None:
+                continue
+            z = 0.0
+            if z < v.getMin():
+                z = v.getMin()
+            if z > v.getMax():
+                z = v.getMax()
+            if reduced[n] != z:
+                reduced[n] = z
+                changed = True
+    if changed:
+        seeds.append(reduced)
 
     rng = random.Random(rng_seed)
     for _ in range(max(0, n_starts - 1)):
         s = {}
         for n in seed_names:
-            v = workspace.var(n)
+            v = _safe_workspace_var(workspace, n)
+            if v is None:
+                continue
             v0 = base[n]
             vmin = v.getMin()
             vmax = v.getMax()
@@ -329,7 +408,18 @@ def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
                 u = rng.uniform(-0.45, 0.45)
                 val = v0 * math.exp(u)
             else:
-                span = max(abs(v0) * 0.30, 0.5)
+                m = re.match(r'^p(\d+)_', n)
+                if m:
+                    idx = int(m.group(1))
+                    if idx <= 2:
+                        span = max(abs(v0) * 0.30, 0.5)
+                    elif idx == 3:
+                        span = max(abs(v0) * 0.60, 1.0)
+                    else:
+                        # Wider exploration for higher-order curvature terms.
+                        span = max(abs(v0) * 1.20, 5.0)
+                else:
+                    span = max(abs(v0) * 0.30, 0.5)
                 val = v0 + rng.uniform(-span, span)
                 # Avoid pathological negative seeds once we are in positive regime.
                 if (n.startswith('p1_') or n.startswith('p2_')) and v0 > 0 and val <= 0:
@@ -341,6 +431,175 @@ def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
             s[n] = val
         seeds.append(s)
     return seeds
+
+def _parse_shape_param_index(name, box):
+    m = re.match(r'^p(\d+)_%s$' % re.escape(box), name)
+    if not m:
+        return None
+    return int(m.group(1))
+
+def _get_shape_param_names(workspace, box):
+    names = []
+    for i in range(1, 10):
+        n = 'p%d_%s' % (i, box)
+        if _safe_workspace_var(workspace, n) is not None:
+            names.append(n)
+    return names
+
+def _capture_var_state(workspace, names):
+    state = {}
+    for n in names:
+        v = _safe_workspace_var(workspace, n)
+        if v is None:
+            continue
+        try:
+            state[n] = {
+                "value": v.getVal(),
+                "is_constant": v.isConstant(),
+            }
+        except Exception:
+            continue
+    return state
+
+def _restore_var_constants(workspace, state):
+    for n, st in state.items():
+        v = _safe_workspace_var(workspace, n)
+        if v is None:
+            continue
+        try:
+            v.setConstant(st["is_constant"])
+        except Exception:
+            pass
+
+def _infer_staged_shape_groups(workspace, box):
+    shape_names = _get_shape_param_names(workspace, box)
+    shape_indices = sorted(
+        idx for idx in (_parse_shape_param_index(n, box) for n in shape_names)
+        if idx is not None
+    )
+    if len(shape_indices) <= 2:
+        return [shape_indices] if len(shape_indices) > 0 else []
+
+    bkg_pdf = workspace.pdf('%s_bkg' % box) if workspace is not None else None
+    cls = bkg_pdf.ClassName() if bkg_pdf is not None else ''
+
+    groups = []
+    if cls.startswith('RooModExp'):
+        base = [idx for idx in (1, 2) if idx in shape_indices]
+        if len(base) > 0:
+            groups.append(base)
+        paired = [idx for idx in (1, 2, 3, 4) if idx in shape_indices]
+        if len(paired) > len(base):
+            groups.append(paired)
+        for idx in shape_indices:
+            if len(groups) == 0:
+                groups.append([idx])
+                continue
+            if idx in groups[-1]:
+                continue
+            groups.append(sorted(groups[-1] + [idx]))
+    else:
+        base = [idx for idx in (1, 2) if idx in shape_indices]
+        if len(base) == 0:
+            base = [shape_indices[0]]
+        groups.append(sorted(base))
+        for idx in shape_indices:
+            if idx in groups[-1]:
+                continue
+            groups.append(sorted(groups[-1] + [idx]))
+
+    deduped = []
+    seen = set()
+    for group in groups:
+        key = tuple(group)
+        if len(group) == 0 or key in seen:
+            continue
+        seen.add(key)
+        deduped.append(group)
+    return deduped
+
+def stagedBinnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspace=None, box=None, n_starts=9, rng_seed=12345, verbose=False):
+    if workspace is None or box is None:
+        log_warn("staged-fit requested but workspace/box missing, falling back to direct fit.")
+        return binnedFit(
+            pdf, data, fitRange, useWeight,
+            robust=robust, workspace=workspace, box=box,
+            n_starts=n_starts, rng_seed=rng_seed, verbose=verbose
+        )
+
+    shape_names = _get_shape_param_names(workspace, box)
+    stage_groups = _infer_staged_shape_groups(workspace, box)
+    if len(shape_names) == 0 or len(stage_groups) <= 1:
+        if verbose:
+            log_info("staged-fit not needed for this model; using direct fit.")
+        return binnedFit(
+            pdf, data, fitRange, useWeight,
+            robust=robust, workspace=workspace, box=box,
+            n_starts=n_starts, rng_seed=rng_seed, verbose=verbose
+        )
+
+    tracked_names = ['Ntot_bkg_%s' % box] + shape_names
+    initial_state = _capture_var_state(workspace, tracked_names)
+    previously_active = set()
+    final_fr = None
+
+    try:
+        for i_stage, active_indices in enumerate(stage_groups):
+            active_names = set('p%d_%s' % (idx, box) for idx in active_indices)
+
+            for n in shape_names:
+                v = _safe_workspace_var(workspace, n)
+                if v is None:
+                    continue
+                if n in active_names:
+                    if n not in previously_active and n in initial_state:
+                        _set_var_value_clamped(v, initial_state[n]["value"])
+                    try:
+                        v.setConstant(False)
+                    except Exception:
+                        pass
+                else:
+                    _set_var_value_clamped(v, 0.0)
+                    try:
+                        v.setConstant(True)
+                    except Exception:
+                        pass
+
+            norm_name = 'Ntot_bkg_%s' % box
+            norm_var = _safe_workspace_var(workspace, norm_name)
+            if norm_var is not None and norm_name in initial_state:
+                _set_var_value_clamped(norm_var, norm_var.getVal())
+                try:
+                    norm_var.setConstant(initial_state[norm_name]["is_constant"])
+                except Exception:
+                    pass
+
+            log_info(
+                "staged-fit stage %d/%d active shape params: %s" % (
+                    i_stage + 1,
+                    len(stage_groups),
+                    ",".join(sorted(active_names)),
+                )
+            )
+
+            final_fr = binnedFit(
+                pdf,
+                data,
+                fitRange,
+                useWeight,
+                robust=robust,
+                workspace=workspace,
+                box=box,
+                n_starts=n_starts,
+                rng_seed=rng_seed,
+                verbose=verbose,
+            )
+            _apply_fit_result_to_workspace(workspace, final_fr)
+            previously_active = active_names
+    finally:
+        _restore_var_constants(workspace, initial_state)
+
+    return final_fr
 
 def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspace=None, box=None, n_starts=9, rng_seed=12345, verbose=False):
 
@@ -380,10 +639,12 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
                     anchor_fr.minNll(),
                 )
             )
+        attempts = [anchor_fr]
+    else:
+        attempts = []
 
     seeds = _build_multistart_seeds(workspace, seed_names, n_starts=n_starts, rng_seed=rng_seed)
 
-    attempts = []
     ladder_cfgs = [
         {"strategy": 1, "eps": 1e-6, "widen": False},
         {"strategy": 2, "eps": 1e-6, "widen": False},
@@ -392,7 +653,7 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
 
     for i_seed, seed_vals in enumerate(seeds):
         for n, v in seed_vals.items():
-            _set_var_value_clamped(workspace.var(n), v)
+            _set_var_value_clamped(_safe_workspace_var(workspace, n), v)
 
         if verbose:
             log_info("robust start %d/%d with seed: %s" % (i_seed + 1, len(seeds), seed_vals))
@@ -453,14 +714,19 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
     if len(good_attempts) > 0:
         best_fr = min(good_attempts, key=lambda fr: fr.minNll())
     else:
-        best_fr = min(attempts, key=lambda fr: fr.minNll())
-        log_warn("robust-fit found no fully good covariance/status solution; using lowest minNll candidate.")
+        if anchor_fr is not None:
+            best_fr = anchor_fr
+            log_warn("robust-fit found no fully good covariance/status solution; keeping anchor fit.")
+        else:
+            best_fr = min(attempts, key=_fit_rank_tuple)
+            log_warn("robust-fit found no fully good covariance/status solution; using best-ranked fallback candidate.")
 
     _apply_fit_result_to_workspace(workspace, best_fr)
 
     log_info(
-        "Robust fit selected: starts=%d, good=%d, status=%s, covQual=%s, edm=%.3g, minNll=%.6g" % (
+        "Robust fit selected: seeds=%d, attempts=%d, good=%d, status=%s, covQual=%s, edm=%.3g, minNll=%.6g" % (
             len(seeds),
+            len(attempts),
             len(good_attempts),
             best_fr.status(),
             best_fr.covQual(),
@@ -521,16 +787,6 @@ def calculateChi2AndFillResiduals(data_obs_TGraph_,background_hist_,hist_fit_res
     npar_from_p = _infer_nparfit_from_pdf_params(workspace_, box)
     npar_from_pdf = _infer_nparfit_from_pdf_class(workspace_, box)
     npar_from_ws = _infer_nparfit_from_workspace_vars(workspace_, box)
-    npar_override = None
-    npar_var = workspace_.var('nPar_%s' % box)
-    if npar_var is not None:
-        try:
-            npar_val = int(round(float(npar_var.getVal())))
-            if npar_val > 0:
-                npar_override = npar_val
-        except Exception:
-            pass
-
     candidates = []
     if npar_from_p is not None:
         candidates.append(npar_from_p)
@@ -538,8 +794,6 @@ def calculateChi2AndFillResiduals(data_obs_TGraph_,background_hist_,hist_fit_res
         candidates.append(npar_from_pdf)
     if npar_from_ws is not None:
         candidates.append(npar_from_ws)
-    if npar_override is not None:
-        candidates.append(npar_override)
     nParFit = min(candidates) if candidates else 4
 
     chi2_FullRangeAll = 0
@@ -693,6 +947,8 @@ if __name__ == '__main__':
                   help="print detailed fit diagnostics")
     parser.add_option('--robust-fit',dest="robustFit", default=False,action='store_true',
                   help="enable robust fit mode: multi-start seeds + retry ladder")
+    parser.add_option('--staged-fit',dest="stagedFit", default=False,action='store_true',
+                  help="perform automated staged fitting by progressively releasing higher-order shape parameters")
     parser.add_option('--robust-nstarts',dest="robustNStarts", default=9,type="int",
                   help="number of multi-start seeds for --robust-fit")
     parser.add_option('--robust-seed',dest="robustSeed", default=12345,type="int",
@@ -785,7 +1041,6 @@ if __name__ == '__main__':
             w.var(p.GetName()).setVal(p.getVal())
             w.var(p.GetName()).setError(p.getError())
 
-    
     x = array('d', cfg.getBinning(box)[0]) # mjj binning
     
     th1x = w.var('th1x')
@@ -820,7 +1075,8 @@ if __name__ == '__main__':
     else:
         rt.gStyle.SetOptStat(0)
         if options.doSpectrumFit:
-            fr = binnedFit(
+            fit_fn = stagedBinnedFit if options.stagedFit else binnedFit
+            fr = fit_fn(
                 extDijetPdf,
                 dataHist,
                 sideband,

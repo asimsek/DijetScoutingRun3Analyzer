@@ -97,8 +97,8 @@ git remote -v
 **Add the following to the `src/classes_def.xml` file (just before `</lcgdict>` line):**
 
 ```xml
-  <class name="RooDijetBinPdf" />
   <class name="RooDijet3ParamBinPdf" />
+  <class name="RooDijetBinPdf" />
   <class name="RooDijet5ParamBinPdf" />
   <class name="RooDijet6ParamBinPdf" />
   <class name="RooDijet5ParamPolyExtBinPdf" />
@@ -108,6 +108,7 @@ git remote -v
   <class name="RooModExp4ParamBinPdf" />
   <class name="RooModExpBinPdf" />
   <class name="RooModExp6ParamBinPdf" />
+  <class name="RooAtlas3ParamBinPdf" />
   <class name="RooAtlas4ParamBinPdf" />
   <class name="RooAtlasBinPdf" />
   <class name="RooAtlas6ParamBinPdf" />
@@ -121,8 +122,8 @@ git remote -v
 **Add the following to the `src/classes.h` file (end of the file is fine):**
 
 ```c
-#include "HiggsAnalysis/CombinedLimit/interface/RooDijetBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet3ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooDijetBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet5ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet6ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooDijet5ParamPolyExtBinPdf.h"
@@ -132,6 +133,7 @@ git remote -v
 #include "HiggsAnalysis/CombinedLimit/interface/RooModExp4ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooModExpBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooModExp6ParamBinPdf.h"
+#include "HiggsAnalysis/CombinedLimit/interface/RooAtlas3ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooAtlas4ParamBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooAtlasBinPdf.h"
 #include "HiggsAnalysis/CombinedLimit/interface/RooAtlas6ParamBinPdf.h"
