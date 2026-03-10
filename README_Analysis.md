@@ -44,7 +44,10 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 ## Trigger Efficiency
 
 ```bash
-python3 plot_trigger_efficiency.py --monitoring-list ../lists/reducedNtuple_lists/ScoutingPFMonitor_Run2024H_reduced.txt --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --lumi-pb 5490 --year "2024H"
+# Build only once
+c++ -std=c++17 -O3 -o plot_trigger_efficiency plot_trigger_efficiency.cpp $(root-config --cflags --libs)
+
+./plot_trigger_efficiency --monitoring-list ../lists/reducedNtuple_lists/ScoutingPFMonitor_Run2024H_reduced.txt --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --lumi-pb 5490 --year "2024H"
 ```
 
 
@@ -185,7 +188,6 @@ python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 5704 --yea
 
 ---
 ---
-
 
 
 
