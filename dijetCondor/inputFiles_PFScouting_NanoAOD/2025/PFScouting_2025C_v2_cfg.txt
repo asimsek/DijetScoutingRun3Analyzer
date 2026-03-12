@@ -1,0 +1,6 @@
+Dataset=/ScoutingPFRun3/Run2025C-PromptReco-v2/NANOAOD
+InputList=
+Interval=5
+analyzerScript=analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C
+goldenJSON=data/json/Cert_Collisions2025_391658_398903_Golden.json
+era=2025C

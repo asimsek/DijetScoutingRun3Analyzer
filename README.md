@@ -276,33 +276,66 @@ root -l -q 'TFile f("test_NanoAOD_QCD_n0_reduced_skim.root"); TTree* t=(TTree*)f
 ##### Data (PFScouting):
 
 ```bash
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024C_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024D_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024E_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024F_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024G_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt --force-new-list --request-memory-mb 4096
-python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024C_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024D_cfg.txt --force-new-list --request-memory-mb 4096 
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024E_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024F_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024G_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024H_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024I_cfg.txt --force-new-list --request-memory-mb 4096
+
+
+## 2025C
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting_2025C_v1_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting_2025C_v2_cfg.txt --force-new-list --request-memory-mb 4096
+## 2025D
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting_2025D_v1_cfg.txt --force-new-list --request-memory-mb 4096
+## 2025E
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting0_2025E_v1_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting1_2025E_v1_cfg.txt --force-new-list --request-memory-mb 4096
+## 2025F
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting0_2025F_v1_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting0_2025F_v2_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting1_2025F_v1_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting1_2025F_v2_cfg.txt --force-new-list --request-memory-mb 4096
+## 2025G
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting0_2025G_v1_cfg.txt --force-new-list --request-memory-mb 4096
+python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScouting1_2025G_v1_cfg.txt --force-new-list --request-memory-mb 4096
 ```
 
 > [!TIP]
-> Use `--no-submit` for **dryRun** (create files without sending jobs to condor).
+> `--no-submit`: **dryRun** (create files without sending jobs to condor).
+> `--cms-connect`: Additional HTCondor arguments for CMS Connect machines.
 
 
 ##### Data (PFMonitoring - for Trigger Efficiency):
 
 ```bash
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024C_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024D_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024E_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024F_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024G_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024I_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024C_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024D_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024E_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024F_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024G_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024H_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024I_cfg.txt --force-new-list
+
+## 2025C
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025C_v1_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025C_v2_cfg.txt --force-new-list
+## 2025D
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025D_v1_cfg.txt --force-new-list
+## 2025E
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025E_v1_cfg.txt --force-new-list
+## 2025F
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025F_v1_cfg.txt --force-new-list
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025F_v2_cfg.txt --force-new-list
+## 2025G
+python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025G_v1_cfg.txt --force-new-list
 ```
 
 > [!TIP]
-> Use `--no-submit` for **dryRun** (create files without sending jobs to condor).
+> `--no-submit`: **dryRun** (create files without sending jobs to condor).
+> `--cms-connect`: Additional HTCondor arguments for CMS Connect machines.
 
 
 ##### QCD MC:
