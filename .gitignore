@@ -46,6 +46,8 @@ Limits/fits_*
 check_condor_outputs
 plot_trigger_efficiency
 scripts/trigger_efficiency_*/
+scripts/plot_kinematics
+scripts/kinematics_plots/
 
 !Makefile
 !.gitignore

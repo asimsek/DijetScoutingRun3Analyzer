@@ -375,10 +375,10 @@ c++ -O3 -march=native -DNDEBUG -o check_condor_outputs check_condor_outputs.cpp 
 
 ```bash
 # Data (Scouting)
-./check_condor_outputs cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_05March2026_13 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 --config inputFiles_PFScouting_NanoAOD/PFScouting_2024G_cfg.txt
+./check_condor_outputs cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_05March2026_13 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 --config inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024G_cfg.txt
 
 # Data (Monitoring)
-./check_condor_outputs cjobs_ScoutingPFMonitor_Run2024H_PromptReco_v1_NANOAOD_03March2026_02 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ScoutingPFMonitor_Run2024H_PromptReco_v1 --config inputFiles_PFMonitoring_NanoAOD/PFMonitoring_2024H_cfg.txt
+./check_condor_outputs cjobs_ScoutingPFMonitor_Run2024H_PromptReco_v1_NANOAOD_03March2026_02 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ScoutingPFMonitor_Run2024H_PromptReco_v1 --config inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024H_cfg.txt
 
 # QCD MC
 ./check_condor_outputs cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_03March2026_04 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8 --config inputFiles_QCD_NanoAOD/QCDMC_2024_PT80to120_cfg.txt --check-subdirs

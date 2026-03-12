@@ -47,7 +47,10 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 # Build only once
 c++ -std=c++17 -O3 -o plot_trigger_efficiency plot_trigger_efficiency.cpp $(root-config --cflags --libs)
 
-./plot_trigger_efficiency --monitoring-list ../lists/reducedNtuple_lists/ScoutingPFMonitor_Run2024H_reduced.txt --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --lumi-pb 5490 --year "2024H"
+nohup ./plot_trigger_efficiency --monitoring-list ../lists/reducedNtuple_lists/ScoutingPFMonitor_Run2024H_reduced.txt --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --lumi-pb 5490 --year "2024H" > logs/eff.log 2>&1 &
+
+## Check the last logs of a background job:
+tail -n 50 logs/eff.log
 ```
 
 
@@ -59,25 +62,21 @@ c++ -std=c++17 -O3 -o plot_trigger_efficiency plot_trigger_efficiency.cpp $(root
 #### Plot a Single Variable
 
 ```bash
-## Run kinematics separately on your local machine (background-jobs)
-mkdir -p plot_kinematics logs
+## Build once
+c++ -std=c++17 -O3 -o plot_kinematics plot_kinematics.cpp $(root-config --cflags --libs)
 
-nohup python3 plot_kinematics.py --plot mjj             --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/mjj.log 2>&1 &
-nohup python3 plot_kinematics.py --plot Dijet_MassAK4PF --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/Dijet_MassAK4PF.log 2>&1 &
-nohup python3 plot_kinematics.py --plot pTWJ_j1         --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/pTWJ_j1.log 2>&1 &
-nohup python3 plot_kinematics.py --plot pTWJ_j2         --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/pTWJ_j2.log 2>&1 &
-nohup python3 plot_kinematics.py --plot etaWJ_j1        --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/etaWJ_j1.log 2>&1 &
-nohup python3 plot_kinematics.py --plot etaWJ_j2        --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/etaWJ_j2.log 2>&1 &
-nohup python3 plot_kinematics.py --plot deltaETAjj      --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/deltaETAjj.log 2>&1 &
-nohup python3 plot_kinematics.py --plot phiWJ_j1        --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/phiWJ_j1.log 2>&1 &
-nohup python3 plot_kinematics.py --plot phiWJ_j2        --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/phiWJ_j2.log 2>&1 &
-nohup python3 plot_kinematics.py --plot deltaPHIjj      --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir plot_kinematics --output-prefix dataVsQCD_ > logs/deltaPHIjj.log 2>&1 &
+## Run kinematics separately on your local machine (background-jobs)
+mkdir -p logs
+
+nohup ./plot_kinematics --plot all --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 5490 --output-dir kinematics_plots --output-prefix dataVsQCD_ > logs/kinematics.log 2>&1 &
 
 ## Check the last logs of a background job:
-tail -n 50 logs/mjj.log
+tail -n 50 logs/kinematics.log
 ```
 
-*Built-in plot names are:* `mjj`, `Dijet_MassAK4PF`, `pTWJ_j1`, `pTWJ_j2`, `etaWJ_j1`, `etaWJ_j2`, `deltaETAjj`, `phiWJ_j1`, `phiWJ_j2`, `deltaPHIjj`
+> [!TIP]
+> *Built-in plot names are:* `mjj`, `Dijet_MassAK4PF`, `pTWJ_j1`, `pTWJ_j2`, `etaWJ_j1`, `etaWJ_j2`, `deltaETAjj`, `phiWJ_j1`, `phiWJ_j2`, `deltaPHIjj`<br>
+> `--plot all`: to process all kinematics at once.
 
 
 > [!IMPORTANT]
@@ -85,8 +84,7 @@ tail -n 50 logs/mjj.log
 > `mc_path xsec_pb`<br>
 
 
-> [!TIP]
-> Luminosity information is available on the [PdmV Twiki Page](https://twiki.cern.ch/twiki/bin/viewauth/CMS/PdmVRun3Analysis#2024_Analysis_Summary_Table).<br>
+**Luminosity information is available on the [PdmV Twiki Page](https://twiki.cern.ch/twiki/bin/viewauth/CMS/PdmVRun3Analysis#2024_Analysis_Summary_Table).**
 
 
 ---
@@ -188,9 +186,4 @@ python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 5704 --yea
 
 ---
 ---
-
-
-
-
-
 
