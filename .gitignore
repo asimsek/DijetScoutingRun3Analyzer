@@ -48,6 +48,9 @@ plot_trigger_efficiency
 scripts/trigger_efficiency_*/
 scripts/plot_kinematics
 scripts/kinematics_plots/
+scripts/2024*/
+*.bak
+fits_*
 
 !Makefile
 !.gitignore

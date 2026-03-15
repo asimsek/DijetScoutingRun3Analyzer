@@ -10,55 +10,32 @@ from pathlib import Path
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description=(
-            "Compare Run3/Run2 ratio in data against Run3/Run2 ratio in QCD MC "
-            "using differential cross section xsec = N / (bin_width * lumi)."
-        ),
+        description=("Compare Run3/Run2 ratio in data against Run3/Run2 ratio in QCD MC using differential cross section xsec = N / (bin_width * lumi)."),
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    parser.add_argument(
-        "--run2-root",
-        default="../inputs/CaloScoutingHT2016ALL_DatavsQDCMC/histo_data_mjj_fromTree.root",
-        help="Run-2 ROOT file path.",
-    )
-    parser.add_argument(
-        "--run3-root",
-        default="../inputs/PFScouting2024H_deta1p3_04March2026_23/dataVsQCD_mjj.root",
-        help="Run-3 ROOT file path.",
-    )
-    parser.add_argument("--run2-data-hist", default="h_dat_rebin", help="Run-2 data histogram name.")
-    parser.add_argument("--run2-mc-hist", default="h_MC_rebin", help="Run-2 QCD MC histogram name.")
-    parser.add_argument("--run3-data-hist", default="h_data_mjj", help="Run-3 data histogram name.")
-    parser.add_argument("--run3-mc-hist", default="h_mc_total_mjj", help="Run-3 QCD MC histogram name.")
-    parser.add_argument("--lumi-run2-fb", type=float, required=True, help="Run-2 integrated luminosity [fb^-1].")
-    parser.add_argument("--lumi-run3-fb", type=float, required=True, help="Run-3 integrated luminosity [fb^-1].")
-    parser.add_argument("--year-run2", default="2016", help="Label for Run-2 year.")
-    parser.add_argument("--year-run3", default="2024", help="Label for Run-3 year.")
-    parser.add_argument("--output-dir", default="run3_run2_reference", help="Output directory.")
-    parser.add_argument("--output-prefix", default="run3_run2_reference", help="Output file prefix.")
-    parser.add_argument("--x-min-tev", type=float, default=None, help="Optional x-axis minimum [TeV].")
-    parser.add_argument("--x-max-tev", type=float, default=None, help="Optional x-axis maximum [TeV].")
-    parser.add_argument("--top-y-min", type=float, default=0.0, help="Top-panel y-axis minimum.")
-    parser.add_argument("--top-y-max", type=float, default=3000.0, help="Top-panel y-axis maximum.")
-    parser.add_argument("--bottom-y-min", type=float, default=0.0, help="Bottom-panel y-axis minimum.")
-    parser.add_argument("--bottom-y-max", type=float, default=2.0, help="Bottom-panel y-axis maximum.")
-    parser.add_argument(
-        "--norm-top-y-min",
-        type=float,
-        default=0.0,
-        help="Normalized top-only plot y-axis minimum.",
-    )
-    parser.add_argument(
-        "--norm-top-y-max",
-        type=float,
-        default=100.0,
-        help="Normalized top-only plot y-axis maximum.",
-    )
-    parser.add_argument(
-        "--debug",
-        action="store_true",
-        help="Print per-bin mass range, N, bin width, lumi, xsec and all derived ratios.",
-    )
+    parser.add_argument("--run2-root",      default="../inputs/CaloScoutingHT2016ALL_DatavsQDCMC/histo_data_mjj_fromTree.root", help="Run-2 ROOT file path.")
+    parser.add_argument("--run3-root",      default="../inputs/PFScouting2024H_deta1p3_04March2026_23/dataVsQCD_mjj.root",      help="Run-3 ROOT file path.")
+    parser.add_argument("--run2-data-hist", default="h_dat_rebin",         help="Run-2 data histogram name.")
+    parser.add_argument("--run2-mc-hist",   default="h_MC_rebin",          help="Run-2 QCD MC histogram name.")
+    parser.add_argument("--run3-data-hist", default="h_data_mjj",          help="Run-3 data histogram name.")
+    parser.add_argument("--run3-mc-hist",   default="h_mc_total_mjj",      help="Run-3 QCD MC histogram name.")
+    parser.add_argument("--lumi-run2-fb",   type=float, required=True,     help="Run-2 integrated luminosity [fb^-1].")
+    parser.add_argument("--lumi-run3-fb",   type=float, required=True,     help="Run-3 integrated luminosity [fb^-1].")
+    parser.add_argument("--year-run2",      default="2016",                help="Label for Run-2 year.")
+    parser.add_argument("--year-run3",      default="2024",                help="Label for Run-3 year.")
+    parser.add_argument("--output-dir",     default="run3_run2_reference", help="Output directory.")
+    parser.add_argument("--output-prefix",  default="run3_run2_reference", help="Output file prefix.")
+    parser.add_argument("--x-min-tev",      type=float, default=None,      help="Optional x-axis minimum [TeV].")
+    parser.add_argument("--x-max-tev",      type=float, default=None,      help="Optional x-axis maximum [TeV].")
+    parser.add_argument("--zoom-x-min-gev", type=float, default=1181.0,    help="Zoomed plot x-axis minimum [GeV].")
+    parser.add_argument("--zoom-x-max-gev", type=float, default=4000.0,    help="Zoomed plot x-axis maximum [GeV].")
+    parser.add_argument("--top-y-min",      type=float, default=0.0,       help="Top-panel y-axis minimum.")
+    parser.add_argument("--top-y-max",      type=float, default=3000.0,    help="Top-panel y-axis maximum.")
+    parser.add_argument("--bottom-y-min",   type=float, default=0.0,       help="Bottom-panel y-axis minimum.")
+    parser.add_argument("--bottom-y-max",   type=float, default=2.0,       help="Bottom-panel y-axis maximum.")
+    parser.add_argument("--norm-top-y-min", type=float, default=0.0,       help="Normalized top-only plot y-axis minimum.")
+    parser.add_argument("--norm-top-y-max", type=float, default=100.0,     help="Normalized top-only plot y-axis maximum.")
+    parser.add_argument("--debug", action="store_true", help="Print per-bin mass range, N, bin width, lumi, xsec and all derived ratios.")
     return parser
 
 
@@ -311,6 +288,30 @@ def auto_range(values: list[float], min_floor: float | None = None):
     return (out_min, out_max)
 
 
+def select_points_in_xrange(points: list[dict], x_min: float, x_max: float):
+    selected = []
+    for p in points:
+        low = p["center_tev"] - p["half_width_tev"]
+        up = p["center_tev"] + p["half_width_tev"]
+        if up < x_min or low > x_max:
+            continue
+        selected.append(p)
+    return selected
+
+
+def compute_zoom_top_range(data_points: list[dict], mc_points: list[dict], x_min: float, x_max: float):
+    values = []
+    for p in select_points_in_xrange(data_points, x_min, x_max):
+        values.append(max(0.0, p["ratio"] - p["err_low"]))
+        values.append(p["ratio"] + p["err_high"])
+    for p in select_points_in_xrange(mc_points, x_min, x_max):
+        values.append(max(0.0, p["ratio"] - p["err"]))
+        values.append(p["ratio"] + p["err"])
+    if not values:
+        return (0.0, 2.0)
+    return auto_range(values, min_floor=0.0)
+
+
 def normalize_data_mc_to_first_common_bin(data_points: list[dict], mc_points: list[dict]):
     mc_by_key = {(round(p["low"], 6), round(p["up"], 6)): p for p in mc_points}
     first_data = None
@@ -349,6 +350,10 @@ def normalize_data_mc_to_first_common_bin(data_points: list[dict], mc_points: li
     return norm_data, norm_mc, data_scale, mc_scale, first_data, first_mc
 
 
+def format_lumi_label(lumi_fb: float) -> str:
+    return str(int(lumi_fb))
+
+
 def draw_labels(ROOT, year_run3: str, year_run2: str, lumi_run3_fb: float, lumi_run2_fb: float):
     latex = ROOT.TLatex()
     latex.SetNDC(True)
@@ -365,8 +370,116 @@ def draw_labels(ROOT, year_run3: str, year_run2: str, lumi_run3_fb: float, lumi_
     latex.DrawLatex(
         0.95,
         0.95,
-        f"Run3 ({year_run3}): {lumi_run3_fb:.3g} fb^{{-1}}, Run2 ({year_run2}): {lumi_run2_fb:.3g} fb^{{-1}}",
+        (
+            f"Run3 ({year_run3}): {format_lumi_label(lumi_run3_fb)} fb^{{-1}}, "
+            f"Run2 ({year_run2}): {format_lumi_label(lumi_run2_fb)} fb^{{-1}}"
+        ),
     )
+
+
+def add_x_padding(x_min: float, x_max: float) -> tuple[float, float]:
+    if x_max <= x_min:
+        raise RuntimeError("Invalid x-range: x_max must be greater than x_min.")
+    x_span = x_max - x_min
+    return x_min - 0.015 * x_span, x_max + 0.020 * x_span
+
+
+def build_reference_canvas(
+    ROOT,
+    *,
+    suffix: str,
+    x_min: float,
+    x_max: float,
+    y_top_min: float,
+    y_top_max: float,
+    y_bot_min: float,
+    y_bot_max: float,
+    g_data_ratio,
+    g_mc_ratio,
+    g_double_ratio,
+    year_run3: str,
+    year_run2: str,
+    lumi_run3_fb: float,
+    lumi_run2_fb: float,
+):
+    canvas = ROOT.TCanvas(f"c_run3_run2_reference_{suffix}", "", 900, 900)
+    g_data_ratio_draw = g_data_ratio.Clone(f"{g_data_ratio.GetName()}_{suffix}")
+    g_mc_ratio_draw = g_mc_ratio.Clone(f"{g_mc_ratio.GetName()}_{suffix}")
+    g_double_ratio_draw = g_double_ratio.Clone(f"{g_double_ratio.GetName()}_{suffix}")
+
+    pad_top = ROOT.TPad(f"pad_top_{suffix}", f"pad_top_{suffix}", 0.0, 0.34, 1.0, 1.0)
+    pad_top.SetTopMargin(0.08)
+    pad_top.SetBottomMargin(0.03)
+    pad_top.SetLeftMargin(0.18)
+    pad_top.SetRightMargin(0.05)
+    pad_top.Draw()
+    pad_top.cd()
+
+    h_top = ROOT.TH1F(f"h_top_frame_{suffix}", "", 200, x_min, x_max)
+    h_top.GetXaxis().SetLabelOffset(999)
+    h_top.GetYaxis().SetTitle("xsec Run3/Run2")
+    h_top.GetYaxis().SetTitleSize(0.06)
+    h_top.GetYaxis().SetLabelSize(0.050)
+    h_top.GetYaxis().SetTitleOffset(1.20)
+    h_top.GetYaxis().SetRangeUser(y_top_min, y_top_max)
+    h_top.Draw("AXIS")
+
+    g_mc_ratio_draw.SetFillColorAlpha(ROOT.kRed + 1, 0.20)
+    g_mc_ratio_draw.Draw("E3 SAME")
+    g_mc_ratio_draw.Draw("L SAME")
+    g_data_ratio_draw.Draw("P SAME")
+
+    legend_top = ROOT.TLegend(0.52, 0.74, 0.89, 0.90)
+    legend_top.SetFillStyle(0)
+    legend_top.SetBorderSize(0)
+    legend_top.SetTextSize(0.036)
+    legend_top.AddEntry(g_data_ratio_draw, "Data [Run3/Run2]", "pe")
+    legend_top.AddEntry(g_mc_ratio_draw, "QCD [Run3/Run2]", "lf")
+    legend_top.Draw()
+
+    draw_labels(ROOT, year_run3, year_run2, lumi_run3_fb, lumi_run2_fb)
+    ROOT.gPad.RedrawAxis()
+
+    canvas.cd()
+    pad_bottom = ROOT.TPad(f"pad_bottom_{suffix}", f"pad_bottom_{suffix}", 0.0, 0.0, 1.0, 0.34)
+    pad_bottom.SetTopMargin(0.03)
+    pad_bottom.SetBottomMargin(0.36)
+    pad_bottom.SetLeftMargin(0.18)
+    pad_bottom.SetRightMargin(0.05)
+    pad_bottom.Draw()
+    pad_bottom.cd()
+
+    h_bottom = ROOT.TH1F(f"h_bottom_frame_{suffix}", "", 200, x_min, x_max)
+    h_bottom.GetXaxis().SetTitle("Dijet Mass [TeV]")
+    h_bottom.GetYaxis().SetTitle("#frac{(Run3/Run2)_{Data}}{(Run3/Run2)_{QCD MC}}")
+    h_bottom.GetYaxis().SetRangeUser(y_bot_min, y_bot_max)
+    h_bottom.GetYaxis().SetNdivisions(405, True)
+    h_bottom.GetXaxis().SetTitleSize(0.12)
+    h_bottom.GetXaxis().SetLabelSize(0.11)
+    h_bottom.GetYaxis().SetTitleSize(0.095)
+    h_bottom.GetYaxis().SetLabelSize(0.095)
+    h_bottom.GetYaxis().SetTitleOffset(0.65)
+    h_bottom.Draw("AXIS")
+
+    g_double_ratio_draw.Draw("P SAME")
+    line_unity = ROOT.TLine(x_min, 1.0, x_max, 1.0)
+    line_unity.SetLineStyle(2)
+    line_unity.SetLineColor(ROOT.kBlack)
+    line_unity.Draw("SAME")
+
+    ROOT.gPad.RedrawAxis()
+    canvas._keepalive = [
+        g_data_ratio_draw,
+        g_mc_ratio_draw,
+        g_double_ratio_draw,
+        pad_top,
+        h_top,
+        legend_top,
+        pad_bottom,
+        h_bottom,
+        line_unity,
+    ]
+    return canvas
 
 
 def write_debug_table(
@@ -522,12 +635,8 @@ def main() -> int:
 
     x_min = args.x_min_tev if args.x_min_tev is not None else x_min_auto
     x_max = args.x_max_tev if args.x_max_tev is not None else x_max_auto
-    if x_max <= x_min:
-        raise RuntimeError("Invalid x-range: x_max must be greater than x_min.")
-    x_span = x_max - x_min
-    # Keep edge points fully visible on both sides of the frame.
-    x_min -= 0.015 * x_span
-    x_max += 0.020 * x_span
+    x_min, x_max = add_x_padding(x_min, x_max)
+    zoom_x_min, zoom_x_max = add_x_padding(args.zoom_x_min_gev / 1000.0, args.zoom_x_max_gev / 1000.0)
 
     y_top_min = args.top_y_min
     y_top_max = args.top_y_max
@@ -542,69 +651,43 @@ def main() -> int:
     if y_norm_top_max <= y_norm_top_min:
         raise RuntimeError("Invalid normalized top y-range: norm-top-y-max must be greater than norm-top-y-min.")
 
-    canvas = ROOT.TCanvas("c_run3_run2_reference", "", 900, 900)
+    zoom_y_top_min, zoom_y_top_max = compute_zoom_top_range(data_points, mc_points, zoom_x_min, zoom_x_max)
 
-    pad_top = ROOT.TPad("pad_top", "pad_top", 0.0, 0.34, 1.0, 1.0)
-    pad_top.SetTopMargin(0.08)
-    pad_top.SetBottomMargin(0.03)
-    pad_top.SetLeftMargin(0.18)
-    pad_top.SetRightMargin(0.05)
-    pad_top.Draw()
-    pad_top.cd()
+    canvas = build_reference_canvas(
+        ROOT,
+        suffix="full",
+        x_min=x_min,
+        x_max=x_max,
+        y_top_min=y_top_min,
+        y_top_max=y_top_max,
+        y_bot_min=y_bot_min,
+        y_bot_max=y_bot_max,
+        g_data_ratio=g_data_ratio,
+        g_mc_ratio=g_mc_ratio,
+        g_double_ratio=g_double_ratio,
+        year_run3=args.year_run3,
+        year_run2=args.year_run2,
+        lumi_run3_fb=args.lumi_run3_fb,
+        lumi_run2_fb=args.lumi_run2_fb,
+    )
 
-    h_top = ROOT.TH1F("h_top_frame", "", 200, x_min, x_max)
-    h_top.GetXaxis().SetLabelOffset(999)
-    h_top.GetYaxis().SetTitle("xsec Run3/Run2")
-    h_top.GetYaxis().SetTitleSize(0.06)
-    h_top.GetYaxis().SetLabelSize(0.050)
-    h_top.GetYaxis().SetTitleOffset(1.20)
-    h_top.GetYaxis().SetRangeUser(y_top_min, y_top_max)
-    h_top.Draw("AXIS")
-
-    g_mc_ratio.SetFillColorAlpha(ROOT.kRed + 1, 0.20)
-    g_mc_ratio.Draw("E3 SAME")
-    g_mc_ratio.Draw("L SAME")
-    g_data_ratio.Draw("P SAME")
-
-    legend_top = ROOT.TLegend(0.52, 0.74, 0.89, 0.90)
-    legend_top.SetFillStyle(0)
-    legend_top.SetBorderSize(0)
-    legend_top.SetTextSize(0.036)
-    legend_top.AddEntry(g_data_ratio, "Data [Run3/Run2]", "pe")
-    legend_top.AddEntry(g_mc_ratio,   "QCD [Run3/Run2]", "lf")
-    legend_top.Draw()
-
-    draw_labels(ROOT, args.year_run3, args.year_run2, args.lumi_run3_fb, args.lumi_run2_fb)
-    ROOT.gPad.RedrawAxis()
-
-    canvas.cd()
-    pad_bottom = ROOT.TPad("pad_bottom", "pad_bottom", 0.0, 0.0, 1.0, 0.34)
-    pad_bottom.SetTopMargin(0.03)
-    pad_bottom.SetBottomMargin(0.36)
-    pad_bottom.SetLeftMargin(0.18)
-    pad_bottom.SetRightMargin(0.05)
-    pad_bottom.Draw()
-    pad_bottom.cd()
-
-    h_bottom = ROOT.TH1F("h_bottom_frame", "", 200, x_min, x_max)
-    h_bottom.GetXaxis().SetTitle("Dijet Mass [TeV]")
-    h_bottom.GetYaxis().SetTitle("#frac{(Run3/Run2)_{Data}}{(Run3/Run2)_{QCD MC}}")
-    h_bottom.GetYaxis().SetRangeUser(y_bot_min, y_bot_max)
-    h_bottom.GetYaxis().SetNdivisions(405, True)
-    h_bottom.GetXaxis().SetTitleSize(0.12)
-    h_bottom.GetXaxis().SetLabelSize(0.11)
-    h_bottom.GetYaxis().SetTitleSize(0.095)
-    h_bottom.GetYaxis().SetLabelSize(0.095)
-    h_bottom.GetYaxis().SetTitleOffset(0.65)
-    h_bottom.Draw("AXIS")
-
-    g_double_ratio.Draw("P SAME")
-    line_unity = ROOT.TLine(x_min, 1.0, x_max, 1.0)
-    line_unity.SetLineStyle(2)
-    line_unity.SetLineColor(ROOT.kBlack)
-    line_unity.Draw("SAME")
-
-    ROOT.gPad.RedrawAxis()
+    canvas_zoom = build_reference_canvas(
+        ROOT,
+        suffix="zoom",
+        x_min=zoom_x_min,
+        x_max=zoom_x_max,
+        y_top_min=zoom_y_top_min,
+        y_top_max=zoom_y_top_max,
+        y_bot_min=y_bot_min,
+        y_bot_max=y_bot_max,
+        g_data_ratio=g_data_ratio,
+        g_mc_ratio=g_mc_ratio,
+        g_double_ratio=g_double_ratio,
+        year_run3=args.year_run3,
+        year_run2=args.year_run2,
+        lumi_run3_fb=args.lumi_run3_fb,
+        lumi_run2_fb=args.lumi_run2_fb,
+    )
 
     chi2, ndof = calc_chi2(data_points, mc_points)
 
@@ -643,6 +726,7 @@ def main() -> int:
     ROOT.gPad.RedrawAxis()
 
     out_pdf = out_dir / f"{args.output_prefix}.pdf"
+    out_pdf_zoom = out_dir / f"{args.output_prefix}_zoom.pdf"
     out_pdf_norm = out_dir / f"{args.output_prefix}_normToUnity_top.pdf"
     out_root = out_dir / f"{args.output_prefix}.root"
     out_csv = out_dir / f"{args.output_prefix}.csv"
@@ -659,6 +743,7 @@ def main() -> int:
     g_data_ratio_norm.Write()
     g_mc_ratio_norm.Write()
     canvas.Write()
+    canvas_zoom.Write()
     canvas_norm.Write()
     out_file.Close()
 
@@ -666,6 +751,8 @@ def main() -> int:
 
     canvas.SaveAs(str(out_pdf))
     canvas.Close()
+    canvas_zoom.SaveAs(str(out_pdf_zoom))
+    canvas_zoom.Close()
     canvas_norm.SaveAs(str(out_pdf_norm))
     canvas_norm.Close()
 
@@ -684,13 +771,16 @@ def main() -> int:
     print(f"[INFO] Data norm scale          : {data_norm_scale:.6g}")
     print(f"[INFO] MC norm scale            : {mc_norm_scale:.6g}")
     print(f"[INFO] Top y-range              : [{y_top_min:g}, {y_top_max:g}]")
+    print(f"[INFO] Zoom top y-range         : [{zoom_y_top_min:g}, {zoom_y_top_max:g}]")
     print(f"[INFO] Bottom y-range           : [{y_bot_min:g}, {y_bot_max:g}]")
     print(f"[INFO] Norm top y-range         : [{y_norm_top_min:g}, {y_norm_top_max:g}]")
+    print(f"[INFO] Zoom x-range [GeV]       : [{args.zoom_x_min_gev:g}, {args.zoom_x_max_gev:g}]")
     if ndof > 0:
         print(f"[INFO] Agreement chi2/N         : {chi2:.3f}/{ndof} = {chi2/ndof:.3f}")
     else:
         print("[INFO] Agreement chi2/N         : n/a")
     print(f"[INFO] Output plot              : {out_pdf}")
+    print(f"[INFO] Output plot (zoom)       : {out_pdf_zoom}")
     print(f"[INFO] Output plot (norm top)   : {out_pdf_norm}")
     print(f"[INFO] Output ROOT              : {out_root}")
     print(f"[INFO] Output table             : {out_csv}")

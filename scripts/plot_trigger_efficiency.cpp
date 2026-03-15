@@ -58,7 +58,7 @@ constexpr const char* kAnsiBrightRed = "\033[91m";
 constexpr double kEtaCut = 2.5;
 constexpr double kDeltaEtaCut = 1.3;
 
-constexpr double kMinPtJ1 = 60.0;
+constexpr double kMinPtJ1 = 30.0;
 constexpr double kMinPtJ2 = 30.0;
 constexpr double kMinJetCount = 1.0;
 
@@ -96,7 +96,7 @@ const std::vector<double> kMassBins = {
 const std::string kTriggerSelection = []() {
   std::ostringstream os;
   os << "PassJSON == 1 && nJet > 1 && IdTight_j1 > 0.5 && IdTight_j2 > 0.5"
-     << " && pTWJ_j1 > 30 && pTWJ_j2 > 30"
+     << " && pTWJ_j1 > " << kMinPtJ1 << " && pTWJ_j2 > " << kMinPtJ2
      << " && TMath::Abs(etaWJ_j1) < " << kEtaCut
      << " && TMath::Abs(etaWJ_j2) < " << kEtaCut
      << " && TMath::Abs(deltaETAjj) < " << kDeltaEtaCut;
