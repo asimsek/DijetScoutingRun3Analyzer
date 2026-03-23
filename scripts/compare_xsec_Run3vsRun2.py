@@ -23,12 +23,19 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--lumi-run3-fb",   type=float, required=True,     help="Run-3 integrated luminosity [fb^-1].")
     parser.add_argument("--year-run2",      default="2016",                help="Label for Run-2 year.")
     parser.add_argument("--year-run3",      default="2024",                help="Label for Run-3 year.")
+    parser.add_argument("--label-run2",     default="Run2",                help="Display label for the denominator/reference period.")
+    parser.add_argument("--label-run3",     default="Run3",                help="Display label for the numerator/target period.")
     parser.add_argument("--output-dir",     default="run3_run2_reference", help="Output directory.")
     parser.add_argument("--output-prefix",  default="run3_run2_reference", help="Output file prefix.")
     parser.add_argument("--x-min-tev",      type=float, default=None,      help="Optional x-axis minimum [TeV].")
     parser.add_argument("--x-max-tev",      type=float, default=None,      help="Optional x-axis maximum [TeV].")
     parser.add_argument("--zoom-x-min-gev", type=float, default=1181.0,    help="Zoomed plot x-axis minimum [GeV].")
     parser.add_argument("--zoom-x-max-gev", type=float, default=4000.0,    help="Zoomed plot x-axis maximum [GeV].")
+    parser.add_argument("--overlay-x-min-gev", type=float, default=1181.0,  help="Overlay plot x-axis minimum [GeV].")
+    parser.add_argument("--overlay-x-max-gev", type=float, default=8000.0, help="Overlay plot x-axis maximum [GeV].")
+    parser.add_argument("--overlay-ratio-y-min", type=float, default=None, help="Optional overlay ratio-pad y-axis minimum.")
+    parser.add_argument("--overlay-ratio-y-max", type=float, default=None, help="Optional overlay ratio-pad y-axis maximum.")
+    parser.add_argument("--overlay-log-label-step", type=int, default=1, help="Show every Nth decade label on the overlay main y-axis.")
     parser.add_argument("--top-y-min",      type=float, default=0.0,       help="Top-panel y-axis minimum.")
     parser.add_argument("--top-y-max",      type=float, default=3000.0,    help="Top-panel y-axis maximum.")
     parser.add_argument("--bottom-y-min",   type=float, default=0.0,       help="Bottom-panel y-axis minimum.")
@@ -211,6 +218,72 @@ def build_double_ratio(data_ratio: dict, mc_ratio: dict):
     return out
 
 
+def build_data_over_mc_ratio(data_xsec: dict, mc_xsec: dict):
+    out = {}
+    for key in sorted(set(data_xsec) & set(mc_xsec)):
+        d = data_xsec[key]
+        m = mc_xsec[key]
+        if d["xsec"] <= 0.0 or m["xsec"] <= 0.0:
+            continue
+        ratio = d["xsec"] / m["xsec"]
+        rel_d_low = d["err_low"] / d["xsec"]
+        rel_d_high = d["err_high"] / d["xsec"]
+        rel_m = m["xsec_err"] / m["xsec"] if m["xsec"] > 0.0 else 0.0
+        err_low = ratio * math.sqrt(rel_d_low * rel_d_low + rel_m * rel_m)
+        err_high = ratio * math.sqrt(rel_d_high * rel_d_high + rel_m * rel_m)
+        out[key] = {
+            "low": d["low"],
+            "up": d["up"],
+            "center_tev": d["center_tev"],
+            "half_width_tev": d["half_width_tev"],
+            "ratio": ratio,
+            "err_low": err_low,
+            "err_high": err_high,
+        }
+    return out
+
+
+def build_event_count_points(data_bins: dict, lumi_fb: float):
+    out = {}
+    for key, b in data_bins.items():
+        out[key] = {
+            "low": b["low"],
+            "up": b["up"],
+            "center_tev": b["center_tev"],
+            "half_width_tev": b["half_width_tev"],
+            "value": b["n_evt"],
+            "err_low": b["err_low"] * b["width"] * lumi_fb,
+            "err_high": b["err_high"] * b["width"] * lumi_fb,
+        }
+    return out
+
+
+def build_value_ratio(numerator: dict, denominator: dict):
+    out = {}
+    for key in sorted(set(numerator) & set(denominator)):
+        n = numerator[key]
+        d = denominator[key]
+        if n["value"] <= 0.0 or d["value"] <= 0.0:
+            continue
+        ratio = n["value"] / d["value"]
+        rel_n_low = n["err_low"] / n["value"]
+        rel_n_high = n["err_high"] / n["value"]
+        rel_d_low = d["err_low"] / d["value"]
+        rel_d_high = d["err_high"] / d["value"]
+        err_low = ratio * math.sqrt(rel_n_low * rel_n_low + rel_d_high * rel_d_high)
+        err_high = ratio * math.sqrt(rel_n_high * rel_n_high + rel_d_low * rel_d_low)
+        out[key] = {
+            "low": n["low"],
+            "up": n["up"],
+            "center_tev": n["center_tev"],
+            "half_width_tev": n["half_width_tev"],
+            "ratio": ratio,
+            "err_low": err_low,
+            "err_high": err_high,
+        }
+    return out
+
+
 def dict_to_points(x: dict):
     return [x[key] for key in sorted(x)]
 
@@ -250,6 +323,60 @@ def make_graph_double_ratio(ROOT, points: list[dict]):
     g.SetMarkerSize(0.9)
     g.SetMarkerColor(ROOT.kBlue + 2)
     g.SetLineColor(ROOT.kBlue + 2)
+    return g
+
+
+def make_graph_data_xsec(ROOT, points: list[dict], name: str, color: int, marker_style: int):
+    g = ROOT.TGraphAsymmErrors(len(points))
+    g.SetName(name)
+    for i, p in enumerate(points):
+        g.SetPoint(i, p["center_tev"], p["xsec"])
+        g.SetPointError(i, p["half_width_tev"], p["half_width_tev"], p["err_low"], p["err_high"])
+    g.SetMarkerStyle(marker_style)
+    g.SetMarkerSize(1.0)
+    g.SetMarkerColor(color)
+    g.SetLineColor(color)
+    g.SetLineWidth(2)
+    return g
+
+
+def make_graph_mc_xsec(ROOT, points: list[dict], name: str, color: int):
+    g = ROOT.TGraphErrors(len(points))
+    g.SetName(name)
+    for i, p in enumerate(points):
+        g.SetPoint(i, p["center_tev"], p["xsec"])
+        g.SetPointError(i, p["half_width_tev"], p["xsec_err"])
+    g.SetLineColor(color)
+    g.SetLineWidth(3)
+    g.SetMarkerSize(0)
+    return g
+
+
+def make_graph_ratio_overlay(ROOT, points: list[dict], name: str, color: int, marker_style: int):
+    g = ROOT.TGraphAsymmErrors(len(points))
+    g.SetName(name)
+    for i, p in enumerate(points):
+        g.SetPoint(i, p["center_tev"], p["ratio"])
+        g.SetPointError(i, p["half_width_tev"], p["half_width_tev"], p["err_low"], p["err_high"])
+    g.SetMarkerStyle(marker_style)
+    g.SetMarkerSize(1.0)
+    g.SetMarkerColor(color)
+    g.SetLineColor(color)
+    g.SetLineWidth(2)
+    return g
+
+
+def make_graph_event_counts(ROOT, points: list[dict], name: str, color: int, marker_style: int):
+    g = ROOT.TGraphAsymmErrors(len(points))
+    g.SetName(name)
+    for i, p in enumerate(points):
+        g.SetPoint(i, p["center_tev"], p["value"])
+        g.SetPointError(i, p["half_width_tev"], p["half_width_tev"], p["err_low"], p["err_high"])
+    g.SetMarkerStyle(marker_style)
+    g.SetMarkerSize(1.0)
+    g.SetMarkerColor(color)
+    g.SetLineColor(color)
+    g.SetLineWidth(2)
     return g
 
 
@@ -299,6 +426,21 @@ def select_points_in_xrange(points: list[dict], x_min: float, x_max: float):
     return selected
 
 
+def select_points_fully_in_xrange(points: list[dict], x_min: float, x_max: float):
+    selected = []
+    for p in points:
+        low = p["center_tev"] - p["half_width_tev"]
+        up = p["center_tev"] + p["half_width_tev"]
+        if low < x_min or up > x_max:
+            continue
+        selected.append(p)
+    return selected
+
+
+def select_positive_xsec_points(points: list[dict]):
+    return [p for p in points if p.get("xsec", 0.0) > 0.0]
+
+
 def compute_zoom_top_range(data_points: list[dict], mc_points: list[dict], x_min: float, x_max: float):
     values = []
     for p in select_points_in_xrange(data_points, x_min, x_max):
@@ -310,6 +452,70 @@ def compute_zoom_top_range(data_points: list[dict], mc_points: list[dict], x_min
     if not values:
         return (0.0, 2.0)
     return auto_range(values, min_floor=0.0)
+
+
+def compute_overlay_top_range(xsec_point_sets: list[list[dict]], x_min: float, x_max: float):
+    positive_values = []
+    positive_high_values = []
+    for points in xsec_point_sets:
+        for p in select_points_in_xrange(points, x_min, x_max):
+            if p.get("xsec", 0.0) <= 0.0:
+                continue
+            positive_values.append(p["xsec"])
+            if "err_high" in p:
+                positive_high_values.append(max(p["xsec"], p["xsec"] + p["err_high"]))
+            else:
+                positive_high_values.append(max(p["xsec"], p["xsec"] + p["xsec_err"]))
+    if not positive_values or not positive_high_values:
+        return (1e-6, 1.0)
+    log_min = math.log10(min(positive_values))
+    log_max = math.log10(max(positive_high_values))
+    if log_max <= log_min:
+        log_max = log_min + 1.0
+    span = log_max - log_min
+    # Keep the range compact while leaving visible headroom above the curves.
+    out_min = 10.0 ** (log_min - 0.05 * span)
+    out_max = 10.0 ** (log_max + 0.35 * span)
+    if out_max <= out_min:
+        out_max = out_min * 10.0
+    return (out_min, out_max)
+
+
+def compute_overlay_ratio_range(point_sets: list[list[dict]], x_min: float, x_max: float):
+    values = [1.0]
+    for points in point_sets:
+        for p in select_points_in_xrange(points, x_min, x_max):
+            center = p["ratio"]
+            if "err_low" in p and "err_high" in p:
+                values.append(max(0.0, center - p["err_low"]))
+                values.append(center + p["err_high"])
+            elif "err" in p:
+                values.append(max(0.0, center - p["err"]))
+                values.append(center + p["err"])
+    return auto_range(values, min_floor=0.0)
+
+
+def compute_overlay_count_top_range(point_sets: list[list[dict]], x_min: float, x_max: float):
+    positive_values = []
+    positive_high_values = []
+    for points in point_sets:
+        for p in select_points_in_xrange(points, x_min, x_max):
+            if p.get("value", 0.0) <= 0.0:
+                continue
+            positive_values.append(p["value"])
+            positive_high_values.append(max(p["value"], p["value"] + p["err_high"]))
+    if not positive_values or not positive_high_values:
+        return (1e-3, 1.0)
+    log_min = math.log10(min(positive_values))
+    log_max = math.log10(max(positive_high_values))
+    if log_max <= log_min:
+        log_max = log_min + 1.0
+    span = log_max - log_min
+    out_min = 10.0 ** (log_min - 0.05 * span)
+    out_max = 10.0 ** (log_max + 0.25 * span)
+    if out_max <= out_min:
+        out_max = out_min * 10.0
+    return (out_min, out_max)
 
 
 def normalize_data_mc_to_first_common_bin(data_points: list[dict], mc_points: list[dict]):
@@ -354,7 +560,20 @@ def format_lumi_label(lumi_fb: float) -> str:
     return str(int(lumi_fb))
 
 
-def draw_labels(ROOT, year_run3: str, year_run2: str, lumi_run3_fb: float, lumi_run2_fb: float):
+def format_entry_count_label_in_range(points: list[dict], x_min: float, x_max: float) -> str:
+    entries_in_range = int(round(sum(p["n_evt"] for p in select_points_fully_in_xrange(points, x_min, x_max))))
+    return f"Entries: {entries_in_range:,}"
+
+
+def draw_labels(
+    ROOT,
+    year_run3: str,
+    year_run2: str,
+    lumi_run3_fb: float,
+    lumi_run2_fb: float,
+    label_run3: str,
+    label_run2: str,
+):
     latex = ROOT.TLatex()
     latex.SetNDC(True)
     latex.SetTextAlign(13)
@@ -371,10 +590,22 @@ def draw_labels(ROOT, year_run3: str, year_run2: str, lumi_run3_fb: float, lumi_
         0.95,
         0.95,
         (
-            f"Run3 ({year_run3}): {format_lumi_label(lumi_run3_fb)} fb^{{-1}}, "
-            f"Run2 ({year_run2}): {format_lumi_label(lumi_run2_fb)} fb^{{-1}}"
+            f"{label_run3} ({year_run3}): {format_lumi_label(lumi_run3_fb)} fb^{{-1}}, "
+            f"{label_run2} ({year_run2}): {format_lumi_label(lumi_run2_fb)} fb^{{-1}}"
         ),
     )
+
+
+def draw_cms_preliminary(ROOT):
+    latex = ROOT.TLatex()
+    latex.SetNDC(True)
+    latex.SetTextAlign(13)
+    latex.SetTextFont(62)
+    latex.SetTextSize(0.055)
+    latex.DrawLatex(0.22, 0.86, "CMS")
+    latex.SetTextFont(52)
+    latex.SetTextSize(0.040)
+    latex.DrawLatex(0.22, 0.80, "Preliminary")
 
 
 def add_x_padding(x_min: float, x_max: float) -> tuple[float, float]:
@@ -382,6 +613,14 @@ def add_x_padding(x_min: float, x_max: float) -> tuple[float, float]:
         raise RuntimeError("Invalid x-range: x_max must be greater than x_min.")
     x_span = x_max - x_min
     return x_min - 0.015 * x_span, x_max + 0.020 * x_span
+
+
+def build_major_log_ticks(y_min: float, y_max: float):
+    if y_min <= 0.0 or y_max <= 0.0 or y_max <= y_min:
+        return []
+    exp_min = int(math.ceil(math.log10(y_min)))
+    exp_max = int(math.floor(math.log10(y_max)))
+    return [10.0 ** exp for exp in range(exp_min, exp_max + 1)]
 
 
 def build_reference_canvas(
@@ -401,6 +640,8 @@ def build_reference_canvas(
     year_run2: str,
     lumi_run3_fb: float,
     lumi_run2_fb: float,
+    label_run3: str,
+    label_run2: str,
 ):
     canvas = ROOT.TCanvas(f"c_run3_run2_reference_{suffix}", "", 900, 900)
     g_data_ratio_draw = g_data_ratio.Clone(f"{g_data_ratio.GetName()}_{suffix}")
@@ -417,7 +658,7 @@ def build_reference_canvas(
 
     h_top = ROOT.TH1F(f"h_top_frame_{suffix}", "", 200, x_min, x_max)
     h_top.GetXaxis().SetLabelOffset(999)
-    h_top.GetYaxis().SetTitle("xsec Run3/Run2")
+    h_top.GetYaxis().SetTitle(f"xsec {label_run3}/{label_run2}")
     h_top.GetYaxis().SetTitleSize(0.06)
     h_top.GetYaxis().SetLabelSize(0.050)
     h_top.GetYaxis().SetTitleOffset(1.20)
@@ -433,11 +674,11 @@ def build_reference_canvas(
     legend_top.SetFillStyle(0)
     legend_top.SetBorderSize(0)
     legend_top.SetTextSize(0.036)
-    legend_top.AddEntry(g_data_ratio_draw, "Data [Run3/Run2]", "pe")
-    legend_top.AddEntry(g_mc_ratio_draw, "QCD [Run3/Run2]", "lf")
+    legend_top.AddEntry(g_data_ratio_draw, f"Data [{label_run3}/{label_run2}]", "pe")
+    legend_top.AddEntry(g_mc_ratio_draw, f"QCD [{label_run3}/{label_run2}]", "lf")
     legend_top.Draw()
 
-    draw_labels(ROOT, year_run3, year_run2, lumi_run3_fb, lumi_run2_fb)
+    draw_labels(ROOT, year_run3, year_run2, lumi_run3_fb, lumi_run2_fb, label_run3, label_run2)
     ROOT.gPad.RedrawAxis()
 
     canvas.cd()
@@ -451,7 +692,7 @@ def build_reference_canvas(
 
     h_bottom = ROOT.TH1F(f"h_bottom_frame_{suffix}", "", 200, x_min, x_max)
     h_bottom.GetXaxis().SetTitle("Dijet Mass [TeV]")
-    h_bottom.GetYaxis().SetTitle("#frac{(Run3/Run2)_{Data}}{(Run3/Run2)_{QCD MC}}")
+    h_bottom.GetYaxis().SetTitle(f"#frac{{({label_run3}/{label_run2})_{{Data}}}}{{({label_run3}/{label_run2})_{{QCD MC}}}}")
     h_bottom.GetYaxis().SetRangeUser(y_bot_min, y_bot_max)
     h_bottom.GetYaxis().SetNdivisions(405, True)
     h_bottom.GetXaxis().SetTitleSize(0.12)
@@ -600,6 +841,8 @@ def main() -> int:
     data_points = dict_to_points(data_ratio)
     mc_points = dict_to_points(mc_ratio)
     double_points = dict_to_points(double_ratio)
+    overlay_label_x_min = args.overlay_x_min_gev / 1000.0
+    overlay_label_x_max = args.overlay_x_max_gev / 1000.0
 
     if not data_points:
         raise RuntimeError("No common non-zero bins for data Run3/Run2 ratio.")
@@ -621,6 +864,73 @@ def main() -> int:
     g_mc_ratio = make_graph_mc_ratio(ROOT, mc_points)
     g_double_ratio = make_graph_double_ratio(ROOT, double_points)
 
+    run2_data_xsec_points = select_points_fully_in_xrange(
+        select_positive_xsec_points(dict_to_points(run2_data)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run3_data_xsec_points = select_points_fully_in_xrange(
+        select_positive_xsec_points(dict_to_points(run3_data)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run2_mc_xsec_points = select_points_fully_in_xrange(
+        select_positive_xsec_points(dict_to_points(run2_mc)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run3_mc_xsec_points = select_points_fully_in_xrange(
+        select_positive_xsec_points(dict_to_points(run3_mc)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run2_data_over_mc = select_points_fully_in_xrange(
+        dict_to_points(build_data_over_mc_ratio(run2_data, run2_mc)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run3_data_over_mc = select_points_fully_in_xrange(
+        dict_to_points(build_data_over_mc_ratio(run3_data, run3_mc)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run2_event_count_points = select_points_fully_in_xrange(
+        dict_to_points(build_event_count_points(run2_data, args.lumi_run2_fb)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    run3_event_count_points = select_points_fully_in_xrange(
+        dict_to_points(build_event_count_points(run3_data, args.lumi_run3_fb)),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+    event_count_ratio_points = select_points_fully_in_xrange(
+        dict_to_points(
+        build_value_ratio(
+            build_event_count_points(run3_data, args.lumi_run3_fb),
+            build_event_count_points(run2_data, args.lumi_run2_fb),
+        )
+        ),
+        overlay_label_x_min,
+        overlay_label_x_max,
+    )
+
+    g_run2_data_xsec = make_graph_data_xsec(ROOT, run2_data_xsec_points, "g_run2_data_xsec", ROOT.kAzure + 2, 24)
+    g_run3_data_xsec = make_graph_data_xsec(ROOT, run3_data_xsec_points, "g_run3_data_xsec", ROOT.kBlack, 20)
+    g_run2_mc_xsec = make_graph_mc_xsec(ROOT, run2_mc_xsec_points, "g_run2_mc_xsec", ROOT.kOrange + 7)
+    g_run3_mc_xsec = make_graph_mc_xsec(ROOT, run3_mc_xsec_points, "g_run3_mc_xsec", ROOT.kRed + 1)
+    g_run2_data_over_mc = make_graph_ratio_overlay(ROOT, run2_data_over_mc, "g_run2_data_over_mc", ROOT.kRed + 1, 24)
+    g_run3_data_over_mc = make_graph_ratio_overlay(ROOT, run3_data_over_mc, "g_run3_data_over_mc", ROOT.kBlack, 20)
+    g_run2_event_counts = make_graph_event_counts(
+        ROOT, run2_event_count_points, "g_run2_event_counts", ROOT.kAzure + 2, 24
+    )
+    g_run3_event_counts = make_graph_event_counts(
+        ROOT, run3_event_count_points, "g_run3_event_counts", ROOT.kBlack, 20
+    )
+    g_event_count_ratio = make_graph_ratio_overlay(
+        ROOT, event_count_ratio_points, "g_event_count_ratio_run3_over_run2", ROOT.kBlue + 2, 20
+    )
+
     x_min_auto = min(p["center_tev"] - p["half_width_tev"] for p in data_points)
     x_max_auto = max(p["center_tev"] + p["half_width_tev"] for p in data_points)
 
@@ -637,6 +947,9 @@ def main() -> int:
     x_max = args.x_max_tev if args.x_max_tev is not None else x_max_auto
     x_min, x_max = add_x_padding(x_min, x_max)
     zoom_x_min, zoom_x_max = add_x_padding(args.zoom_x_min_gev / 1000.0, args.zoom_x_max_gev / 1000.0)
+    overlay_x_min, overlay_x_max = add_x_padding(args.overlay_x_min_gev / 1000.0, args.overlay_x_max_gev / 1000.0)
+    run2_data_entries_label = format_entry_count_label_in_range(dict_to_points(run2_data), overlay_label_x_min, overlay_label_x_max)
+    run3_data_entries_label = format_entry_count_label_in_range(dict_to_points(run3_data), overlay_label_x_min, overlay_label_x_max)
 
     y_top_min = args.top_y_min
     y_top_max = args.top_y_max
@@ -650,8 +963,28 @@ def main() -> int:
         raise RuntimeError("Invalid bottom y-range: bottom-y-max must be greater than bottom-y-min.")
     if y_norm_top_max <= y_norm_top_min:
         raise RuntimeError("Invalid normalized top y-range: norm-top-y-max must be greater than norm-top-y-min.")
+    if args.overlay_log_label_step < 1:
+        raise RuntimeError("Invalid overlay log label step: overlay-log-label-step must be >= 1.")
 
     zoom_y_top_min, zoom_y_top_max = compute_zoom_top_range(data_points, mc_points, zoom_x_min, zoom_x_max)
+    overlay_top_y_min, overlay_top_y_max = compute_overlay_top_range(
+        [run2_data_xsec_points, run3_data_xsec_points, run2_mc_xsec_points, run3_mc_xsec_points],
+        overlay_x_min,
+        overlay_x_max,
+    )
+    overlay_ratio_y_min_auto, overlay_ratio_y_max_auto = compute_overlay_ratio_range(
+        [run2_data_over_mc, run3_data_over_mc], overlay_x_min, overlay_x_max
+    )
+    overlay_ratio_y_min = args.overlay_ratio_y_min if args.overlay_ratio_y_min is not None else overlay_ratio_y_min_auto
+    overlay_ratio_y_max = args.overlay_ratio_y_max if args.overlay_ratio_y_max is not None else overlay_ratio_y_max_auto
+    if overlay_ratio_y_max <= overlay_ratio_y_min:
+        raise RuntimeError("Invalid overlay ratio y-range: overlay-ratio-y-max must be greater than overlay-ratio-y-min.")
+    overlay_count_top_y_min, overlay_count_top_y_max = compute_overlay_count_top_range(
+        [run2_event_count_points, run3_event_count_points], overlay_label_x_min, overlay_label_x_max
+    )
+    overlay_count_ratio_y_min, overlay_count_ratio_y_max = compute_overlay_ratio_range(
+        [event_count_ratio_points], overlay_label_x_min, overlay_label_x_max
+    )
 
     canvas = build_reference_canvas(
         ROOT,
@@ -669,6 +1002,8 @@ def main() -> int:
         year_run2=args.year_run2,
         lumi_run3_fb=args.lumi_run3_fb,
         lumi_run2_fb=args.lumi_run2_fb,
+        label_run3=args.label_run3,
+        label_run2=args.label_run2,
     )
 
     canvas_zoom = build_reference_canvas(
@@ -687,6 +1022,8 @@ def main() -> int:
         year_run2=args.year_run2,
         lumi_run3_fb=args.lumi_run3_fb,
         lumi_run2_fb=args.lumi_run2_fb,
+        label_run3=args.label_run3,
+        label_run2=args.label_run2,
     )
 
     chi2, ndof = calc_chi2(data_points, mc_points)
@@ -700,7 +1037,7 @@ def main() -> int:
     canvas_norm.SetTopMargin(0.08)
     h_top_norm = ROOT.TH1F("h_top_norm_frame", "", 200, x_min, x_max)
     h_top_norm.GetXaxis().SetTitle("Dijet Mass [TeV]")
-    h_top_norm.GetYaxis().SetTitle("Normalized xsec Run3/Run2")
+    h_top_norm.GetYaxis().SetTitle(f"Normalized xsec {args.label_run3}/{args.label_run2}")
     h_top_norm.GetYaxis().SetTitleSize(0.06)
     h_top_norm.GetYaxis().SetLabelSize(0.050)
     h_top_norm.GetYaxis().SetTitleOffset(1.20)
@@ -718,16 +1055,248 @@ def main() -> int:
     legend_norm.SetFillStyle(0)
     legend_norm.SetBorderSize(0)
     legend_norm.SetTextSize(0.036)
-    legend_norm.AddEntry(g_data_ratio_norm, "Data [Run3/Run2]", "pe")
-    legend_norm.AddEntry(g_mc_ratio_norm, "QCD [Run3/Run2]", "lf")
+    legend_norm.AddEntry(g_data_ratio_norm, f"Data [{args.label_run3}/{args.label_run2}]", "pe")
+    legend_norm.AddEntry(g_mc_ratio_norm, f"QCD [{args.label_run3}/{args.label_run2}]", "lf")
     legend_norm.Draw()
 
-    draw_labels(ROOT, args.year_run3, args.year_run2, args.lumi_run3_fb, args.lumi_run2_fb)
+    draw_labels(
+        ROOT,
+        args.year_run3,
+        args.year_run2,
+        args.lumi_run3_fb,
+        args.lumi_run2_fb,
+        args.label_run3,
+        args.label_run2,
+    )
     ROOT.gPad.RedrawAxis()
+
+    canvas_overlay = ROOT.TCanvas("c_run2_run3_xsec_overlay", "", 900, 900)
+    pad_top_overlay = ROOT.TPad("pad_top_overlay", "pad_top_overlay", 0.0, 0.34, 1.0, 1.0)
+    pad_top_overlay.SetTopMargin(0.08)
+    pad_top_overlay.SetBottomMargin(0.03)
+    pad_top_overlay.SetLeftMargin(0.18)
+    pad_top_overlay.SetRightMargin(0.05)
+    pad_top_overlay.Draw()
+    pad_top_overlay.cd()
+    pad_top_overlay.SetLogy()
+
+    h_top_overlay = ROOT.TH1F("h_top_overlay", "", 200, overlay_x_min, overlay_x_max)
+    h_top_overlay.GetXaxis().SetLabelOffset(999)
+    h_top_overlay.GetYaxis().SetTitle("d#sigma/dm_{jj} [pb/TeV]")
+    h_top_overlay.GetYaxis().SetTitleSize(0.06)
+    h_top_overlay.GetYaxis().SetLabelSize(0.050)
+    h_top_overlay.GetYaxis().SetTitleOffset(1.20)
+    h_top_overlay.GetYaxis().SetLabelOffset(999)
+    h_top_overlay.GetYaxis().SetTickLength(0.0)
+    h_top_overlay.GetYaxis().SetRangeUser(overlay_top_y_min, overlay_top_y_max)
+    h_top_overlay.Draw("AXIS")
+
+    g_run2_mc_xsec_overlay = g_run2_mc_xsec.Clone("g_run2_mc_xsec_overlay")
+    g_run3_mc_xsec_overlay = g_run3_mc_xsec.Clone("g_run3_mc_xsec_overlay")
+    g_run2_data_xsec_overlay = g_run2_data_xsec.Clone("g_run2_data_xsec_overlay")
+    g_run3_data_xsec_overlay = g_run3_data_xsec.Clone("g_run3_data_xsec_overlay")
+
+    g_run2_mc_xsec_overlay.SetFillColorAlpha(ROOT.kOrange + 7, 0.16)
+    g_run3_mc_xsec_overlay.SetFillColorAlpha(ROOT.kRed + 1, 0.20)
+    g_run2_mc_xsec_overlay.Draw("E3 SAME")
+    g_run3_mc_xsec_overlay.Draw("E3 SAME")
+    g_run2_mc_xsec_overlay.Draw("L SAME")
+    g_run3_mc_xsec_overlay.Draw("L SAME")
+    g_run2_data_xsec_overlay.Draw("P SAME")
+    g_run3_data_xsec_overlay.Draw("P SAME")
+
+    legend_overlay = ROOT.TLegend(0.58, 0.57, 0.82, 0.87)
+    legend_overlay.SetFillStyle(0)
+    legend_overlay.SetBorderSize(0)
+    legend_overlay.SetTextSize(0.034)
+    legend_overlay.AddEntry(
+        g_run3_data_xsec_overlay,
+        f"Data {args.label_run3} ({args.year_run3}, {format_lumi_label(args.lumi_run3_fb)} fb^{{-1}})",
+        "pe",
+    )
+    legend_overlay.AddEntry(0, run3_data_entries_label, "")
+    legend_overlay.AddEntry(g_run3_mc_xsec_overlay, f"QCD MC {args.label_run3} ({args.year_run3})", "lf")
+    legend_overlay.AddEntry(
+        g_run2_data_xsec_overlay,
+        f"Data {args.label_run2} ({args.year_run2}, {format_lumi_label(args.lumi_run2_fb)} fb^{{-1}})",
+        "pe",
+    )
+    legend_overlay.AddEntry(0, run2_data_entries_label, "")
+    legend_overlay.AddEntry(g_run2_mc_xsec_overlay, f"QCD MC {args.label_run2} ({args.year_run2})", "lf")
+    legend_overlay.Draw()
+    draw_cms_preliminary(ROOT)
+    ROOT.gPad.RedrawAxis()
+    overlay_major_ticks = build_major_log_ticks(overlay_top_y_min, overlay_top_y_max)
+    overlay_tick_dx = 0.018 * (overlay_x_max - overlay_x_min)
+    overlay_tick_lines = []
+    overlay_tick_labels = []
+    log_y_min = math.log10(overlay_top_y_min)
+    log_y_max = math.log10(overlay_top_y_max)
+    pad_height_ndc = 1.0 - pad_top_overlay.GetTopMargin() - pad_top_overlay.GetBottomMargin()
+    for tick in overlay_major_ticks:
+        line_left = ROOT.TLine(overlay_x_min, tick, overlay_x_min + overlay_tick_dx, tick)
+        line_left.SetLineColor(ROOT.kBlack)
+        line_left.Draw()
+        overlay_tick_lines.append(line_left)
+
+        line_right = ROOT.TLine(overlay_x_max - overlay_tick_dx, tick, overlay_x_max, tick)
+        line_right.SetLineColor(ROOT.kBlack)
+        line_right.Draw()
+        overlay_tick_lines.append(line_right)
+
+        exponent = int(round(math.log10(tick)))
+        if exponent % args.overlay_log_label_step == 0:
+            y_ndc = pad_top_overlay.GetBottomMargin() + (
+                (math.log10(tick) - log_y_min) / (log_y_max - log_y_min)
+            ) * pad_height_ndc
+            label = ROOT.TLatex()
+            label.SetNDC(True)
+            label.SetTextFont(42)
+            label.SetTextSize(0.050)
+            label.SetTextAlign(32)
+            label.DrawLatex(pad_top_overlay.GetLeftMargin() - 0.018, y_ndc, f"10^{{{exponent}}}")
+            overlay_tick_labels.append(label)
+
+    canvas_overlay.cd()
+    pad_bottom_overlay = ROOT.TPad("pad_bottom_overlay", "pad_bottom_overlay", 0.0, 0.0, 1.0, 0.34)
+    pad_bottom_overlay.SetTopMargin(0.03)
+    pad_bottom_overlay.SetBottomMargin(0.36)
+    pad_bottom_overlay.SetLeftMargin(0.18)
+    pad_bottom_overlay.SetRightMargin(0.05)
+    pad_bottom_overlay.Draw()
+    pad_bottom_overlay.cd()
+
+    h_bottom_overlay = ROOT.TH1F("h_bottom_overlay", "", 200, overlay_x_min, overlay_x_max)
+    h_bottom_overlay.GetXaxis().SetTitle("Dijet Mass [TeV]")
+    h_bottom_overlay.GetYaxis().SetTitle("Data / MC")
+    h_bottom_overlay.GetYaxis().SetRangeUser(overlay_ratio_y_min, overlay_ratio_y_max)
+    h_bottom_overlay.GetYaxis().SetNdivisions(405, True)
+    h_bottom_overlay.GetXaxis().SetNdivisions(510, True)
+    h_bottom_overlay.GetXaxis().SetTitleSize(0.12)
+    h_bottom_overlay.GetXaxis().SetLabelSize(0.11)
+    h_bottom_overlay.GetYaxis().SetTitleSize(0.095)
+    h_bottom_overlay.GetYaxis().SetLabelSize(0.095)
+    h_bottom_overlay.GetYaxis().SetTitleOffset(0.72)
+    h_bottom_overlay.Draw("AXIS")
+
+    g_run2_data_over_mc_overlay = g_run2_data_over_mc.Clone("g_run2_data_over_mc_overlay")
+    g_run3_data_over_mc_overlay = g_run3_data_over_mc.Clone("g_run3_data_over_mc_overlay")
+    g_run2_data_over_mc_overlay.Draw("P SAME")
+    g_run3_data_over_mc_overlay.Draw("P SAME")
+    line_unity_overlay = ROOT.TLine(overlay_x_min, 1.0, overlay_x_max, 1.0)
+    line_unity_overlay.SetLineStyle(2)
+    line_unity_overlay.SetLineColor(ROOT.kBlack)
+    line_unity_overlay.Draw("SAME")
+    ROOT.gPad.RedrawAxis()
+
+    canvas_overlay._keepalive = [
+        pad_top_overlay,
+        h_top_overlay,
+        g_run2_mc_xsec_overlay,
+        g_run3_mc_xsec_overlay,
+        g_run2_data_xsec_overlay,
+        g_run3_data_xsec_overlay,
+        legend_overlay,
+        *overlay_tick_lines,
+        *overlay_tick_labels,
+        pad_bottom_overlay,
+        h_bottom_overlay,
+        g_run2_data_over_mc_overlay,
+        g_run3_data_over_mc_overlay,
+        line_unity_overlay,
+    ]
+
+    canvas_events_overlay = ROOT.TCanvas("c_run2_run3_events_overlay", "", 900, 900)
+    pad_top_events_overlay = ROOT.TPad("pad_top_events_overlay", "pad_top_events_overlay", 0.0, 0.34, 1.0, 1.0)
+    pad_top_events_overlay.SetTopMargin(0.08)
+    pad_top_events_overlay.SetBottomMargin(0.03)
+    pad_top_events_overlay.SetLeftMargin(0.18)
+    pad_top_events_overlay.SetRightMargin(0.05)
+    pad_top_events_overlay.Draw()
+    pad_top_events_overlay.cd()
+    pad_top_events_overlay.SetLogy()
+
+    h_top_events_overlay = ROOT.TH1F("h_top_events_overlay", "", 200, overlay_label_x_min, overlay_label_x_max)
+    h_top_events_overlay.GetXaxis().SetLabelOffset(999)
+    h_top_events_overlay.GetYaxis().SetTitle("Events")
+    h_top_events_overlay.GetYaxis().SetTitleSize(0.06)
+    h_top_events_overlay.GetYaxis().SetLabelSize(0.050)
+    h_top_events_overlay.GetYaxis().SetTitleOffset(1.20)
+    h_top_events_overlay.GetYaxis().SetRangeUser(overlay_count_top_y_min, overlay_count_top_y_max)
+    h_top_events_overlay.Draw("AXIS")
+
+    g_run2_event_counts_overlay = g_run2_event_counts.Clone("g_run2_event_counts_overlay")
+    g_run3_event_counts_overlay = g_run3_event_counts.Clone("g_run3_event_counts_overlay")
+    g_run2_event_counts_overlay.Draw("P SAME")
+    g_run3_event_counts_overlay.Draw("P SAME")
+
+    legend_events_overlay = ROOT.TLegend(0.58, 0.62, 0.84, 0.86)
+    legend_events_overlay.SetFillStyle(0)
+    legend_events_overlay.SetBorderSize(0)
+    legend_events_overlay.SetTextSize(0.034)
+    legend_events_overlay.AddEntry(
+        g_run3_event_counts_overlay,
+        f"Data {args.label_run3} ({args.year_run3}, {format_lumi_label(args.lumi_run3_fb)} fb^{{-1}})",
+        "pe",
+    )
+    legend_events_overlay.AddEntry(0, run3_data_entries_label, "")
+    legend_events_overlay.AddEntry(
+        g_run2_event_counts_overlay,
+        f"Data {args.label_run2} ({args.year_run2}, {format_lumi_label(args.lumi_run2_fb)} fb^{{-1}})",
+        "pe",
+    )
+    legend_events_overlay.AddEntry(0, run2_data_entries_label, "")
+    legend_events_overlay.Draw()
+    draw_cms_preliminary(ROOT)
+    ROOT.gPad.RedrawAxis()
+
+    canvas_events_overlay.cd()
+    pad_bottom_events_overlay = ROOT.TPad("pad_bottom_events_overlay", "pad_bottom_events_overlay", 0.0, 0.0, 1.0, 0.34)
+    pad_bottom_events_overlay.SetTopMargin(0.03)
+    pad_bottom_events_overlay.SetBottomMargin(0.36)
+    pad_bottom_events_overlay.SetLeftMargin(0.18)
+    pad_bottom_events_overlay.SetRightMargin(0.05)
+    pad_bottom_events_overlay.Draw()
+    pad_bottom_events_overlay.cd()
+
+    h_bottom_events_overlay = ROOT.TH1F("h_bottom_events_overlay", "", 200, overlay_label_x_min, overlay_label_x_max)
+    h_bottom_events_overlay.GetXaxis().SetTitle("Dijet Mass [TeV]")
+    h_bottom_events_overlay.GetYaxis().SetTitle(f"{args.label_run3} / {args.label_run2}")
+    h_bottom_events_overlay.GetYaxis().SetRangeUser(overlay_count_ratio_y_min, overlay_count_ratio_y_max)
+    h_bottom_events_overlay.GetYaxis().SetNdivisions(405, True)
+    h_bottom_events_overlay.GetXaxis().SetNdivisions(510, True)
+    h_bottom_events_overlay.GetXaxis().SetTitleSize(0.12)
+    h_bottom_events_overlay.GetXaxis().SetLabelSize(0.11)
+    h_bottom_events_overlay.GetYaxis().SetTitleSize(0.095)
+    h_bottom_events_overlay.GetYaxis().SetLabelSize(0.095)
+    h_bottom_events_overlay.GetYaxis().SetTitleOffset(0.72)
+    h_bottom_events_overlay.Draw("AXIS")
+
+    g_event_count_ratio_overlay = g_event_count_ratio.Clone("g_event_count_ratio_overlay")
+    g_event_count_ratio_overlay.Draw("P SAME")
+    line_unity_events_overlay = ROOT.TLine(overlay_label_x_min, 1.0, overlay_label_x_max, 1.0)
+    line_unity_events_overlay.SetLineStyle(2)
+    line_unity_events_overlay.SetLineColor(ROOT.kBlack)
+    line_unity_events_overlay.Draw("SAME")
+    ROOT.gPad.RedrawAxis()
+
+    canvas_events_overlay._keepalive = [
+        pad_top_events_overlay,
+        h_top_events_overlay,
+        g_run2_event_counts_overlay,
+        g_run3_event_counts_overlay,
+        legend_events_overlay,
+        pad_bottom_events_overlay,
+        h_bottom_events_overlay,
+        g_event_count_ratio_overlay,
+        line_unity_events_overlay,
+    ]
 
     out_pdf = out_dir / f"{args.output_prefix}.pdf"
     out_pdf_zoom = out_dir / f"{args.output_prefix}_zoom.pdf"
     out_pdf_norm = out_dir / f"{args.output_prefix}_normToUnity_top.pdf"
+    out_pdf_overlay = out_dir / f"{args.output_prefix}_overlay.pdf"
+    out_pdf_events_overlay = out_dir / f"{args.output_prefix}_events_overlay.pdf"
     out_root = out_dir / f"{args.output_prefix}.root"
     out_csv = out_dir / f"{args.output_prefix}.csv"
 
@@ -742,9 +1311,20 @@ def main() -> int:
     g_double_ratio.Write()
     g_data_ratio_norm.Write()
     g_mc_ratio_norm.Write()
+    g_run2_data_xsec.Write()
+    g_run3_data_xsec.Write()
+    g_run2_mc_xsec.Write()
+    g_run3_mc_xsec.Write()
+    g_run2_data_over_mc.Write()
+    g_run3_data_over_mc.Write()
+    g_run2_event_counts.Write()
+    g_run3_event_counts.Write()
+    g_event_count_ratio.Write()
     canvas.Write()
     canvas_zoom.Write()
     canvas_norm.Write()
+    canvas_overlay.Write()
+    canvas_events_overlay.Write()
     out_file.Close()
 
     write_debug_table(out_csv, run2_data, run3_data, run2_mc, run3_mc, data_ratio, mc_ratio, double_ratio)
@@ -755,6 +1335,10 @@ def main() -> int:
     canvas_zoom.Close()
     canvas_norm.SaveAs(str(out_pdf_norm))
     canvas_norm.Close()
+    canvas_overlay.SaveAs(str(out_pdf_overlay))
+    canvas_overlay.Close()
+    canvas_events_overlay.SaveAs(str(out_pdf_events_overlay))
+    canvas_events_overlay.Close()
 
     print(f"[INFO] Run-2 file               : {run2_root}")
     print(f"[INFO] Run-3 file               : {run3_root}")
@@ -775,6 +1359,11 @@ def main() -> int:
     print(f"[INFO] Bottom y-range           : [{y_bot_min:g}, {y_bot_max:g}]")
     print(f"[INFO] Norm top y-range         : [{y_norm_top_min:g}, {y_norm_top_max:g}]")
     print(f"[INFO] Zoom x-range [GeV]       : [{args.zoom_x_min_gev:g}, {args.zoom_x_max_gev:g}]")
+    print(f"[INFO] Overlay x-range [GeV]    : [{args.overlay_x_min_gev:g}, {args.overlay_x_max_gev:g}]")
+    print(f"[INFO] Overlay top y-range     : [{overlay_top_y_min:g}, {overlay_top_y_max:g}]")
+    print(f"[INFO] Overlay ratio range     : [{overlay_ratio_y_min:g}, {overlay_ratio_y_max:g}]")
+    print(f"[INFO] Events overlay top y-range: [{overlay_count_top_y_min:g}, {overlay_count_top_y_max:g}]")
+    print(f"[INFO] Events overlay ratio range: [{overlay_count_ratio_y_min:g}, {overlay_count_ratio_y_max:g}]")
     if ndof > 0:
         print(f"[INFO] Agreement chi2/N         : {chi2:.3f}/{ndof} = {chi2/ndof:.3f}")
     else:
@@ -782,6 +1371,8 @@ def main() -> int:
     print(f"[INFO] Output plot              : {out_pdf}")
     print(f"[INFO] Output plot (zoom)       : {out_pdf_zoom}")
     print(f"[INFO] Output plot (norm top)   : {out_pdf_norm}")
+    print(f"[INFO] Output plot (overlay)    : {out_pdf_overlay}")
+    print(f"[INFO] Output plot (events)     : {out_pdf_events_overlay}")
     print(f"[INFO] Output ROOT              : {out_root}")
     print(f"[INFO] Output table             : {out_csv}")
     return 0

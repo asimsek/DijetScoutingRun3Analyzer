@@ -120,6 +120,7 @@ struct McSample {
 struct FileProcessResult {
   std::vector<std::vector<double>> counts;
   double processed_events = 0.0;
+  long long selected_events_without_hlt = 0;
   long long selected_events = 0;
   std::string error;
 };
@@ -131,7 +132,7 @@ std::map<std::string, PlotSpec> build_plot_specs() {
   mjj.title = "Dijet mass [GeV]";
   mjj.variable_bins = true;
   mjj.bin_edges = kMassBins;
-  mjj.display_range = std::make_pair(1181.0, 2332.0);
+  mjj.display_range = std::make_pair(1181.0, 2132.0);
   mjj.units = "GeV";
   mjj.logy = true;
   mjj.ratio_range = {0.4, 1.6};
@@ -224,6 +225,7 @@ std::map<std::string, SelectionPreset> build_selection_presets() {
   {
     std::ostringstream data;
     data << "PassJSON == 1 && nJet > 1 && IdTight_j1 > 0.5 && IdTight_j2 > 0.5"
+         << " && passHLT_PFScoutingHT > 0.5"
          << " && pTWJ_j1 > 30 && pTWJ_j2 > 30"
          << " && TMath::Abs(etaWJ_j1) < " << kEtaCut
          << " && TMath::Abs(etaWJ_j2) < " << kEtaCut
@@ -277,6 +279,24 @@ std::string format_elapsed_seconds(const std::chrono::steady_clock::duration& el
     ss << minutes << "m " << seconds << "s";
   }
   return ss.str();
+}
+
+std::string format_event_count(long long value) {
+  const std::string text = std::to_string(value);
+  std::string formatted;
+  formatted.reserve(text.size() + text.size() / 3);
+  const std::size_t start = !text.empty() && text.front() == '-' ? 1 : 0;
+  if (start == 1) {
+    formatted.push_back('-');
+  }
+  const std::size_t digits = text.size() - start;
+  for (std::size_t i = 0; i < digits; ++i) {
+    if (i != 0 && (digits - i) % 3 == 0) {
+      formatted.push_back(',');
+    }
+    formatted.push_back(text[start + i]);
+  }
+  return formatted;
 }
 
 void log_info(const std::string& message) {
@@ -812,10 +832,11 @@ std::set<std::string> required_branches_for_plots(const std::vector<PlotRequest>
   return branches;
 }
 
-bool passes_common_selection(double pass_json, bool require_json, double n_jet, double id_tight_j1, double id_tight_j2,
-                             double pt_j1, double pt_j2, double eta_j1, double eta_j2, double delta_eta_jj,
-                             double mjj) {
-  return (!require_json || pass_json > 0.5) && n_jet > 1.0 && id_tight_j1 > 0.5 && id_tight_j2 > 0.5 &&
+bool passes_base_selection(double pass_json, bool require_json, double n_jet, double id_tight_j1, double id_tight_j2,
+                           double pt_j1, double pt_j2, double eta_j1, double eta_j2, double delta_eta_jj,
+                           double mjj) {
+  return (!require_json || pass_json > 0.5) &&
+         n_jet > 1.0 && id_tight_j1 > 0.5 && id_tight_j2 > 0.5 &&
          pt_j1 > 30.0 && pt_j2 > 30.0 && std::abs(eta_j1) < kEtaCut && std::abs(eta_j2) < kEtaCut &&
          std::abs(delta_eta_jj) < kDeltaEtaCut && mjj > kDefaultMinMjj;
 }
@@ -857,7 +878,7 @@ double get_plot_value(const std::string& plot_name, double mjj, double dijet_mas
 }
 
 FileProcessResult process_one_file(const std::string& file_name, const std::vector<PlotRequest>& plots, bool read_counter,
-                                   bool require_json, const std::string& hist_name) {
+                                   bool require_json, bool require_hlt_pfscoutinght, const std::string& hist_name) {
   FileProcessResult result;
   result.counts.reserve(plots.size());
   for (const auto& plot : plots) {
@@ -889,7 +910,15 @@ FileProcessResult process_one_file(const std::string& file_name, const std::vect
   if (require_json) {
     enabled_branches.insert("PassJSON");
   }
+  if (require_hlt_pfscoutinght) {
+    enabled_branches.insert("passHLT_PFScoutingHT");
+  }
   configure_tree_for_reading(*tree, enabled_branches);
+
+  if (require_hlt_pfscoutinght && !get_branch_names(*tree).count("passHLT_PFScoutingHT")) {
+    result.error = "Required branch passHLT_PFScoutingHT is missing in " + file_name;
+    return result;
+  }
 
   TTreeReader reader(tree);
   TTreeReaderValue<double> n_jet(reader, "nJet");
@@ -904,6 +933,10 @@ FileProcessResult process_one_file(const std::string& file_name, const std::vect
   std::unique_ptr<TTreeReaderValue<double>> pass_json;
   if (require_json) {
     pass_json = std::make_unique<TTreeReaderValue<double>>(reader, "PassJSON");
+  }
+  std::unique_ptr<TTreeReaderValue<double>> pass_hlt_pfscoutinght;
+  if (require_hlt_pfscoutinght) {
+    pass_hlt_pfscoutinght = std::make_unique<TTreeReaderValue<double>>(reader, "passHLT_PFScoutingHT");
   }
 
   std::unique_ptr<TTreeReaderValue<double>> dijet_mass_ak4pf;
@@ -932,8 +965,13 @@ FileProcessResult process_one_file(const std::string& file_name, const std::vect
 
   while (reader.Next()) {
     const double pass_json_value = pass_json ? **pass_json : 1.0;
-    if (!passes_common_selection(pass_json_value, require_json, *n_jet, *id_tight_j1, *id_tight_j2, *pt_j1, *pt_j2,
-                                 *eta_j1, *eta_j2, *delta_eta_jj, *mjj)) {
+    const double pass_hlt_pfscoutinght_value = pass_hlt_pfscoutinght ? **pass_hlt_pfscoutinght : 1.0;
+    if (!passes_base_selection(pass_json_value, require_json, *n_jet, *id_tight_j1, *id_tight_j2, *pt_j1, *pt_j2,
+                               *eta_j1, *eta_j2, *delta_eta_jj, *mjj)) {
+      continue;
+    }
+    ++result.selected_events_without_hlt;
+    if (require_hlt_pfscoutinght && pass_hlt_pfscoutinght_value <= 0.5) {
       continue;
     }
 
@@ -958,12 +996,13 @@ FileProcessResult process_one_file(const std::string& file_name, const std::vect
 struct AggregateResult {
   std::vector<std::shared_ptr<TH1D>> hists;
   double processed_events = 0.0;
+  long long selected_events_without_hlt = 0;
   long long selected_events = 0;
 };
 
 AggregateResult process_files_parallel(const std::vector<std::string>& files, const std::vector<PlotRequest>& plots,
                                        bool read_counter,
-                                       bool require_json, int threads, const std::string& name_prefix,
+                                       bool require_json, bool require_hlt_pfscoutinght, int threads, const std::string& name_prefix,
                                        const std::string& file_log_label,
                                        const std::optional<double>& file_xsec_pb = std::nullopt) {
   AggregateResult aggregate;
@@ -984,7 +1023,7 @@ AggregateResult process_files_parallel(const std::vector<std::string>& files, co
   const std::size_t total = files.size();
   const auto results = executor.Map(
       [&](const std::string& file_name) {
-        auto result = process_one_file(file_name, plots, read_counter, require_json,
+        auto result = process_one_file(file_name, plots, read_counter, require_json, require_hlt_pfscoutinght,
                                        name_prefix + "_" + fs::path(file_name).filename().string());
         const std::size_t done = processed.fetch_add(1) + 1;
         if (!file_log_label.empty()) {
@@ -1010,6 +1049,7 @@ AggregateResult process_files_parallel(const std::vector<std::string>& files, co
       }
     }
     aggregate.processed_events += result.processed_events;
+    aggregate.selected_events_without_hlt += result.selected_events_without_hlt;
     aggregate.selected_events += result.selected_events;
   }
 
@@ -1241,10 +1281,12 @@ int main(int argc, char** argv) {
     std::vector<std::optional<double>> kfactors(plots.size());
 
     if (!data_files.empty()) {
-      auto data_result = process_files_parallel(data_files, plots, false, true, args.threads, "h_data",
+      auto data_result = process_files_parallel(data_files, plots, false, true, true, args.threads, "h_data",
                                                 "Data file        : ");
       data_hists = std::move(data_result.hists);
       data_yield_raw = data_result.selected_events;
+      log_info("Data sel. no HLT : " + format_event_count(data_result.selected_events_without_hlt));
+      log_info("Data sel. w/ HLT : " + format_event_count(data_result.selected_events));
       for (auto& hist : data_hists) {
         set_hist_style(*hist, kDataColor, true);
         root_out.cd();
@@ -1255,7 +1297,7 @@ int main(int argc, char** argv) {
     mc_total_hists.resize(plots.size());
     for (std::size_t index = 0; index < mc_samples.size(); ++index) {
       const auto& sample = mc_samples[index];
-      auto sample_result = process_files_parallel(sample.files, plots, true, false, args.threads,
+      auto sample_result = process_files_parallel(sample.files, plots, true, false, false, args.threads,
                                                   "h_mc_" + sample.name, "",
                                                   sample.xsec_pb);
       const double n_processed = sample_result.processed_events;

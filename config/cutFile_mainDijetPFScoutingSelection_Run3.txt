@@ -6,6 +6,8 @@ JSON data/json/Cert_Collisions2024_378981_386951_Golden.json
 produceSkim                      0          -          -       -       -1
 produceReducedSkim               1          -          -       -       -1
 maxEvents                        0          -          -       -       -1
+useFastJet                       0          -          -       -       -1
+jetAlgo                          AntiKt     -          -       -       -1
 
 # Jet selection
 jetFidRegion                     2.5        -          -       -       -1

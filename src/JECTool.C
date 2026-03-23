@@ -34,6 +34,23 @@ inline std::string valueAfterColon(const std::string& line) {
   return trim(line.substr(pos + 1));
 }
 
+bool looksLikeJecPayload(const std::string& path, std::string* firstMeaningfulLine = nullptr) {
+  std::ifstream fin(path);
+  if (!fin) return false;
+  std::string line;
+  while (std::getline(fin, line)) {
+    std::string t = trim(line);
+    if (t.empty()) continue;
+    if (t[0] == '#') continue;
+    if (firstMeaningfulLine) *firstMeaningfulLine = t;
+    // JEC txt payloads start with "{" (format header) or a number line after header.
+    if (t.find("<!DOCTYPE") != std::string::npos) return false;
+    if (starts_with(t, "<html") || starts_with(t, "<!DOCTYPE")) return false;
+    return true;
+  }
+  return false;
+}
+
 // Allow values like:
 //   Key: [ a:b:path1,
 //          c:d:path2 ]
@@ -56,7 +73,8 @@ std::string readPossiblyMultilineBracketValue(std::ifstream& fin, std::string va
 
 // Parse bracket content like: [ -1:-1:path, 382298:383247:path, ... ]
 // Choose entry that matches runNo (start <= runNo < end), or the (-1:-1:...) fallback.
-std::string pickResidualFromBracket(const std::string& bracketSpec, long runNo) {
+// Empty paths are allowed and resolve to "".
+std::string pickPathFromBracket(const std::string& bracketSpec, long runNo) {
   // Extract inside [ ... ]
   auto l = bracketSpec.find('[');
   auto r = bracketSpec.rfind(']');
@@ -103,6 +121,15 @@ std::string pickResidualFromBracket(const std::string& bracketSpec, long runNo) 
   }
   // if no matching range or runNo<0, return fallback (may be empty)
   return fallback;
+}
+
+std::string resolveOptionalPathSpec(const std::string& rawSpec, long runNo) {
+  const std::string spec = trim(rawSpec);
+  if (spec.empty()) return "";
+  if (spec.find('[') != std::string::npos) {
+    return trim(pickPathFromBracket(spec, runNo));
+  }
+  return spec;
 }
 
 struct Block {
@@ -188,16 +215,12 @@ Resolved resolveList(const std::string& listFile,
   out.L1  = chosen->L1;
   out.L2  = chosen->L2;
   out.L3  = chosen->L3;
-  out.Unc = chosen->Unc;
-  out.JetVetoMap = chosen->JetVetoMap;
+  out.Unc = resolveOptionalPathSpec(chosen->Unc, runNo);
+  out.JetVetoMap = resolveOptionalPathSpec(chosen->JetVetoMap, runNo);
 
   // L2L3Residual may be bracket list with run ranges
   if (!chosen->L2L3Residual.empty()) {
-    if (chosen->L2L3Residual.find('[') != std::string::npos) {
-      out.L2L3Residual = pickResidualFromBracket(chosen->L2L3Residual, runNo);
-    } else {
-      out.L2L3Residual = chosen->L2L3Residual;
-    }
+    out.L2L3Residual = resolveOptionalPathSpec(chosen->L2L3Residual, runNo);
   }
 
   return out;
@@ -207,10 +230,25 @@ std::unique_ptr<FactorizedJetCorrector>
 makeCorrector(const Resolved& r, bool forData)
 {
   std::vector<JetCorrectorParameters> v;
-  if (!r.L1.empty()) v.emplace_back(r.L1);
-  if (!r.L2.empty()) v.emplace_back(r.L2);
-  if (!r.L3.empty()) v.emplace_back(r.L3);
-  if (forData && !r.L2L3Residual.empty()) v.emplace_back(r.L2L3Residual);
+  auto addPayload = [&](const std::string& label, const std::string& path) {
+    if (path.empty()) return true;
+    std::string firstLine;
+    if (!looksLikeJecPayload(path, &firstLine)) {
+      std::cerr << "[JECTool] ERROR: invalid or unreadable JEC payload for " << label
+                << ": " << path << std::endl;
+      if (!firstLine.empty()) {
+        std::cerr << "[JECTool] ERROR: first non-empty line: " << firstLine << std::endl;
+      }
+      return false;
+    }
+    v.emplace_back(path);
+    return true;
+  };
+
+  if (!addPayload("L1FastJet", r.L1)) return nullptr;
+  if (!addPayload("L2Relative", r.L2)) return nullptr;
+  if (!addPayload("L3Absolute", r.L3)) return nullptr;
+  if (forData && !addPayload("L2L3Residual", r.L2L3Residual)) return nullptr;
 
   if (v.empty()) {
     std::cerr << "[JECTool] WARNING: no JEC parameters provided, returning nullptr\n";
@@ -230,5 +268,4 @@ makeUncertainty(const Resolved& r)
 }
 
 } // namespace JECTool
-
 

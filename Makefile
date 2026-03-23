@@ -11,6 +11,7 @@ FLAGS += -DBOOST_BIND_GLOBAL_PLACEHOLDERS
 
 # Query CMSSW externals with scram (works after `cmsenv`)
 scram = $(shell scram tool tag $(1) $(2) 2>/dev/null)
+maybe_incflag = $(if $(filter -I%,$(1)),$(1),-I$(1))
 
 # ROOT
 ROOTCFLAGS := $(shell root-config --cflags)
@@ -28,6 +29,11 @@ FMT_LIBDIR := $(call scram,fmt,LIBDIR)
 BOOST_BASE    := $(call scram,boost,BOOST_BASE)
 BOOST_INCDIR  := $(if $(strip $(BOOST_BASE)),$(BOOST_BASE)/include)
 
+# FastJet (used by Run-3 wide-jet reclustering when compiled into analysisClass.C)
+FASTJET_BASE    := $(call scram,fastjet,FASTJET_BASE)
+FASTJET_INCDIR  := $(call scram,fastjet,INCLUDE)
+FASTJET_LIBDIR  := $(call scram,fastjet,LIBDIR)
+
 # Include paths (project + CMSSW + externals)
 INC  = -I. -I.. -I./include -I$(CMSSW_INCDIR)
 # If you also keep private code in your dev area:
@@ -39,6 +45,13 @@ ifneq ($(strip $(BOOST_INCDIR)),)
   INC += -I$(BOOST_INCDIR)
 else ifneq ($(strip $(BOOST_BASE)),)
   INC += -I$(BOOST_BASE)/include
+endif
+
+# FastJet include dir from scram (fallback to FASTJET_BASE/include)
+ifneq ($(strip $(FASTJET_BASE)),)
+  INC += -I$(FASTJET_BASE)/include
+else ifneq ($(strip $(FASTJET_INCDIR)),)
+  INC += $(call maybe_incflag,$(FASTJET_INCDIR))
 endif
 
 # Guard CLHEP so it doesn't become "-I/include" when unset
@@ -57,12 +70,18 @@ INC += -I$(CMSSW_INCDIR)/JetMETCorrections/Objects/interface
 LIBS  = -L$(CMSSW_LIBDIR) $(ROOTLIBS)
 LIBS += -lCondFormatsJetMETObjects -lJetMETCorrectionsObjects -lFWCoreMessageLogger
 LIBS += -L$(FMT_LIBDIR) -lfmt
+ifneq ($(strip $(FASTJET_LIBDIR)),)
+  LIBS += -L$(FASTJET_LIBDIR) -lfastjet
+endif
 ifdef CLHEP
   LIBS += -L${CLHEP}/lib
 endif
 
 # RPATHs so executable finds the shared libs at runtime
 RPATH = -Wl,-rpath,$(CMSSW_LIBDIR) -Wl,-rpath,$(FMT_LIBDIR)
+ifneq ($(strip $(FASTJET_LIBDIR)),)
+  RPATH += -Wl,-rpath,$(FASTJET_LIBDIR)
+endif
 
 # Sources
 SRC = ./src

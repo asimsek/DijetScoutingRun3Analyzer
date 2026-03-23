@@ -109,7 +109,7 @@ python3 condor_submit_kinematics.py --data-list ../lists/reducedNtuple_lists/Sco
 ### Compare Cross-section: Run3 vs Run2
 
 ```bash
-python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016_27August2023_13/histo_data_mjj_fromTree.root --run3-root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root --run2-data-hist h_dat_rebin --run2-mc-hist h_MC_rebin --run3-data-hist h_data_mjj --run3-mc-hist h_mc_total_mjj --lumi-run2-fb 27.225 --lumi-run3-fb 108.757319778 --year-run2 2016 --year-run3 2024 --output-dir Run3vsRun2_Comparison --output-prefix Run3_2024ALL_vsRun2
+python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016_27August2023_13/histo_data_mjj_fromTree.root --run3-root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root --run2-data-hist h_dat_rebin --run2-mc-hist h_MC_rebin --run3-data-hist h_data_mjj --run3-mc-hist h_mc_total_mjj --lumi-run2-fb 27.225 --lumi-run3-fb 108.757319778 --year-run2 2016 --year-run3 2024 --output-dir Run3vsRun2_Comparison --output-prefix Run3_2024ALL_vsRun2 --overlay-ratio-y-min 0.2 --overlay-ratio-y-max 1.8
 ```
 
 ---

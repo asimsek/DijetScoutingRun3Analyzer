@@ -11,6 +11,7 @@
 #include <numeric>
 #include <string>
 #include <vector>
+#include <fastjet/ClusterSequence.hh>
 
 #include <TH1F.h>
 #include <TMath.h>
@@ -26,7 +27,7 @@ using std::size_t;
 
 namespace {
 
-const std::string era = "2024C";
+const std::string era = "2024H";
 const std::string dataList = "data/cfg/data_jec_list.txt";
 const std::string mcList = "data/cfg/mc_jec_list.txt";
 
@@ -159,6 +160,17 @@ std::string formatWithCommas(Long64_t value) {
   return out;
 }
 
+fastjet::JetAlgorithm getFastJetAlgorithm(const std::string& jetAlgo) {
+  if (jetAlgo == "Kt" || jetAlgo == "kt") {
+    return fastjet::kt_algorithm;
+  }
+  if (jetAlgo == "Cambridge" || jetAlgo == "cambridge" || jetAlgo == "CambridgeAachen" ||
+      jetAlgo == "cambridge_algorithm" || jetAlgo == "CA") {
+    return fastjet::cambridge_algorithm;
+  }
+  return fastjet::antikt_algorithm;
+}
+
 }  // namespace
 
 analysisClass::analysisClass(std::string* inputList,
@@ -183,8 +195,11 @@ analysisClass::analysisClass(std::string* inputList,
     JetCorrector_data = dataCorr.release();
     unc = jecUnc.release();
 
-    if (!JetCorrector || !JetCorrector_data || !unc) {
-      std::cerr << "[analysisClass] ERROR: JEC initialization failed. Check list files.\n";
+    if (!JetCorrector || !JetCorrector_data) {
+      std::cerr << "[analysisClass] ERROR: JEC corrector initialization failed. Check list files.\n";
+    } else if (!unc) {
+      std::cerr << "[analysisClass] WARNING: no JEC uncertainty file configured. "
+                   "JEC uncertainties and JEC shifts will be disabled.\n";
     }
   }
 
@@ -274,7 +289,7 @@ void analysisClass::Loop() {
     return;
   }
 
-  //fChain->SetCacheSize(128 * 1024 * 1024);
+  // fChain->SetCacheSize(128 * 1024 * 1024);
 
   TTreeReader reader(fChain);
 
@@ -405,11 +420,22 @@ void analysisClass::Loop() {
   const double pt0Cut = getPreCutValue1("pt0Cut");
   const double pt1Cut = getPreCutValue1("pt1Cut");
   const double wideJetDeltaR = getPreCutValue1("DeltaR");
+  const bool useFastJet = (int(getPreCutValue1("useFastJet")) == 1);
+  const std::string jetAlgo = getPreCutString1("jetAlgo");
   const bool reapplyJEC = (int(getPreCutValue1("useJECs")) == 1);
   const bool useRawOnly = (int(getPreCutValue1("noJECs")) == 1);
+  const bool shiftJECs = (int(getPreCutValue1("shiftJECs")) == 1);
   const double shiftSign = getPreCutValue2("shiftJECs");
+  std::unique_ptr<fastjet::JetDefinition> fjJetDefinition;
+  if (useFastJet) {
+    fjJetDefinition = std::make_unique<fastjet::JetDefinition>(getFastJetAlgorithm(jetAlgo), wideJetDeltaR);
+    std::cout << "[analysisClass] Wide-jet mode: FastJet (" << jetAlgo << ", R=" << wideJetDeltaR << ")\n";
+  } else {
+    std::cout << "[analysisClass] Wide-jet mode: legacy pairwise clustering\n";
+  }
 
   bool warnedMissingJEC = false;
+  bool warnedMissingJECUnc = false;
   bool warnedMismatchedNJet = false;
   long jecResidualRunCached = -1;
 
@@ -489,10 +515,15 @@ void analysisClass::Loop() {
     std::iota(sortedIdx.begin(), sortedIdx.end(), 0);
     jetID.assign(nJets, 0);
 
-    const bool doReapplyJEC = reapplyJEC && JetCorrector && JetCorrector_data && unc;
+    const bool doReapplyJEC = reapplyJEC && JetCorrector && JetCorrector_data;
     if (reapplyJEC && !doReapplyJEC && !warnedMissingJEC) {
-      std::cerr << "[analysisClass] WARNING: useJECs=1 but JEC tools are not fully initialized. Falling back to input jet kinematics.\n";
+      std::cerr << "[analysisClass] WARNING: useJECs=1 but JEC correctors are not fully initialized. Falling back to input jet kinematics.\n";
       warnedMissingJEC = true;
+    }
+    if (doReapplyJEC && !unc && !warnedMissingJECUnc) {
+      std::cerr << "[analysisClass] WARNING: no JEC uncertainty payload is available. "
+                   "Relative JEC uncertainties and shiftJECs will be disabled.\n";
+      warnedMissingJECUnc = true;
     }
 
     if (doReapplyJEC && isDataEvt && (jecResidualRunCached != static_cast<long>(runNoEvt))) {
@@ -588,12 +619,14 @@ void analysisClass::Loop() {
 
         const double corr = isDataEvt ? JetCorrector_data->getCorrection() : JetCorrector->getCorrection();
 
-        unc->setJetEta(eta);
-        unc->setJetPt(rawPt[i] * corr);
-        const double u = unc->getUncertainty(true);
-
         jecFactor[i] = corr;
-        jecUncRel[i] = u;
+        if (unc) {
+          unc->setJetEta(eta);
+          unc->setJetPt(rawPt[i] * corr);
+          jecUncRel[i] = unc->getUncertainty(true);
+        } else {
+          jecUncRel[i] = 0.0;
+        }
       } else if (useRawOnly) {
         jecFactor[i] = 1.0;
         jecUncRel[i] = 0.0;
@@ -652,54 +685,88 @@ void analysisClass::Loop() {
 
         AK4j1.SetPtEtaPhiM(s0, jetEta[j0], jetPhi[j0], getMassForMode(j0));
         AK4j2.SetPtEtaPhiM(s1, jetEta[j1], jetPhi[j1], getMassForMode(j1));
+        const auto shiftFactorForJet = [&](size_t j) -> double {
+          return shiftJECs ? (1.0 + (shiftSign * jecUncRel[j])) : 1.0;
+        };
 
-        TLorentzVector wj1_tmp = AK4j1;
-        TLorentzVector wj2_tmp = AK4j2;
-        TLorentzVector wj1s_tmp = AK4j1;
-        TLorentzVector wj2s_tmp = AK4j2;
+        if (useFastJet) {
+          std::vector<fastjet::PseudoJet> fjInputs;
+          std::vector<fastjet::PseudoJet> fjInputsShift;
+          fjInputs.reserve(nJets);
+          fjInputsShift.reserve(nJets);
 
-        for (size_t k = 0; k < nJets; ++k) {
-          const auto j = sortedIdx[k];
-          if (std::fabs(jetEta[j]) >= jetFidRegion) continue;
-          if (jetID[j] != tightJetIDFlag) continue;
-          const double pTj = getCorrPt(j);
-          if (pTj <= ptCut) continue;
+          for (size_t k = 0; k < nJets; ++k) {
+            const auto j = sortedIdx[k];
+            if (std::fabs(jetEta[j]) >= jetFidRegion) continue;
+            if (jetID[j] != tightJetIDFlag) continue;
 
-          TLorentzVector cj;
-          cj.SetPtEtaPhiM(pTj, jetEta[j], jetPhi[j], getMassForMode(j));
+            const double pTj = getCorrPt(j);
+            const double minPt = (k == 0) ? pt0Cut : ((k == 1) ? pt1Cut : ptCut);
+            if (pTj <= minPt) continue;
 
-          const double dR1 = cj.DeltaR(AK4j1);
-          const double dR2 = cj.DeltaR(AK4j2);
+            const double massj = getMassForMode(j);
+            const double shiftFactor = shiftFactorForJet(j);
+            TLorentzVector jet, jetShift;
+            jet.SetPtEtaPhiM(pTj, jetEta[j], jetPhi[j], massj);
+            jetShift.SetPtEtaPhiM(pTj * shiftFactor, jetEta[j], jetPhi[j], massj * shiftFactor);
 
-          if (dR1 < dR2 && dR1 < wideJetDeltaR) {
-            wj1_tmp += cj;
-            if (doReapplyJEC) {
-              const double pTshift = pTj * (1.0 + (shiftSign * jecUncRel[j]));
-              TLorentzVector cjs;
-              cjs.SetPtEtaPhiM(pTshift, jetEta[j], jetPhi[j],
-                               cj.M() * (1.0 + (shiftSign * jecUncRel[j])));
-              wj1s_tmp += cjs;
+            fjInputs.emplace_back(jet.Px(), jet.Py(), jet.Pz(), jet.E());
+            fjInputsShift.emplace_back(jetShift.Px(), jetShift.Py(), jetShift.Pz(), jetShift.E());
+          }
+
+          if (fjInputs.size() > 1U) {
+            fastjet::ClusterSequence clusterSeq(fjInputs, *fjJetDefinition);
+            fastjet::ClusterSequence clusterSeqShift(fjInputsShift, *fjJetDefinition);
+            const auto wideJets = fastjet::sorted_by_pt(clusterSeq.inclusive_jets(0.0));
+            const auto wideJetsShift = fastjet::sorted_by_pt(clusterSeqShift.inclusive_jets(0.0));
+            if (wideJets.size() > 1U && wideJetsShift.size() > 1U) {
+              wj1.SetPxPyPzE(wideJets[0].px(), wideJets[0].py(), wideJets[0].pz(), wideJets[0].e());
+              wj2.SetPxPyPzE(wideJets[1].px(), wideJets[1].py(), wideJets[1].pz(), wideJets[1].e());
+              wj1_shift.SetPxPyPzE(wideJetsShift[0].px(), wideJetsShift[0].py(), wideJetsShift[0].pz(),
+                                   wideJetsShift[0].e());
+              wj2_shift.SetPxPyPzE(wideJetsShift[1].px(), wideJetsShift[1].py(), wideJetsShift[1].pz(),
+                                   wideJetsShift[1].e());
             }
-          } else if (dR2 < wideJetDeltaR) {
-            wj2_tmp += cj;
-            if (doReapplyJEC) {
-              const double pTshift = pTj * (1.0 + (shiftSign * jecUncRel[j]));
-              TLorentzVector cjs;
-              cjs.SetPtEtaPhiM(pTshift, jetEta[j], jetPhi[j],
-                               cj.M() * (1.0 + (shiftSign * jecUncRel[j])));
+          }
+        } else {
+          // Match the original Run-II pairwise wide-jet construction:
+          // start empty, then add each AK4 jet once according to the nearest seed.
+          TLorentzVector wj1_tmp, wj2_tmp, wj1s_tmp, wj2s_tmp;
+
+          for (size_t k = 0; k < nJets; ++k) {
+            const auto j = sortedIdx[k];
+            if (std::fabs(jetEta[j]) >= jetFidRegion) continue;
+            if (jetID[j] != tightJetIDFlag) continue;
+            const double pTj = getCorrPt(j);
+            if (pTj <= ptCut) continue;
+
+            const double massj = getMassForMode(j);
+            const double shiftFactor = shiftFactorForJet(j);
+            TLorentzVector cj, cjs;
+            cj.SetPtEtaPhiM(pTj, jetEta[j], jetPhi[j], massj);
+            cjs.SetPtEtaPhiM(pTj * shiftFactor, jetEta[j], jetPhi[j], massj * shiftFactor);
+
+            const double dR1 = cj.DeltaR(AK4j1);
+            const double dR2 = cj.DeltaR(AK4j2);
+
+            if (dR1 < dR2 && dR1 < wideJetDeltaR) {
+              wj1_tmp += cj;
+              wj1s_tmp += cjs;
+            } else if (dR2 < wideJetDeltaR) {
+              wj2_tmp += cj;
               wj2s_tmp += cjs;
             }
           }
-        }
 
-        if (wj2_tmp.Pt() > wj1_tmp.Pt()) {
-          std::swap(wj1_tmp, wj2_tmp);
-          std::swap(wj1s_tmp, wj2s_tmp);
+          if (wj2_tmp.Pt() > wj1_tmp.Pt()) {
+            std::swap(wj1_tmp, wj2_tmp);
+            std::swap(wj1s_tmp, wj2s_tmp);
+          }
+          wj1 = wj1_tmp;
+          wj2 = wj2_tmp;
+          wj1_shift = wj1s_tmp;
+          wj2_shift = wj2s_tmp;
         }
-        wj1 = wj1_tmp;
-        wj2 = wj2_tmp;
-        wj1_shift = wj1s_tmp;
-        wj2_shift = wj2s_tmp;
       }
     }
 
