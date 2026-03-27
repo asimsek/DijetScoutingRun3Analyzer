@@ -45,7 +45,7 @@ constexpr const char* kTreePathDefault = "rootTupleTree/tree";
 constexpr const char* kEventCounterPath = "DijetFilter/EventCount/EventCounter";
 constexpr double kDeltaEtaCut = 1.3;
 constexpr double kEtaCut = 2.5;
-constexpr double kDefaultMinMjj = 1181.0;
+constexpr double kDefaultMinMjj = 565.0;
 constexpr const char* kDefaultSelection = "dijet";
 constexpr const char* kDefaultDataLabel = "Data";
 constexpr const char* kDefaultMcLabel = "QCD";
@@ -132,7 +132,7 @@ std::map<std::string, PlotSpec> build_plot_specs() {
   mjj.title = "Dijet mass [GeV]";
   mjj.variable_bins = true;
   mjj.bin_edges = kMassBins;
-  mjj.display_range = std::make_pair(1181.0, 2132.0);
+  mjj.display_range = std::make_pair(565.0, 2132.0);
   mjj.units = "GeV";
   mjj.logy = true;
   mjj.ratio_range = {0.4, 1.6};

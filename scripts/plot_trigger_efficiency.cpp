@@ -62,12 +62,12 @@ constexpr double kMinPtJ1 = 30.0;
 constexpr double kMinPtJ2 = 30.0;
 constexpr double kMinJetCount = 1.0;
 
-constexpr double kEfficiencyMassDisplayMin = 350.0;
-constexpr double kEfficiencyMassDisplayMax = 14000.0;
-constexpr double kEfficiencyZoomMassDisplayMin = 350.0;
-constexpr double kEfficiencyZoomMassDisplayMax = 4000.0;
+constexpr double kEfficiencyMassDisplayMin = 220.0;
+constexpr double kEfficiencyMassDisplayMax = 6000.0;
+constexpr double kEfficiencyZoomMassDisplayMin = 220.0;
+constexpr double kEfficiencyZoomMassDisplayMax = 2000.0;
 constexpr double kCountsMassDisplayMin = 0.0;
-constexpr double kCountsMassDisplayMax = 14000.0;
+constexpr double kCountsMassDisplayMax = 6000.0;
 constexpr double kEfficiencyYMin = 0.0;
 constexpr double kEfficiencyYMax = 1.30;
 
