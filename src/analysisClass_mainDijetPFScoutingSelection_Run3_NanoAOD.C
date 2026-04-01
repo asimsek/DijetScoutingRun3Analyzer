@@ -14,6 +14,7 @@
 #include <fastjet/ClusterSequence.hh>
 
 #include <TH1F.h>
+#include <TLeaf.h>
 #include <TMath.h>
 #include <TLorentzVector.h>
 #include <TStyle.h>
@@ -27,11 +28,11 @@ using std::size_t;
 
 namespace {
 
-const std::string era = "2024H";
+const std::string era = "2024I";
 const std::string dataList = "data/cfg/data_jec_list.txt";
 const std::string mcList = "data/cfg/mc_jec_list.txt";
 
-const std::array<const char*, 26> kNanoInputBranchesData = {
+const std::array<const char*, 30> kNanoInputBranchesData = {
     "run",
     "luminosityBlock",
     "event",
@@ -56,6 +57,10 @@ const std::array<const char*, 26> kNanoInputBranchesData = {
     "ScoutingPFJet_chargedHadronMultiplicity",
     "ScoutingPFJet_neutralHadronMultiplicity",
     "ScoutingPFJet_photonMultiplicity",
+    "ScoutingPFJet_HFHadronMultiplicity",
+    "ScoutingPFJet_muonMultiplicity",
+    "ScoutingPFJet_electronMultiplicity",
+    "ScoutingPFJet_HFEMMultiplicity",
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
@@ -111,6 +116,29 @@ const std::array<const char*, 24> kNanoInputBranchesMonitoring = {
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
+const std::array<const char*, 4> kRequiredL1DecisionBranches = {
+    "L1_HTT280er",
+    "L1_SingleJet180",
+    "L1_DoubleJet30er2p5_Mass_Min250_dEta_Max1p5",
+    "L1_ETT2000"};
+
+const std::array<const char*, 2> kVetoL1DecisionBranches = {
+    "L1_HTT200er",
+    "L1_HTT255er"};
+
+const std::array<const char*, 11> kScoutingMuonInputBranches = {
+    "nScoutingMuonVtx",
+    "ScoutingMuonVtx_pt",
+    "ScoutingMuonVtx_eta",
+    "ScoutingMuonVtx_phi",
+    "ScoutingMuonVtx_trk_dxy",
+    "ScoutingMuonVtx_trk_dz",
+    "ScoutingMuonVtx_normchi2",
+    "ScoutingMuonVtx_nValidRecoMuonHits",
+    "ScoutingMuonVtx_nRecoMuonMatchedStations",
+    "ScoutingMuonVtx_nValidPixelHits",
+    "ScoutingMuonVtx_nTrackerLayersWithMeasurement"};
+
 const char* kTriggerJetHTBranch = "DST_PFScouting_JetHT";
 const char* kTriggerSingleMuonBranch = "DST_PFScouting_SingleMuon";
 
@@ -136,6 +164,33 @@ bool hasBranch(TTree* tree, const char* bname) {
 
 double safeFrac(double num, double den) {
   return (den > 0.0) ? (num / den) : 0.0;
+}
+
+double deltaRDistance(double eta1, double phi1, double eta2, double phi2) {
+  const double deta = eta1 - eta2;
+  const double dphi = std::abs(TVector2::Phi_mpi_pi(phi1 - phi2));
+  return std::sqrt(deta * deta + dphi * dphi);
+}
+
+bool passesScoutingMuonID(double pt,
+                          double eta,
+                          double trkDxy,
+                          double trkDz,
+                          double normChi2,
+                          double nValidRecoMuonHits,
+                          double nRecoMuonMatchedStations,
+                          double nValidPixelHits,
+                          double nTrackerLayersWithMeasurement) {
+  if (pt <= 30.0) return false;
+  if (std::abs(eta) >= 0.8) return false;
+  if (std::abs(trkDxy) >= 0.2) return false;
+  if (std::abs(trkDz) >= 0.5) return false;
+  if (normChi2 >= 3.0) return false;
+  if (nValidRecoMuonHits <= 0.0) return false;
+  if (nRecoMuonMatchedStations <= 1.0) return false;
+  if (nValidPixelHits <= 0.0) return false;
+  if (nTrackerLayersWithMeasurement <= 5.0) return false;
+  return true;
 }
 
 std::string formatWithCommas(Long64_t value) {
@@ -234,6 +289,9 @@ void analysisClass::Loop() {
   const bool useMonitoringData = (inputMode == InputSampleMode::kMonitoringData);
   const bool useStandardLikeJets = useStandardMC || useMonitoringData;
   const bool isDataSample = !hasGenWeight;
+  const bool applyL1TriggerVeto = isDataSample && (getPreCutValue1("applyL1TriggerVeto") > 0.5);
+  const bool applyMuonSelectionCleaning =
+      (inputMode == InputSampleMode::kScoutingData) && (getPreCutValue1("applyMuonSelectionCleaning") > 0.5);
 
   std::cout << "[analysisClass] Input mode: "
             << (useStandardMC ? "MC"
@@ -266,6 +324,13 @@ void analysisClass::Loop() {
     enableBranches(kNanoInputBranchesMonitoring, kNRequiredNanoBranchesMonitoring);
   } else {
     enableBranches(kNanoInputBranchesData, kNRequiredNanoBranchesData);
+  }
+  if (applyL1TriggerVeto) {
+    enableBranches(kRequiredL1DecisionBranches, kRequiredL1DecisionBranches.size());
+    enableBranches(kVetoL1DecisionBranches, kVetoL1DecisionBranches.size());
+  }
+  if (applyMuonSelectionCleaning) {
+    enableBranches(kScoutingMuonInputBranches, kScoutingMuonInputBranches.size());
   }
 
   if (hasGenWeight) fChain->SetBranchStatus("genWeight", 1);
@@ -324,6 +389,10 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<Int_t>> chHadMultData;
   std::unique_ptr<TTreeReaderArray<Int_t>> neHadMultData;
   std::unique_ptr<TTreeReaderArray<Int_t>> phoMultData;
+  std::unique_ptr<TTreeReaderArray<Int_t>> hfHadMultData;
+  std::unique_ptr<TTreeReaderArray<Int_t>> muMultData;
+  std::unique_ptr<TTreeReaderArray<Int_t>> elMultData;
+  std::unique_ptr<TTreeReaderArray<Int_t>> hfEmMultData;
 
   std::unique_ptr<TTreeReaderArray<Float_t>> jetChHEFMC;
   std::unique_ptr<TTreeReaderArray<Float_t>> jetNeHEFMC;
@@ -366,6 +435,10 @@ void analysisClass::Loop() {
     chHadMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_chargedHadronMultiplicity");
     neHadMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_neutralHadronMultiplicity");
     phoMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_photonMultiplicity");
+    hfHadMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_HFHadronMultiplicity");
+    muMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_muonMultiplicity");
+    elMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_electronMultiplicity");
+    hfEmMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_HFEMMultiplicity");
   }
 
   std::unique_ptr<TTreeReaderValue<Bool_t>> trigJetHT;
@@ -375,6 +448,19 @@ void analysisClass::Loop() {
   }
   if (hasTrigSingleMuon) {
     trigSingleMuon = std::make_unique<TTreeReaderValue<Bool_t>>(reader, kTriggerSingleMuonBranch);
+  }
+
+  std::vector<std::unique_ptr<TTreeReaderValue<Bool_t>>> requiredL1Readers;
+  std::vector<std::unique_ptr<TTreeReaderValue<Bool_t>>> vetoL1Readers;
+  auto buildL1Readers = [&](const auto& branchNames, auto& readers) {
+    readers.reserve(branchNames.size());
+    for (const char* branchName : branchNames) {
+      readers.push_back(std::make_unique<TTreeReaderValue<Bool_t>>(reader, branchName));
+    }
+  };
+  if (applyL1TriggerVeto) {
+    buildL1Readers(kRequiredL1DecisionBranches, requiredL1Readers);
+    buildL1Readers(kVetoL1DecisionBranches, vetoL1Readers);
   }
 
   static const int nMassBins = 103;
@@ -400,7 +486,12 @@ void analysisClass::Loop() {
   const double pt1Cut = getPreCutValue1("pt1Cut");
   const double wideJetDeltaR = getPreCutValue1("DeltaR");
   const bool useFastJet = (int(getPreCutValue1("useFastJet")) == 1);
-  const std::string jetAlgo = getPreCutString1("jetAlgo");
+  std::string jetAlgo = "AntiKt";
+  if (getPreCutString1("jetAlgo") != "ERROR") {
+    jetAlgo = getPreCutString1("jetAlgo");
+  } else {
+    std::cerr << "[analysisClass] WARNING: jetAlgo not set in cut file. Defaulting to AntiKt.\n";
+  }
   const bool reapplyJEC = (int(getPreCutValue1("useJECs")) == 1);
   const bool useRawOnly = (int(getPreCutValue1("noJECs")) == 1);
   const bool shiftJECs = (int(getPreCutValue1("shiftJECs")) == 1);
@@ -538,6 +629,7 @@ void analysisClass::Loop() {
       int chMultVal = 0;
       int neMultVal = 0;
       int numConstVal = 0;
+      int numChargedParticlesVal = 0;
       bool passID = false;
 
       if (useStandardLikeJets) {
@@ -554,9 +646,11 @@ void analysisClass::Loop() {
         chMultVal = chHadMultMC ? static_cast<int>((*chHadMultMC)[i]) : 0;
         neMultVal = neHadMultMC ? static_cast<int>((*neHadMultMC)[i]) : 0;
         numConstVal = chMultVal + neMultVal;
+        numChargedParticlesVal = chMultVal;
 
         passID = (std::abs(eta) < 2.6) &&
                  (numConstVal > 1) &&
+                 (numChargedParticlesVal > 0) &&
                  (nemf[i] < 0.90) &&
                  (muf[i] < 0.80) &&
                  (nhf[i] < 0.99);
@@ -570,17 +664,20 @@ void analysisClass::Loop() {
         const double hfEmE = (*jetHFEMEData)[i];
         const double hoE = (*jetHOEData)[i];
 
-        const double nominalJec = (std::fabs(jecFacInput[i]) > 1e-8) ? jecFacInput[i] : 1.0;
-        const double massRaw = mass / nominalJec;
-        const double pRaw = rawPt[i] * std::cosh(eta);
-        double jetEnergyRaw = std::sqrt(std::max(0.0, pRaw * pRaw + massRaw * massRaw));
+        double jetEnergyRaw = chHadE + neHadE + phoE + muE + elE + hfHadE + hfEmE;
+        if (jetEnergyRaw <= 0.0) {
+          const double nominalJec = (std::fabs(jecFacInput[i]) > 1e-8) ? jecFacInput[i] : 1.0;
+          const double massRaw = mass / nominalJec;
+          const double pRaw = rawPt[i] * std::cosh(eta);
+          jetEnergyRaw = std::sqrt(std::max(0.0, pRaw * pRaw + massRaw * massRaw));
+        }
         if (jetEnergyRaw <= 0.0) {
           const double eComp = chHadE + neHadE + phoE + muE + elE + hfHadE + hfEmE + hoE;
           jetEnergyRaw = (eComp > 0.0 ? eComp : 0.0);
         }
 
         chf[i] = safeFrac(chHadE, jetEnergyRaw);
-        nhf[i] = safeFrac(neHadE, jetEnergyRaw);
+        nhf[i] = safeFrac(neHadE + hfHadE, jetEnergyRaw);
         phf[i] = safeFrac(phoE, jetEnergyRaw);
         muf[i] = safeFrac(muE, jetEnergyRaw);
         elf[i] = safeFrac(elE, jetEnergyRaw);
@@ -589,9 +686,15 @@ void analysisClass::Loop() {
 
         chMultVal = static_cast<int>((*chHadMultData)[i]);
         neMultVal = static_cast<int>((*neHadMultData)[i]);
-        numConstVal = chMultVal + neMultVal + static_cast<int>((*phoMultData)[i]);
+        const int phoMultVal = static_cast<int>((*phoMultData)[i]);
+        const int muMultVal = static_cast<int>((*muMultData)[i]);
+        const int elMultVal = static_cast<int>((*elMultData)[i]);
+        const int hfHadMultVal = static_cast<int>((*hfHadMultData)[i]);
+        numConstVal = chMultVal + neMultVal + muMultVal + elMultVal + phoMultVal;
+        numChargedParticlesVal = chMultVal + hfHadMultVal;
         passID = (std::abs(eta) < 2.6) &&
                  (numConstVal > 1) &&
+                 (numChargedParticlesVal > 0) &&
                  (nemf[i] < 0.90) &&
                  (muf[i] < 0.80) &&
                  (nhf[i] < 0.99);
@@ -644,66 +747,153 @@ void analysisClass::Loop() {
       return jetMass[i];
     };
 
-    std::sort(sortedIdx.begin(), sortedIdx.end(),
-              [&](unsigned a, unsigned b) { return getCorrPt(a) > getCorrPt(b); });
+    auto shiftFactorForJet = [&](size_t i) -> double {
+      return shiftJECs ? (1.0 + (shiftSign * jecUncRel[i])) : 1.0;
+    };
 
+    std::vector<TLorentzVector> recoJetP4(nJets);
+    std::vector<TLorentzVector> recoJetP4Shift(nJets);
+    for (size_t i = 0; i < nJets; ++i) {
+      const double pTj = getCorrPt(i);
+      const double massj = getMassForMode(i);
+      const double shiftFactor = shiftFactorForJet(i);
+      recoJetP4[i].SetPtEtaPhiM(pTj, jetEta[i], jetPhi[i], massj);
+      recoJetP4Shift[i].SetPtEtaPhiM(pTj * shiftFactor, jetEta[i], jetPhi[i], massj * shiftFactor);
+    }
+
+    if (applyMuonSelectionCleaning) {
+      auto leafValue = [](TLeaf* leaf, Int_t idx = 0) -> double {
+        return leaf ? static_cast<double>(leaf->GetValue(idx)) : 0.0;
+      };
+
+      TLeaf* nMuonLeaf = fChain->GetLeaf("nScoutingMuonVtx");
+      TLeaf* muPtLeaf = fChain->GetLeaf("ScoutingMuonVtx_pt");
+      TLeaf* muEtaLeaf = fChain->GetLeaf("ScoutingMuonVtx_eta");
+      TLeaf* muPhiLeaf = fChain->GetLeaf("ScoutingMuonVtx_phi");
+      TLeaf* muDxyLeaf = fChain->GetLeaf("ScoutingMuonVtx_trk_dxy");
+      TLeaf* muDzLeaf = fChain->GetLeaf("ScoutingMuonVtx_trk_dz");
+      TLeaf* muNormChi2Leaf = fChain->GetLeaf("ScoutingMuonVtx_normchi2");
+      TLeaf* muHitsLeaf = fChain->GetLeaf("ScoutingMuonVtx_nValidRecoMuonHits");
+      TLeaf* muStationsLeaf = fChain->GetLeaf("ScoutingMuonVtx_nRecoMuonMatchedStations");
+      TLeaf* muPixelHitsLeaf = fChain->GetLeaf("ScoutingMuonVtx_nValidPixelHits");
+      TLeaf* muLayersLeaf = fChain->GetLeaf("ScoutingMuonVtx_nTrackerLayersWithMeasurement");
+
+      struct MuonInfo {
+        double pt;
+        double eta;
+        double phi;
+      };
+
+      const int nMuons = static_cast<int>(leafValue(nMuonLeaf));
+      std::vector<MuonInfo> allMuons;
+      allMuons.reserve(static_cast<size_t>(std::max(0, nMuons)));
+      int nGoodMuons = 0;
+
+      for (int i = 0; i < nMuons; ++i) {
+        const double muPt = leafValue(muPtLeaf, i);
+        const double muEta = leafValue(muEtaLeaf, i);
+        const double muPhi = leafValue(muPhiLeaf, i);
+        const double muDxy = leafValue(muDxyLeaf, i);
+        const double muDz = leafValue(muDzLeaf, i);
+        const double muNormChi2 = leafValue(muNormChi2Leaf, i);
+        const double muHits = leafValue(muHitsLeaf, i);
+        const double muStations = leafValue(muStationsLeaf, i);
+        const double muPixelHits = leafValue(muPixelHitsLeaf, i);
+        const double muLayers = leafValue(muLayersLeaf, i);
+
+        allMuons.push_back({muPt, muEta, muPhi});
+        if (passesScoutingMuonID(muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits,
+                                 muLayers)) {
+          ++nGoodMuons;
+        }
+      }
+
+      if (nGoodMuons < 1) continue;
+
+      std::vector<size_t> muCleanJetIdx;
+      muCleanJetIdx.reserve(nJets);
+      for (size_t j = 0; j < nJets; ++j) {
+        if (std::abs(jetEta[j]) > 5.0) continue;
+        if (jetID[j] != tightJetIDFlag) continue;
+        if (getCorrPt(j) <= ptCut) continue;
+        muCleanJetIdx.push_back(j);
+      }
+
+      for (const auto j : muCleanJetIdx) {
+        TLorentzVector cleanedJetP4;
+        cleanedJetP4.SetPtEtaPhiM(jetPt[j], jetEta[j], jetPhi[j], jetMass[j]);
+        TLorentzVector cleanedJetP4Shift = recoJetP4Shift[j];
+
+        bool hadOverlap = false;
+        for (const auto& mu : allMuons) {
+          if (deltaRDistance(jetEta[j], jetPhi[j], mu.eta, mu.phi) >= 0.4) continue;
+          TLorentzVector muP4;
+          muP4.SetPtEtaPhiM(mu.pt, mu.eta, mu.phi, 0.105);
+          cleanedJetP4 -= muP4;
+          cleanedJetP4Shift -= muP4;
+          hadOverlap = true;
+        }
+
+        if (hadOverlap && cleanedJetP4.Pt() < 1.0) {
+          recoJetP4[j].SetPxPyPzE(0.0, 0.0, 0.0, 0.0);
+          recoJetP4Shift[j].SetPxPyPzE(0.0, 0.0, 0.0, 0.0);
+          continue;
+        }
+
+        recoJetP4[j] = cleanedJetP4;
+        recoJetP4Shift[j] = cleanedJetP4Shift;
+      }
+    }
+
+    std::sort(sortedIdx.begin(), sortedIdx.end(),
+              [&](unsigned a, unsigned b) { return recoJetP4[a].Pt() > recoJetP4[b].Pt(); });
+
+    std::vector<size_t> acceptedJetIdx;
+    acceptedJetIdx.reserve(nJets);
     int NAK4PF = 0;
     double HTAK4PF = 0.0;
     double htAK4RawForUnclustered = 0.0;
     for (size_t k = 0; k < nJets; ++k) {
       const auto j = sortedIdx[k];
-      const double pTj = getCorrPt(j);
+      const double pTj = recoJetP4[j].Pt();
       if (pTj > ptCut) htAK4RawForUnclustered += rawPt[j];
-      if (std::fabs(jetEta[j]) >= jetFidRegion) continue;
+      if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
       if (jetID[j] != tightJetIDFlag) continue;
       if (pTj <= ptCut) continue;
+      acceptedJetIdx.push_back(j);
       ++NAK4PF;
       HTAK4PF += pTj;
     }
 
     TLorentzVector wj1, wj2, wj1_shift, wj2_shift;
     TLorentzVector AK4j1, AK4j2;
+    long ak4j1Index = -1;
+    long ak4j2Index = -1;
 
-    if (nJets >= 2) {
-      const auto j0 = sortedIdx[0];
-      const auto j1 = sortedIdx[1];
+    if (acceptedJetIdx.size() >= 2U) {
+      const auto j0 = acceptedJetIdx[0];
+      const auto j1 = acceptedJetIdx[1];
 
-      const auto acceptLeading = [&](size_t j, double pTcut) {
-        return (std::fabs(jetEta[j]) < jetFidRegion) &&
-               (jetID[j] == tightJetIDFlag) &&
-               (getCorrPt(j) > pTcut);
-      };
-
-      if (acceptLeading(j0, pt0Cut) && acceptLeading(j1, pt1Cut)) {
-        const double s0 = doReapplyJEC ? (rawPt[j0] * jecFactor[j0]) : (useRawOnly ? rawPt[j0] : jetPt[j0]);
-        const double s1 = doReapplyJEC ? (rawPt[j1] * jecFactor[j1]) : (useRawOnly ? rawPt[j1] : jetPt[j1]);
-
-        AK4j1.SetPtEtaPhiM(s0, jetEta[j0], jetPhi[j0], getMassForMode(j0));
-        AK4j2.SetPtEtaPhiM(s1, jetEta[j1], jetPhi[j1], getMassForMode(j1));
-        const auto shiftFactorForJet = [&](size_t j) -> double {
-          return shiftJECs ? (1.0 + (shiftSign * jecUncRel[j])) : 1.0;
-        };
+      if (recoJetP4[j0].Pt() > pt0Cut && recoJetP4[j1].Pt() > pt1Cut) {
+        ak4j1Index = static_cast<long>(j0);
+        ak4j2Index = static_cast<long>(j1);
+        AK4j1 = recoJetP4[j0];
+        AK4j2 = recoJetP4[j1];
 
         if (useFastJet) {
           std::vector<fastjet::PseudoJet> fjInputs;
           std::vector<fastjet::PseudoJet> fjInputsShift;
-          fjInputs.reserve(nJets);
-          fjInputsShift.reserve(nJets);
+          fjInputs.reserve(acceptedJetIdx.size());
+          fjInputsShift.reserve(acceptedJetIdx.size());
 
-          for (size_t k = 0; k < nJets; ++k) {
-            const auto j = sortedIdx[k];
-            if (std::fabs(jetEta[j]) >= jetFidRegion) continue;
-            if (jetID[j] != tightJetIDFlag) continue;
-
-            const double pTj = getCorrPt(j);
+          for (size_t k = 0; k < acceptedJetIdx.size(); ++k) {
+            const auto j = acceptedJetIdx[k];
+            const double pTj = recoJetP4[j].Pt();
             const double minPt = (k == 0) ? pt0Cut : ((k == 1) ? pt1Cut : ptCut);
             if (pTj <= minPt) continue;
 
-            const double massj = getMassForMode(j);
-            const double shiftFactor = shiftFactorForJet(j);
-            TLorentzVector jet, jetShift;
-            jet.SetPtEtaPhiM(pTj, jetEta[j], jetPhi[j], massj);
-            jetShift.SetPtEtaPhiM(pTj * shiftFactor, jetEta[j], jetPhi[j], massj * shiftFactor);
+            const TLorentzVector& jet = recoJetP4[j];
+            const TLorentzVector& jetShift = recoJetP4Shift[j];
 
             fjInputs.emplace_back(jet.Px(), jet.Py(), jet.Pz(), jet.E());
             fjInputsShift.emplace_back(jetShift.Px(), jetShift.Py(), jetShift.Pz(), jetShift.E());
@@ -724,22 +914,14 @@ void analysisClass::Loop() {
             }
           }
         } else {
-          // Match the original Run-II pairwise wide-jet construction:
-          // start empty, then add each AK4 jet once according to the nearest seed.
+
           TLorentzVector wj1_tmp, wj2_tmp, wj1s_tmp, wj2s_tmp;
 
-          for (size_t k = 0; k < nJets; ++k) {
-            const auto j = sortedIdx[k];
-            if (std::fabs(jetEta[j]) >= jetFidRegion) continue;
-            if (jetID[j] != tightJetIDFlag) continue;
-            const double pTj = getCorrPt(j);
+          for (const auto j : acceptedJetIdx) {
+            const double pTj = recoJetP4[j].Pt();
             if (pTj <= ptCut) continue;
-
-            const double massj = getMassForMode(j);
-            const double shiftFactor = shiftFactorForJet(j);
-            TLorentzVector cj, cjs;
-            cj.SetPtEtaPhiM(pTj, jetEta[j], jetPhi[j], massj);
-            cjs.SetPtEtaPhiM(pTj * shiftFactor, jetEta[j], jetPhi[j], massj * shiftFactor);
+            const TLorentzVector& cj = recoJetP4[j];
+            const TLorentzVector& cjs = recoJetP4Shift[j];
 
             const double dR1 = cj.DeltaR(AK4j1);
             const double dR2 = cj.DeltaR(AK4j2);
@@ -803,10 +985,16 @@ void analysisClass::Loop() {
     if (unclusteredEnFracVal < -1.0f) unclusteredEnFracVal = -1.0f;
 
     auto getChMultOut = [&](size_t idx) -> int {
-      return useStandardLikeJets ? static_cast<int>((*chHadMultMC)[idx]) : static_cast<int>((*chHadMultData)[idx]);
+      if (useStandardLikeJets) return static_cast<int>((*chHadMultMC)[idx]);
+      const int chVal = static_cast<int>((*chHadMultData)[idx]);
+      const int hfHadVal = static_cast<int>((*hfHadMultData)[idx]);
+      return chVal + hfHadVal;
     };
     auto getNeMultOut = [&](size_t idx) -> int {
-      return useStandardLikeJets ? static_cast<int>((*neHadMultMC)[idx]) : static_cast<int>((*neHadMultData)[idx]);
+      if (useStandardLikeJets) return static_cast<int>((*neHadMultMC)[idx]);
+      const int neVal = static_cast<int>((*neHadMultData)[idx]);
+      const int hfEmVal = static_cast<int>((*hfEmMultData)[idx]);
+      return neVal + hfEmVal;
     };
     auto getPhoMultOut = [&](size_t idx) -> int {
       return useStandardLikeJets ? 0 : static_cast<int>((*phoMultData)[idx]);
@@ -826,8 +1014,8 @@ void analysisClass::Loop() {
     fillVariableWithValue("NAK4PF", NAK4PF);
     fillVariableWithValue("PassJSON", passJSON(runNoEvt, lumiEvt, isDataEvt));
 
-    if (AK4j1.Pt() > 0.0) {
-      const auto j0 = sortedIdx[0];
+    if (AK4j1.Pt() > 0.0 && ak4j1Index >= 0) {
+      const auto j0 = static_cast<size_t>(ak4j1Index);
       fillVariableWithValue("IdTight_j1", jetID[j0]);
       fillVariableWithValue("pTAK4PF_j1", AK4j1.Pt());
       fillVariableWithValue("etaAK4PF_j1", AK4j1.Eta());
@@ -847,8 +1035,8 @@ void analysisClass::Loop() {
       fillVariableWithValue("photonMult_j1", getPhoMultOut(j0));
     }
 
-    if (AK4j2.Pt() > 0.0) {
-      const auto j1 = sortedIdx[1];
+    if (AK4j2.Pt() > 0.0 && ak4j2Index >= 0) {
+      const auto j1 = static_cast<size_t>(ak4j2Index);
       fillVariableWithValue("IdTight_j2", jetID[j1]);
       fillVariableWithValue("pTAK4PF_j2", AK4j2.Pt());
       fillVariableWithValue("etaAK4PF_j2", AK4j2.Eta());
@@ -909,7 +1097,25 @@ void analysisClass::Loop() {
 
     const bool passPFScoutingHT = trigJetHT ? static_cast<bool>(**trigJetHT) : false;
     const bool passPFScoutingSingleMuon = trigSingleMuon ? static_cast<bool>(**trigSingleMuon) : false;
-    fillVariableWithValue("passHLT_PFScoutingHT", passPFScoutingHT ? 1 : 0);
+    bool passRequiredL1 = true;
+    bool passVetoL1 = true;
+    if (applyL1TriggerVeto) {
+      passRequiredL1 = false;
+      for (const auto& bitReader : requiredL1Readers) {
+        if (static_cast<bool>(**bitReader)) {
+          passRequiredL1 = true;
+          break;
+        }
+      }
+      for (const auto& bitReader : vetoL1Readers) {
+        if (static_cast<bool>(**bitReader)) {
+          passVetoL1 = false;
+          break;
+        }
+      }
+    }
+    const bool passPFScoutingHTForHist = passPFScoutingHT && passRequiredL1 && passVetoL1;
+    fillVariableWithValue("passHLT_PFScoutingHT", passPFScoutingHTForHist ? 1 : 0);
     fillVariableWithValue("passHLT_PFScouting_SingleMuon", passPFScoutingSingleMuon ? 1 : 0);
 
     evaluateCuts();
@@ -930,7 +1136,7 @@ void analysisClass::Loop() {
     if (fullAnalysis) {
       h_mjj_HLTpass[0]->Fill(mjjWide);
       h_mjj_noTrig_1GeVbin->Fill(mjjWide);
-      if (passPFScoutingHT) h_mjj_HLTpass[1]->Fill(mjjWide);
+      if (passPFScoutingHTForHist) h_mjj_HLTpass[1]->Fill(mjjWide);
       if (passPFScoutingSingleMuon) h_mjj_HLTpass[2]->Fill(mjjWide);
     }
 

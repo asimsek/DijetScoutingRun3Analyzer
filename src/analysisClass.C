@@ -1,1 +1,1 @@
-analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C
+analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD.C

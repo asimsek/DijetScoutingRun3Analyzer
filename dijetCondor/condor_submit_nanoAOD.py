@@ -458,92 +458,51 @@ Queue 1
 
 
 def create_submit_all(condor_folder: Path, n_jobs: int, name_token: str) -> None:
-    submit_path = condor_folder / "submit_all.py"
+    submit_path = condor_folder / "submit_all.sh"
     submit_path.write_text(
-        f"""#!/usr/bin/env python3
-import shlex
-import subprocess
-import sys
-import time
-from pathlib import Path
-from tqdm import tqdm
+        f"""#!/usr/bin/env bash
+set -u
+shopt -s nullglob
 
-N_RETRIES = 3
-RETRY_SLEEP_S = 0.5
-SUBMIT_DELAY_S = 0.5
-PREFIX = "{name_token}_n"
+prefix="{name_token}_n"
+submitted=0
 
+mapfile -t jdls < <(printf '%s\n' "${{prefix}}"*.jdl | LC_ALL=C sort -V)
+total=${{#jdls[@]}}
+bar_width=40
 
-def _submit_once(jdl):
-    cmd = ["condor_submit", "-terse"]
-    cmd.append(jdl)
-    shell_cmd = " ".join(shlex.quote(part) for part in cmd)
-    proc = subprocess.run(
-        ["bash", "-lc", shell_cmd],
-        text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-    )
-    return proc.returncode, (proc.stdout or "").strip(), (proc.stderr or "").strip()
+draw_progress() {{
+  local current=$1
+  local filled=0
+  if (( total > 0 )); then
+    filled=$(( current * bar_width / total ))
+  fi
+  local empty=$(( bar_width - filled ))
+  printf -v filled_bar '%*s' "${{filled}}" ''
+  printf -v empty_bar '%*s' "${{empty}}" ''
+  filled_bar="${{filled_bar// /#}}"
+  empty_bar="${{empty_bar// /-}}"
+  printf '\\r[SUB] [%s%s] %d/%d' "${{filled_bar}}" "${{empty_bar}}" "${{current}}" "${{total}}"
+}}
 
+if (( total > 0 )); then
+  draw_progress 0
+fi
 
-def submit_one(jdl):
-    last_out = ""
-    last_err = ""
-    for attempt in range(1, N_RETRIES + 1):
-        rc, out, err = _submit_once(jdl)
-        if rc == 0:
-            return True, out, err, attempt
-        last_out = out
-        last_err = err
-        if attempt < N_RETRIES:
-            time.sleep(RETRY_SLEEP_S * attempt)
-    return False, last_out, last_err, N_RETRIES
+for jdl in "${{jdls[@]}}"; do
+  submit_output="$(condor_submit "${{jdl}}" 2>&1)"
+  submit_status=$?
+  submitted=$((submitted + 1))
+  draw_progress "${{submitted}}"
+  if (( submit_status != 0 )); then
+    printf '\\n[WARN] condor_submit failed for %s\\n%s\\n' "${{jdl}}" "${{submit_output}}" >&2
+  fi
+done
 
-
-def jdl_sort_key(name):
-    try:
-        tail = name.rsplit("_n", 1)[1]
-        return int(tail.split(".jdl", 1)[0])
-    except Exception:
-        return 10**12
-
-
-def main():
-    jdls = sorted(
-        [p.name for p in Path(".").glob("*.jdl") if p.name.startswith(PREFIX)],
-        key=jdl_sort_key,
-    )
-    if not jdls:
-        print("No JDL files found for submission.", file=sys.stderr)
-        raise SystemExit(0)
-
-    submitted = 0
-    failed = 0
-
-    with tqdm(total=len(jdls), unit="job") as pbar:
-        for jdl in jdls:
-            ok, out, err, attempt = submit_one(jdl)
-            if ok:
-                submitted += 1
-                cluster_id = out.splitlines()[-1] if out else ""
-                if cluster_id:
-                    pbar.set_postfix_str(cluster_id)
-            else:
-                failed += 1
-                msg = err or out or "unknown condor_submit error"
-                print(f"[WARN] submit failed for {{jdl}} after {{attempt}} attempts: {{msg}}", file=sys.stderr)
-                pbar.set_postfix_str(f"failed={{failed}}")
-            pbar.update(1)
-            time.sleep(SUBMIT_DELAY_S)
-
-    print(f"Submitted {{submitted}}/{{len(jdls)}} jobs.")
-    if failed:
-        print(f"[WARN] Failed submissions: {{failed}}", file=sys.stderr)
-
-
-if __name__ == "__main__":
-    main()
+if (( total > 0 )); then
+  printf '\\n'
+fi
+echo "Submitted ${{submitted}}/${{#jdls[@]}} jobs."
 """
     )
     submit_path.chmod(0o755)
@@ -599,7 +558,16 @@ def create_condor_job_files(
 
 def submit_jobs(condor_folder: Path) -> None:
     log_info("Submitting jobs to Condor...")
-    run_cmd(["python3", "submit_all.py"], cwd=condor_folder, stream_output=True)
+    submit_env = os.environ.copy()
+    submit_env.pop("PYTHONHOME", None)
+    submit_env.pop("PYTHONPATH", None)
+    log_cmd("bash submit_all.sh")
+    subprocess.run(
+        ["bash", "submit_all.sh"],
+        cwd=str(condor_folder),
+        env=submit_env,
+        check=True,
+    )
 
 
 def parse_args() -> argparse.Namespace:
@@ -621,7 +589,13 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Enable CMS Connect JDL requirements (x86_64 Linux + OpSysMajorVer from --scram-arch).",
     )
-    parser.add_argument("--no-submit", action="store_true", help="Prepare files but do not submit.")
+    parser.add_argument(
+        "--no-submit",
+        "--dry-run",
+        dest="no_submit",
+        action="store_true",
+        help="Prepare files but do not submit.",
+    )
     return parser.parse_args()
 
 
@@ -690,7 +664,7 @@ def main() -> None:
     if args.cms_connect:
         log_info(f"CMS Connect mode enabled: {cms_connect_requirements}")
     if args.no_submit:
-        log_info("--no-submit is set. Skipping Condor submission.")
+        log_info("--dry-run/--no-submit is set. Skipping Condor submission.")
     else:
         submit_jobs(condor_folder=condor_folder)
 
