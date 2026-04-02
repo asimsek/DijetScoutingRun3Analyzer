@@ -28,7 +28,7 @@ using std::size_t;
 
 namespace {
 
-const std::string era = "2024I";
+const std::string era = "2024H";
 const std::string dataList = "data/cfg/data_jec_list.txt";
 const std::string mcList = "data/cfg/mc_jec_list.txt";
 
@@ -848,8 +848,6 @@ void analysisClass::Loop() {
     std::sort(sortedIdx.begin(), sortedIdx.end(),
               [&](unsigned a, unsigned b) { return recoJetP4[a].Pt() > recoJetP4[b].Pt(); });
 
-    std::vector<size_t> acceptedJetIdx;
-    acceptedJetIdx.reserve(nJets);
     int NAK4PF = 0;
     double HTAK4PF = 0.0;
     double htAK4RawForUnclustered = 0.0;
@@ -860,36 +858,33 @@ void analysisClass::Loop() {
       if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
       if (jetID[j] != tightJetIDFlag) continue;
       if (pTj <= ptCut) continue;
-      acceptedJetIdx.push_back(j);
       ++NAK4PF;
       HTAK4PF += pTj;
     }
 
     TLorentzVector wj1, wj2, wj1_shift, wj2_shift;
     TLorentzVector AK4j1, AK4j2;
-    long ak4j1Index = -1;
-    long ak4j2Index = -1;
 
-    if (acceptedJetIdx.size() >= 2U) {
-      const auto j0 = acceptedJetIdx[0];
-      const auto j1 = acceptedJetIdx[1];
+    if (nJets >= 2U) {
+      const auto j0 = sortedIdx[0];
+      const auto j1 = sortedIdx[1];
 
       if (recoJetP4[j0].Pt() > pt0Cut && recoJetP4[j1].Pt() > pt1Cut) {
-        ak4j1Index = static_cast<long>(j0);
-        ak4j2Index = static_cast<long>(j1);
         AK4j1 = recoJetP4[j0];
         AK4j2 = recoJetP4[j1];
 
         if (useFastJet) {
           std::vector<fastjet::PseudoJet> fjInputs;
           std::vector<fastjet::PseudoJet> fjInputsShift;
-          fjInputs.reserve(acceptedJetIdx.size());
-          fjInputsShift.reserve(acceptedJetIdx.size());
+          fjInputs.reserve(nJets);
+          fjInputsShift.reserve(nJets);
 
-          for (size_t k = 0; k < acceptedJetIdx.size(); ++k) {
-            const auto j = acceptedJetIdx[k];
+          for (size_t k = 0; k < nJets; ++k) {
+            const auto j = sortedIdx[k];
             const double pTj = recoJetP4[j].Pt();
             const double minPt = (k == 0) ? pt0Cut : ((k == 1) ? pt1Cut : ptCut);
+            if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
+            if (jetID[j] != tightJetIDFlag) continue;
             if (pTj <= minPt) continue;
 
             const TLorentzVector& jet = recoJetP4[j];
@@ -917,8 +912,11 @@ void analysisClass::Loop() {
 
           TLorentzVector wj1_tmp, wj2_tmp, wj1s_tmp, wj2s_tmp;
 
-          for (const auto j : acceptedJetIdx) {
+          for (size_t k = 0; k < nJets; ++k) {
+            const auto j = sortedIdx[k];
             const double pTj = recoJetP4[j].Pt();
+            if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
+            if (jetID[j] != tightJetIDFlag) continue;
             if (pTj <= ptCut) continue;
             const TLorentzVector& cj = recoJetP4[j];
             const TLorentzVector& cjs = recoJetP4Shift[j];
@@ -1014,8 +1012,8 @@ void analysisClass::Loop() {
     fillVariableWithValue("NAK4PF", NAK4PF);
     fillVariableWithValue("PassJSON", passJSON(runNoEvt, lumiEvt, isDataEvt));
 
-    if (AK4j1.Pt() > 0.0 && ak4j1Index >= 0) {
-      const auto j0 = static_cast<size_t>(ak4j1Index);
+    if (AK4j1.Pt() > 0.0 && nJets >= 1U) {
+      const auto j0 = sortedIdx[0];
       fillVariableWithValue("IdTight_j1", jetID[j0]);
       fillVariableWithValue("pTAK4PF_j1", AK4j1.Pt());
       fillVariableWithValue("etaAK4PF_j1", AK4j1.Eta());
@@ -1035,8 +1033,8 @@ void analysisClass::Loop() {
       fillVariableWithValue("photonMult_j1", getPhoMultOut(j0));
     }
 
-    if (AK4j2.Pt() > 0.0 && ak4j2Index >= 0) {
-      const auto j1 = static_cast<size_t>(ak4j2Index);
+    if (AK4j2.Pt() > 0.0 && nJets >= 2U) {
+      const auto j1 = sortedIdx[1];
       fillVariableWithValue("IdTight_j2", jetID[j1]);
       fillVariableWithValue("pTAK4PF_j2", AK4j2.Pt());
       fillVariableWithValue("etaAK4PF_j2", AK4j2.Eta());
