@@ -15,15 +15,14 @@
 
 ```bash
 ## Data (Scouting)
+## Full 2024
 python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ -o ScoutingPFRun3_Run2024_ALL_reduced.txt
 
+## 2024I
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced.txt
 
-## Data (Monitoring)
-python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ -o ScoutingPFMonitor_Run2024_ALL_reduced.txt
-
-
-## MC (QCD)
-python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples -o QCDMC_2024_reduced.txt
+## QCD MC (Merged Samples)
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/merged -o QCDMC_2024_reduced.txt
 ```
 
 > [!NOTE]
@@ -49,10 +48,7 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 # Build only once
 c++ -std=c++17 -O3 -o plot_trigger_efficiency plot_trigger_efficiency.cpp $(root-config --cflags --libs)
 
-./plot_trigger_efficiency --monitoring-list ../lists/reducedNtuple_lists/ScoutingPFMonitor_Run2024_ALL_reduced.txt --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024_ALL_reduced.txt --lumi-pb 108757.319778 --year "2024"
-
-## Check the last logs of a background job:
-tail -n 50 logs/eff.log
+./plot_trigger_efficiency --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --lumi-pb 11451.783064 --year "2024I"  --use-scouting-for-efficiency
 ```
 
 
@@ -67,13 +63,14 @@ tail -n 50 logs/eff.log
 ## Build once
 c++ -std=c++17 -O3 -o plot_kinematics plot_kinematics.cpp $(root-config --cflags --libs)
 
-## Run kinematics separately on your local machine (background-jobs)
+## Run kinematics separately on your local machine
 mkdir -p logs
 
-./plot_kinematics --plot all --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024_ALL_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 108757.319778 --output-dir kinematics_plots_deta1p3_2024 --output-prefix dataVsQCD_
+## 2024I
+./plot_kinematics --plot all --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 11451.783064 --output-dir kinematics_plots_deta1p3_2024I --output-prefix dataVsQCD_
 
-## Check the last logs of a background job:
-tail -n 50 logs/kinematics.log
+## Full 2024
+./plot_kinematics --plot all --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024_ALL_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 108757.319778 --output-dir kinematics_plots_deta1p3_2024 --output-prefix dataVsQCD_
 ```
 
 > [!TIP]
@@ -92,14 +89,14 @@ tail -n 50 logs/kinematics.log
 ---
 
 
-#### Submit Plot Jobs to Condor
+#### Submit Plot Jobs to Condor (Needs to be fixed!)
 
 ```bash
 python3 condor_submit_kinematics.py --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024_ALL_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 108757.319778 --cmssw-base "$CMSSW_BASE" --output-prefix dataVsQCD_
 ```
 
 > [!TIP]
-> Use `--no-submit` for a dryRun.
+> Use `--no-submit` for a dryRun.<br>
 > Use `--plots mjj,pTWJ_j1,deltaETAjj` to submit only a subset of the built-in plot specs (default=`all`).
 
 
@@ -109,8 +106,11 @@ python3 condor_submit_kinematics.py --data-list ../lists/reducedNtuple_lists/Sco
 ### Compare Cross-section: Run3 vs Run2
 
 ```bash
+## Full 2024
 python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016_27August2023_13/histo_data_mjj_fromTree.root --run3-root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root --run2-data-hist h_dat_rebin --run2-mc-hist h_MC_rebin --run3-data-hist h_data_mjj --run3-mc-hist h_mc_total_mjj --lumi-run2-fb 27.225 --lumi-run3-fb 108.757319778 --year-run2 2016 --year-run3 2024 --output-dir Run3vsRun2_Comparison --output-prefix Run3_2024ALL_vsRun2 --overlay-ratio-y-min 0.2 --overlay-ratio-y-max 1.8
-```
+
+## 2024I
+python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016_27August2023_13/histo_data_mjj_fromTree.root --run3-root ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root --run2-data-hist h_dat_rebin --run2-mc-hist h_MC_rebin --run3-data-hist h_data_mjj --run3-mc-hist h_mc_total_mjj --lumi-run2-fb 27.225 --lumi-run3-fb 11.451783064 --year-run2 2016 --year-run3 2024 --output-dir Run3vsRun2_Comparison --output-prefix Run3_2024I_vsRun2 --overlay-ratio-y-min 0.2 --overlay-ratio-y-max 1.8
 
 ---
 ---
@@ -119,7 +119,7 @@ python3 compare_xsec_Run3vsRun2.py --run2-root ../inputs/CaloScoutingHT2016_27Au
 ### Update a list of `.config` files with the mass range from trigger efficiency calculation
 
 ```bash
-python3 ../scripts/update_config_files.py --mass-start 1181 --mass-end 13272 --tag PFDijet2024 \
+python3 ../scripts/update_config_files.py --mass-start 565 --mass-end 2132 --tag PFDijet2025 \
   ../config/dijet_3param.config \
   ../config/dijet.config \
   ../config/dijet_5param.config \
@@ -148,17 +148,17 @@ python3 ../scripts/update_config_files.py --mass-start 1181 --mass-end 13272 --t
 ### CMS Dijet Function Family
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/dijet_3param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024ALL_M1181_deta1p3_15March2026/dijet_3Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_3param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_3Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024ALL_M1181_deta1p3_15March2026/dijet_4Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_4Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_5param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024ALL_M1181_deta1p3_15March2026/dijet_5Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_5param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_5Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024ALL_M1181_deta1p3_15March2026/dijet_6Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_6Param --fit-spectrum --staged-fit
 ```
 
 > [!NOTE]
-> Resonance shapes can be plotted on top of the distribution by adding the following arguments into the main fitting command line.
+> Resonance shapes can be plotted on top of the distribution by adding the following arguments into the main fitting command line.<br>
 > `--mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root`
 
 
@@ -169,26 +169,26 @@ python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 108757.319778
 ### Modified Exponential (ModExp) Function Family
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp3Param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024ALL_M1181_deta1p3_15March2026/modExp_3Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp3Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_3Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp4Param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024ALL_M1181_deta1p3_15March2026/modExp_4Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp4Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_4Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024ALL_M1181_deta1p3_15March2026/modExp_5Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_5Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp6Param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024ALL_M1181_deta1p3_15March2026/modExp_6Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp6Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_6Param --fit-spectrum --staged-fit
 ```
 
 ### ATLAS Function Family
 
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas3Param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024ALL_M1181_deta1p3_15March2026/ATLAS_3Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas3Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_3Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas4Param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024ALL_M1181_deta1p3_15March2026/ATLAS_4Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas4Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_4Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024ALL_M1181_deta1p3_15March2026/ATLAS_5Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_5Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024ALL_M1181_deta1p3_15March2026/ATLAS_6Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_6Param --fit-spectrum --staged-fit
 ```
 
 
@@ -196,18 +196,18 @@ python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 108757.3
 
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/ModDijet_3param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024ALL_M1181_deta1p3_15March2026/modDijet_3Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_3param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_3Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/ModDijet_4param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024ALL_M1181_deta1p3_15March2026/modDijet_4Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_4param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_4Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/ModDijet_5param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024ALL_M1181_deta1p3_15March2026/modDijet_5Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_5param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_5Param --fit-spectrum --staged-fit
 
-python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 108757.319778 --year 2024 --mass 2000_4000_6000 -m gg_qg_qq --xsec 1.31e-1_5.65e-03_5.86e-04 -s ../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_gg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qg_13p6TeV_Summer22EE.root,../inputs/resonanceShapes_13p6TeV_Summer22EE_dEta1p3/ResonanceShapes_qq_13p6TeV_Summer22EE.root ../inputs/PFScouting2024_ALL_deta1p3_15March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024ALL_M1181_deta1p3_15March2026/modDijet_6Param --fit-spectrum --robust-fit --linearX --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_6Param --fit-spectrum --staged-fit
 ```
 
 
 > [!TIP]
-> `--staged-fit`: Performs an automated staged background fit, progressively releasing higher-order shape parameters and carrying each stage's best-fit result forward to the next stage.
+> `--staged-fit`: Performs an automated staged background fit, progressively releasing higher-order shape parameters and carrying each stage's best-fit result forward to the next stage.<br>
 > This is an experimental feature!!
 
 

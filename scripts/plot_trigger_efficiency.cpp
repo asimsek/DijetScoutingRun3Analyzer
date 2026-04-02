@@ -59,7 +59,7 @@ constexpr const char* kAnsiBrightRed = "\033[91m";
 constexpr double kEtaCut = 2.5;
 constexpr double kDeltaEtaCut = 1.3;
 
-constexpr double kMinPtJ1 = 60.0;
+constexpr double kMinPtJ1 = 30.0;
 constexpr double kMinPtJ2 = 30.0;
 constexpr double kMinJetCount = 1.0;
 

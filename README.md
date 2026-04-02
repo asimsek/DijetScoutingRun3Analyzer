@@ -308,36 +308,6 @@ python3 condor_submit_nanoAOD.py -c inputFiles_PFScouting_NanoAOD/2025/PFScoutin
 > `--cms-connect`: Additional HTCondor arguments for CMS Connect machines.
 
 
-##### Data (PFMonitoring - for Trigger Efficiency):
-
-```bash
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024C_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024D_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024E_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024F_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024G_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024H_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024I_cfg.txt --force-new-list
-
-## 2025C
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025C_v1_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025C_v2_cfg.txt --force-new-list
-## 2025D
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025D_v1_cfg.txt --force-new-list
-## 2025E
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025E_v1_cfg.txt --force-new-list
-## 2025F
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025F_v1_cfg.txt --force-new-list
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025F_v2_cfg.txt --force-new-list
-## 2025G
-python3 condor_submit_nanoAOD.py -c inputFiles_PFMonitoring_NanoAOD/2025/PFMonitoring_2025G_v1_cfg.txt --force-new-list
-```
-
-> [!TIP]
-> `--no-submit`: **dryRun** (create files without sending jobs to condor).
-> `--cms-connect`: Additional HTCondor arguments for CMS Connect machines.
-
-
 ##### QCD MC:
 
 ```bash
@@ -365,7 +335,6 @@ python3 condor_submit_nanoAOD.py -c inputFiles_QCD_NanoAOD/QCDMC_2024_PT3000toIn
 
 
 #### Condor output (root) check & re-submit: 
-
 ```bash
 cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer/dijetCondor
 
@@ -375,13 +344,10 @@ c++ -O3 -march=native -DNDEBUG -o check_condor_outputs check_condor_outputs.cpp 
 
 ```bash
 # Data (Scouting)
-./check_condor_outputs cjobs_ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_05March2026_13 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 --config inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024G_cfg.txt
-
-# Data (Monitoring)
-./check_condor_outputs cjobs_ScoutingPFMonitor_Run2024H_PromptReco_v1_NANOAOD_03March2026_02 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFMonitor/ScoutingPFMonitor_Run2024H_PromptReco_v1 --config inputFiles_PFMonitoring_NanoAOD/2024/PFMonitoring_2024H_cfg.txt
+./check_condor_outputs cjobs_ScoutingPFRun3_Run2024I_ScoutNano_v1_NANOAOD_31March2026_21 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1 --config inputFiles_PFScouting_NanoAOD/2024/PFScouting_2024I_cfg.txt --resubmit --request-memory-mb 6096
 
 # QCD MC
-./check_condor_outputs cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_03March2026_04 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8 --config inputFiles_QCD_NanoAOD/QCDMC_2024_PT80to120_cfg.txt --check-subdirs
+./check_condor_outputs cjobs_QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8_NANOAODSIM_23March2026_04 /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/ --config inputFiles_QCD_NanoAOD/QCDMC_2024_PT80to120_cfg.txt --check-subdirs
 ```
 
 > [!TIP]
@@ -454,7 +420,7 @@ brilcalc lumi -c "$CMS_PATH/SITECONF/local/JobConfig/site-local-config.xml" -u /
 
 
 ```bash
-python3 merge_samples.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples --sample-glob "QCD_Bin-PT-*"
+python3 merge_samples.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/merged --sample-glob "QCD_Bin-PT-*"
 ```
 
 > [!TIP]
