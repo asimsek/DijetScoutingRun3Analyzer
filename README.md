@@ -165,7 +165,7 @@ scramv1 b clean; scramv1 b -j$(nproc --ignore=2)
 
 
 > [!IMPORTANT]
-> GoldenJSON files are defined in the input cfg file (e.g.; `inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt`).<br>
+> GoldenJSON files are defined in the input cfg file (e.g.; `inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt`).<br>
 > Validate/Pull the latest GoldenJSON file for your dataset from official repo: [CAF-Certification](https://cms-service-dqmdc.web.cern.ch/CAF/certification/)<br>
 > `Collisions24` is for 2024 data and `Collisions25` is for 2025 data.<br>
 > Please also note that the GoldenJSON files are updated regularly; However, the DQM group can also update these files outside the data taking year! Validating the latest GoldenJSON file usage will be beneficial before any nTuple production activities. 
@@ -183,51 +183,25 @@ scramv1 b clean; scramv1 b -j$(nproc --ignore=2)
 
 ```bash
 ## Create a temporary list:
-cat > /tmp/nano_test_2024H.txt << 'EOF'
-root://cms-xrd-global.cern.ch//store/data/Run2024H/ScoutingPFRun3/NANOAOD/ScoutNano-v1/2520000/03e073d9-ab61-450d-aa10-fa050e94a16b.root
+cat > /tmp/nano_test_2024I.txt << 'EOF'
+root://cms-xrd-global.cern.ch//store/data/Run2024I/ScoutingPFRun3/NANOAOD/ScoutNano-v1/110000/00159231-4462-4181-8ef9-9b0d34f19edc.root
 EOF
 
 ## Framework uses `analysisClass.C` file to process data.
 ## Therefore, create a symbolic link (`symlink`/`soft link`) to use any of your "analysisClass" as `analysisClass.C`:
-ln -sf analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C src/analysisClass.C
+ln -sf analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD.C src/analysisClass.C
 
 ## Generate the ROOT reader class (`rootNtupleClass.*`) so branch declarations and addresses match the NanoAOD file/tree you are about to process:
-yes | ./scripts/make_rootNtupleClass.sh -f root://cms-xrd-global.cern.ch//store/data/Run2024H/ScoutingPFRun3/NANOAOD/ScoutNano-v1/2520000/03e073d9-ab61-450d-aa10-fa050e94a16b.root -t Events
+yes | ./scripts/make_rootNtupleClass.sh -f root://cms-xrd-global.cern.ch//store/data/Run2024I/ScoutingPFRun3/NANOAOD/ScoutNano-v1/110000/00159231-4462-4181-8ef9-9b0d34f19edc.root -t Events
 
 ## Compile your analyzer:
 make clean && make -j8
 
 ## Start nTuple production:
-./main /tmp/nano_test_2024H.txt config/cutFile_mainDijetPFScoutingSelection_Run3.txt Events test_NanoAOD_2024H_n0 test_NanoAOD_2024H_n0
+./main /tmp/nano_test_2024I.txt config/cutFile_mainDijetPFScoutingSelection_Run3.txt Events test_NanoAOD_2024I_n0 test_NanoAOD_2024I_n0
 
 ## Optional: Validate the output:
-root -l -q -e 'TFile f("test_NanoAOD_2024H_n0_reduced_skim.root"); TTree* t=(TTree*)f.Get("rootTupleTree/tree"); if(t) t->Print(); else f.ls();'
-```
-
-
-### For Monitoring Data:
-
-```bash
-## Create a temporary list:
-cat > /tmp/nano_test_monitoring_2024H.txt << 'EOF'
-root://cms-xrd-global.cern.ch//store/data/Run2024I/ScoutingPFMonitor/NANOAOD/PromptReco-v1/000/386/508/00000/8d57403b-0253-4f30-9624-494d9c843bb5.root
-EOF
-
-## Framework uses `analysisClass.C` file to process data.
-## Therefore, create a symbolic link (`symlink`/`soft link`) to use any of your "analysisClass" as `analysisClass.C`:
-ln -sf analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C src/analysisClass.C
-
-## Generate the ROOT reader class (`rootNtupleClass.*`) so branch declarations and addresses match the NanoAOD file/tree you are about to process:
-yes | ./scripts/make_rootNtupleClass.sh -f root://cms-xrd-global.cern.ch//store/data/Run2024I/ScoutingPFMonitor/NANOAOD/PromptReco-v1/000/386/508/00000/8d57403b-0253-4f30-9624-494d9c843bb5.root -t Events
-
-## Compile your analyzer:
-make clean && make -j8
-
-## Start nTuple production:
-./main /tmp/nano_test_monitoring_2024H.txt config/cutFile_mainDijetPFScoutingSelection_Run3.txt Events test_monitoring_NanoAOD_2024H_n0 test_monitoring_NanoAOD_2024H_n0
-
-## Optional: Validate the output:
-root -l -q -e 'TFile f("test_monitoring_NanoAOD_2024H_n0_reduced_skim.root"); TTree* t=(TTree*)f.Get("rootTupleTree/tree"); if(t) t->Print(); else f.ls();'
+root -l -q -e 'TFile f("test_NanoAOD_2024I_n0_reduced_skim.root"); TTree* t=(TTree*)f.Get("rootTupleTree/tree"); if(t) t->Print(); else f.ls();'
 ```
 
 
@@ -241,7 +215,7 @@ EOF
 
 ## Framework uses `analysisClass.C` file to process data.
 ## Therefore, create a symbolic link (`symlink`/`soft link`) to use any of your "analysisClass" as `analysisClass.C`:
-ln -sf analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD_Recluster.C src/analysisClass.C
+ln -sf analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD.C src/analysisClass.C
 
 ## Generate the ROOT reader class (`rootNtupleClass.*`) so branch declarations and addresses match the NanoAOD file/tree you are about to process.
 ## IMPORTANT: Don't forget to update the root file. You may need to use `root://cms-xrd-global.cern.ch/` or `root://cmsxrootd.fnal.gov/` to access dataset root files.
@@ -387,12 +361,12 @@ brilcalc --version
 ##### Produce crab-like `processed_lumi.json` file:
 
 ```bash
-python3 condor_report.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt -o processed_lumis_2024H.json \
+python3 condor_report.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt -o processed_lumis_2024I.json \
     --brilcalc --unit /fb --normtag /cvmfs/cms-bril.cern.ch/cms-lumi-pog/Normtags/normtag_PHYSICS.json \
     --no-golden \
     --brilcalc-extra -c "$CMS_PATH/SITECONF/local/JobConfig/site-local-config.xml" 
 
-python3 condor_report.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.txt -o processed_lumis_2024H.json \
+python3 condor_report.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024I_cfg.txt -o processed_lumis_2024I.json \
     --brilcalc --unit /fb --normtag /cvmfs/cms-bril.cern.ch/cms-lumi-pog/Normtags/normtag_PHYSICS.json \
      --golden-json \
      --brilcalc-extra -c "$CMS_PATH/SITECONF/local/JobConfig/site-local-config.xml"
@@ -406,7 +380,7 @@ python3 condor_report.py -c inputFiles_PFScouting_NanoAOD/PFScouting_2024H_cfg.t
 
 ```bash
 brilcalc lumi -c "$CMS_PATH/SITECONF/local/JobConfig/site-local-config.xml" -u /fb \
-    -i processed_lumis_2024H.json \
+    -i processed_lumis_2024I.json \
     --normtag /cvmfs/cms-bril.cern.ch/cms-lumi-pog/Normtags/normtag_PHYSICS.json
 ```
 
@@ -464,10 +438,7 @@ condor_q -better-analyze <jobID>
 
 ```bash
 # Data (Scouting)
-python3 check_dataset_entries.py /ScoutingPFRun3/Run2024H-ScoutNano-v1/NANOAOD --workers 8 --backend root
-
-# Data (Monitoring)
-python3 check_dataset_entries.py /ScoutingPFMonitor/Run2024H-PromptReco-v1/NANOAOD --workers 8 --backend root
+python3 check_dataset_entries.py /ScoutingPFRun3/Run2024I-ScoutNano-v1/NANOAOD --workers 8 --backend root
 
 # QCD MC
 python3 check_dataset_entries.py /QCD_Bin-PT-80to120_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24NanoAOD-140X_mcRun3_2024_realistic_v26-v2/NANOAODSIM --workers 8 --backend root

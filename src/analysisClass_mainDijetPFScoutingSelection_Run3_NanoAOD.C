@@ -32,6 +32,7 @@ const std::string era = "2024I";
 const std::string dataList = "data/cfg/data_jec_list.txt";
 const std::string mcList = "data/cfg/mc_jec_list.txt";
 
+// Input branch groups for scouting data, MC, and monitoring samples.
 const std::array<const char*, 30> kNanoInputBranchesData = {
     "run",
     "luminosityBlock",
@@ -116,6 +117,7 @@ const std::array<const char*, 24> kNanoInputBranchesMonitoring = {
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
+// L1 bits used to build the saved JetHT-side L1 decision flag.
 const std::array<const char*, 4> kRequiredL1DecisionBranches = {
     "L1_HTT280er",
     "L1_SingleJet180",
@@ -126,6 +128,8 @@ const std::array<const char*, 2> kVetoL1DecisionBranches = {
     "L1_HTT200er",
     "L1_HTT255er"};
 
+// Scouting muon inputs for the good-muon control sample and muon-corrected jets.
+// These branches support the muon-control-sample-like trigger-efficiency workflow.
 const std::array<const char*, 11> kScoutingMuonInputBranches = {
     "nScoutingMuonVtx",
     "ScoutingMuonVtx_pt",
@@ -172,6 +176,7 @@ double deltaRDistance(double eta1, double phi1, double eta2, double phi2) {
   return std::sqrt(deta * deta + dphi * dphi);
 }
 
+// Shared good-muon definition used by the trigger-efficiency control sample.
 bool passesScoutingMuonID(double pt,
                           double eta,
                           double trkDxy,
@@ -187,9 +192,9 @@ bool passesScoutingMuonID(double pt,
   if (std::abs(trkDz) >= 0.5) return false;
   if (normChi2 >= 3.0) return false;
   if (nValidRecoMuonHits <= 0.0) return false;
-  if (nRecoMuonMatchedStations <= 1.0) return false;
-  if (nValidPixelHits <= 0.0) return false;
-  if (nTrackerLayersWithMeasurement <= 5.0) return false;
+  if (nRecoMuonMatchedStations <= 2.0) return false;
+  if (nValidPixelHits <= 1.0) return false;
+  if (nTrackerLayersWithMeasurement <= 7.0) return false;
   return true;
 }
 
@@ -227,6 +232,7 @@ analysisClass::analysisClass(std::string* inputList,
     : baseClass(inputList, cutFile, treeName, outputFileName, cutEfficFile) {
   std::cout << "[analysisClass] Constructor (ctor) begin\n";
 
+  // Build the JEC tools once up front so the event loop can switch between raw and corrected jets cheaply.
   if (int(getPreCutValue1("useJECs")) == 1) {
     std::cout << "[analysisClass] Reapplying JECs via JECTool...\n";
 
@@ -244,8 +250,7 @@ analysisClass::analysisClass(std::string* inputList,
     if (!JetCorrector || !JetCorrector_data) {
       std::cerr << "[analysisClass] ERROR: JEC corrector initialization failed. Check list files.\n";
     } else if (!unc) {
-      std::cerr << "[analysisClass] WARNING: no JEC uncertainty file configured. "
-                   "JEC uncertainties and JEC shifts will be disabled.\n";
+      std::cerr << "[analysisClass] WARNING: no JEC uncertainty file configured. JEC uncertainties and JEC shifts will be disabled.\n";
     }
   }
 
@@ -258,6 +263,7 @@ void analysisClass::Loop() {
   std::cout << "[analysisClass] Loop begin\n";
   if (fChain == nullptr) return;
 
+  // Infer which branch family to read from the file content instead of hard-coding the sample type.
   const bool hasGenWeight = hasBranch(fChain, "genWeight");
   const bool hasScoutingRecoJets = hasBranch(fChain, "ScoutingPFJet_pt");
   const bool hasStandardRecoJets = hasBranch(fChain, "Jet_pt");
@@ -280,8 +286,7 @@ void analysisClass::Loop() {
   } else if (hasStandardRecoJets) {
     inputMode = InputSampleMode::kMonitoringData;
   } else {
-    std::cerr << "[analysisClass] ERROR: Data mode selected but neither 'ScoutingPFJet_pt' "
-              << "nor 'Jet_pt' is available.\n";
+    std::cerr << "[analysisClass] ERROR: Data mode selected but neither 'ScoutingPFJet_pt' nor 'Jet_pt' is available.\n";
     return;
   }
 
@@ -289,9 +294,13 @@ void analysisClass::Loop() {
   const bool useMonitoringData = (inputMode == InputSampleMode::kMonitoringData);
   const bool useStandardLikeJets = useStandardMC || useMonitoringData;
   const bool isDataSample = !hasGenWeight;
-  const bool applyL1TriggerVeto = isDataSample && (getPreCutValue1("applyL1TriggerVeto") > 0.5);
-  const bool applyMuonSelectionCleaning =
-      (inputMode == InputSampleMode::kScoutingData) && (getPreCutValue1("applyMuonSelectionCleaning") > 0.5);
+  const bool produceAdditionalTriggerStudyPlots =
+      (getPreCutValue1("produceAdditionalTriggerStudyPlots") > 0.5);
+  const bool applyGoodMuonSelection_analysis =
+      (inputMode == InputSampleMode::kScoutingData) && (getPreCutValue1("applyGoodMuonSelection_analysis") > 0.5);
+  const bool needScoutingMuonBranches =
+      (inputMode == InputSampleMode::kScoutingData) &&
+      (applyGoodMuonSelection_analysis || produceAdditionalTriggerStudyPlots);
 
   std::cout << "[analysisClass] Input mode: "
             << (useStandardMC ? "MC"
@@ -307,6 +316,7 @@ void analysisClass::Loop() {
   std::vector<std::string> missingRequired;
   fChain->SetBranchStatus("*", 0);
 
+  // Turn on only the branch group needed for the detected input mode.
   auto enableBranches = [&](const auto& branches, size_t nRequired) {
     for (size_t i = 0; i < branches.size(); ++i) {
       const char* bname = branches[i];
@@ -325,11 +335,11 @@ void analysisClass::Loop() {
   } else {
     enableBranches(kNanoInputBranchesData, kNRequiredNanoBranchesData);
   }
-  if (applyL1TriggerVeto) {
-    enableBranches(kRequiredL1DecisionBranches, kRequiredL1DecisionBranches.size());
-    enableBranches(kVetoL1DecisionBranches, kVetoL1DecisionBranches.size());
+  if (isDataSample) {
+    enableBranches(kRequiredL1DecisionBranches, 0U);
+    enableBranches(kVetoL1DecisionBranches, 0U);
   }
-  if (applyMuonSelectionCleaning) {
+  if (needScoutingMuonBranches) {
     enableBranches(kScoutingMuonInputBranches, kScoutingMuonInputBranches.size());
   }
 
@@ -345,8 +355,7 @@ void analysisClass::Loop() {
     return;
   }
 
-  // fChain->SetCacheSize(128 * 1024 * 1024);
-
+  // Build the event-level and object-level readers once after the input mode is fixed.
   TTreeReader reader(fChain);
 
   TTreeReaderValue<UInt_t> run(reader, "run");
@@ -404,6 +413,18 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<UChar_t>> chHadMultMC;
   std::unique_ptr<TTreeReaderArray<UChar_t>> neHadMultMC;
 
+  std::unique_ptr<TTreeReaderValue<Int_t>> nScoutingMuonVtxReader;
+  std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonPtReader;
+  std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonEtaReader;
+  std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonPhiReader;
+  std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonDxyReader;
+  std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonDzReader;
+  std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonNormChi2Reader;
+  std::unique_ptr<TTreeReaderArray<Int_t>> scoutingMuonHitsReader;
+  std::unique_ptr<TTreeReaderArray<Int_t>> scoutingMuonStationsReader;
+  std::unique_ptr<TTreeReaderArray<Int_t>> scoutingMuonPixelHitsReader;
+  std::unique_ptr<TTreeReaderArray<Int_t>> scoutingMuonLayersReader;
+
   if (useStandardLikeJets) {
     nVtxMCReader = std::make_unique<TTreeReaderValue<UChar_t>>(reader, "PV_npvs");
     jetChHEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_chHEF");
@@ -414,12 +435,8 @@ void analysisClass::Loop() {
     chHadMultMC = std::make_unique<TTreeReaderArray<UChar_t>>(reader, "Jet_chMultiplicity");
     neHadMultMC = std::make_unique<TTreeReaderArray<UChar_t>>(reader, "Jet_neMultiplicity");
 
-    if (hasBranch(fChain, "Jet_rawFactor")) {
-      jetRawFactorMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_rawFactor");
-    }
-    if (hasBranch(fChain, "Jet_hfEmEF")) {
-      jetHFEmEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_hfEmEF");
-    }
+    if (hasBranch(fChain, "Jet_rawFactor")) { jetRawFactorMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_rawFactor"); }
+    if (hasBranch(fChain, "Jet_hfEmEF")) { jetHFEmEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_hfEmEF"); }
   } else {
     nVtxDataReader = std::make_unique<TTreeReaderValue<Int_t>>(reader, "nScoutingPrimaryVertex");
 
@@ -441,6 +458,23 @@ void analysisClass::Loop() {
     hfEmMultData = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingPFJet_HFEMMultiplicity");
   }
 
+  if (needScoutingMuonBranches) {
+    nScoutingMuonVtxReader = std::make_unique<TTreeReaderValue<Int_t>>(reader, "nScoutingMuonVtx");
+    scoutingMuonPtReader = std::make_unique<TTreeReaderArray<Float_t>>(reader, "ScoutingMuonVtx_pt");
+    scoutingMuonEtaReader = std::make_unique<TTreeReaderArray<Float_t>>(reader, "ScoutingMuonVtx_eta");
+    scoutingMuonPhiReader = std::make_unique<TTreeReaderArray<Float_t>>(reader, "ScoutingMuonVtx_phi");
+    scoutingMuonDxyReader = std::make_unique<TTreeReaderArray<Float_t>>(reader, "ScoutingMuonVtx_trk_dxy");
+    scoutingMuonDzReader = std::make_unique<TTreeReaderArray<Float_t>>(reader, "ScoutingMuonVtx_trk_dz");
+    scoutingMuonNormChi2Reader = std::make_unique<TTreeReaderArray<Float_t>>(reader, "ScoutingMuonVtx_normchi2");
+    scoutingMuonHitsReader = std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingMuonVtx_nValidRecoMuonHits");
+    scoutingMuonStationsReader =
+        std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingMuonVtx_nRecoMuonMatchedStations");
+    scoutingMuonPixelHitsReader =
+        std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingMuonVtx_nValidPixelHits");
+    scoutingMuonLayersReader =
+        std::make_unique<TTreeReaderArray<Int_t>>(reader, "ScoutingMuonVtx_nTrackerLayersWithMeasurement");
+  }
+
   std::unique_ptr<TTreeReaderValue<Bool_t>> trigJetHT;
   std::unique_ptr<TTreeReaderValue<Bool_t>> trigSingleMuon;
   if (hasTrigJetHT) {
@@ -450,15 +484,24 @@ void analysisClass::Loop() {
     trigSingleMuon = std::make_unique<TTreeReaderValue<Bool_t>>(reader, kTriggerSingleMuonBranch);
   }
 
+  const bool hasAllRequiredL1Branches =
+      std::all_of(kRequiredL1DecisionBranches.begin(), kRequiredL1DecisionBranches.end(),
+                  [&](const char* branchName) { return hasBranch(fChain, branchName); });
+  const bool hasAllVetoL1Branches =
+      std::all_of(kVetoL1DecisionBranches.begin(), kVetoL1DecisionBranches.end(),
+                  [&](const char* branchName) { return hasBranch(fChain, branchName); });
+  const bool canEvaluateL1ForPFScoutingHT = isDataSample && hasAllRequiredL1Branches && hasAllVetoL1Branches;
+
   std::vector<std::unique_ptr<TTreeReaderValue<Bool_t>>> requiredL1Readers;
   std::vector<std::unique_ptr<TTreeReaderValue<Bool_t>>> vetoL1Readers;
+  // Materialize the optional L1 readers only when all bits needed for the JetHT-side decision are present.
   auto buildL1Readers = [&](const auto& branchNames, auto& readers) {
     readers.reserve(branchNames.size());
     for (const char* branchName : branchNames) {
       readers.push_back(std::make_unique<TTreeReaderValue<Bool_t>>(reader, branchName));
     }
   };
-  if (applyL1TriggerVeto) {
+  if (canEvaluateL1ForPFScoutingHT) {
     buildL1Readers(kRequiredL1DecisionBranches, requiredL1Readers);
     buildL1Readers(kVetoL1DecisionBranches, vetoL1Readers);
   }
@@ -472,11 +515,31 @@ void analysisClass::Loop() {
       10798, 11179, 11571, 11977, 12395, 12827, 13272, 13732, 14000};
 
   const char* HLTname[3] = {"noTrig", "PFScouting_JetHT", "PFScouting_SingleMuon"};
+  enum TriggerStudyObservable { kWideDijet = 0, kAk4Dijet = 1, kHtAk4 = 2, kNTriggerStudyObservables = 3 };
+  enum TriggerStudyMethod { kDefaultStudy = 0, kL1Study = 1, kGoodMuonStudy = 2, kGoodMuonL1Study = 3, kNTriggerStudyMethods = 4 };
+  const char* triggerStudyObservableName[kNTriggerStudyObservables] = {"wideDijet", "AK4Jets", "HTAK4PF"};
+  const char* triggerStudyMethodName[kNTriggerStudyMethods] = {"default", "L1", "goodMuon", "goodMuonL1"};
 
   TH1F* h_mjj_HLTpass[3];
   TH1F* h_mjj_noTrig_1GeVbin = new TH1F("h_mjj_noTrig_1GeVbin", "", 14000, 0, 14000);
   for (int i = 0; i < 3; ++i) {
     h_mjj_HLTpass[i] = new TH1F(Form("h_mjj_HLTpass_%s", HLTname[i]), "", nMassBins, massBoundaries);
+  }
+
+  // Book the trigger-study histograms once per observable and per control-sample method.
+  TH1F* h_trigStudy[kNTriggerStudyObservables][kNTriggerStudyMethods][3] = {};
+  for (int obs = 0; obs < kNTriggerStudyObservables; ++obs) {
+    for (int method = 0; method < kNTriggerStudyMethods; ++method) {
+      if (!produceAdditionalTriggerStudyPlots && method != kDefaultStudy) continue;
+      for (int trig = 0; trig < 3; ++trig) {
+        const TString hname = Form("h_%s_HLTpass_%s_%s", triggerStudyObservableName[obs], triggerStudyMethodName[method], HLTname[trig]);
+        if (obs == kHtAk4) {
+          h_trigStudy[obs][method][trig] = new TH1F(hname, "", 150, 0.0, 1500.0);
+        } else {
+          h_trigStudy[obs][method][trig] = new TH1F(hname, "", nMassBins, massBoundaries);
+        }
+      }
+    }
   }
 
   const double jetFidRegion = getPreCutValue1("jetFidRegion");
@@ -485,6 +548,14 @@ void analysisClass::Loop() {
   const double pt0Cut = getPreCutValue1("pt0Cut");
   const double pt1Cut = getPreCutValue1("pt1Cut");
   const double wideJetDeltaR = getPreCutValue1("DeltaR");
+  const double pTWJ1Min = getPreCutValue1("pT_WJ1");
+  const double pTWJ2Min = getPreCutValue1("pT_WJ2");
+  const double etaWJ1Min = getPreCutValue1("eta_WJ1");
+  const double etaWJ1Max = getPreCutValue2("eta_WJ1");
+  const double etaWJ2Min = getPreCutValue1("eta_WJ2");
+  const double etaWJ2Max = getPreCutValue2("eta_WJ2");
+  const double detaWJJMax = getPreCutValue1("Deta_WJJ");
+  constexpr double kTriggerStudyHtEtaMax = 2.5;
   const bool useFastJet = (int(getPreCutValue1("useFastJet")) == 1);
   std::string jetAlgo = "AntiKt";
   if (getPreCutString1("jetAlgo") != "ERROR") {
@@ -521,8 +592,14 @@ void analysisClass::Loop() {
   std::vector<double> nemf;
   std::vector<double> jecFactor;
   std::vector<double> jecUncRel;
-  std::vector<unsigned> sortedIdx;
   std::vector<int> jetID;
+  std::vector<TLorentzVector> recoJetP4;
+  std::vector<TLorentzVector> recoJetP4Shift;
+  std::vector<TLorentzVector> scoutingAllMuons;
+  std::vector<TLorentzVector> analysisJetP4Storage;
+  std::vector<TLorentzVector> analysisJetP4ShiftStorage;
+  std::vector<TLorentzVector> trigEffGoodMuonJetP4Storage;
+  std::vector<TLorentzVector> trigEffGoodMuonJetP4ShiftStorage;
 
   rawPt.reserve(512);
   jecFacInput.reserve(512);
@@ -536,8 +613,14 @@ void analysisClass::Loop() {
   nemf.reserve(512);
   jecFactor.reserve(512);
   jecUncRel.reserve(512);
-  sortedIdx.reserve(512);
   jetID.reserve(512);
+  recoJetP4.reserve(512);
+  recoJetP4Shift.reserve(512);
+  scoutingAllMuons.reserve(16);
+  analysisJetP4Storage.reserve(512);
+  analysisJetP4ShiftStorage.reserve(512);
+  trigEffGoodMuonJetP4Storage.reserve(512);
+  trigEffGoodMuonJetP4ShiftStorage.reserve(512);
 
   const Long64_t nentries = fChain->GetEntriesFast();
   const Long64_t maxEventsCfg = static_cast<Long64_t>(getPreCutValue1("maxEvents"));
@@ -581,18 +664,16 @@ void analysisClass::Loop() {
     nemf.assign(nJets, 0.0);
     jecFactor.assign(nJets, 1.0);
     jecUncRel.assign(nJets, 0.0);
-    sortedIdx.resize(nJets);
-    std::iota(sortedIdx.begin(), sortedIdx.end(), 0);
     jetID.assign(nJets, 0);
 
+    // Recompute jet corrections and JetID inputs before building any derived observables.
     const bool doReapplyJEC = reapplyJEC && JetCorrector && JetCorrector_data;
     if (reapplyJEC && !doReapplyJEC && !warnedMissingJEC) {
       std::cerr << "[analysisClass] WARNING: useJECs=1 but JEC correctors are not fully initialized. Falling back to input jet kinematics.\n";
       warnedMissingJEC = true;
     }
     if (doReapplyJEC && !unc && !warnedMissingJECUnc) {
-      std::cerr << "[analysisClass] WARNING: no JEC uncertainty payload is available. "
-                   "Relative JEC uncertainties and shiftJECs will be disabled.\n";
+      std::cerr << "[analysisClass] WARNING: no JEC uncertainty payload is available. Relative JEC uncertainties and shiftJECs will be disabled.\n";
       warnedMissingJECUnc = true;
     }
 
@@ -604,8 +685,7 @@ void analysisClass::Loop() {
         JetCorrector_data = dataCorrRun.release();
         jecResidualRunCached = static_cast<long>(runNoEvt);
       } else {
-        std::cerr << "[analysisClass] WARNING: failed to build data JEC corrector for run "
-                  << runNoEvt << " — continuing with previous one.\n";
+        std::cerr << "[analysisClass] WARNING: failed to build data JEC corrector for run " << runNoEvt << " - continuing with previous one.\n";
       }
     }
 
@@ -751,8 +831,8 @@ void analysisClass::Loop() {
       return shiftJECs ? (1.0 + (shiftSign * jecUncRel[i])) : 1.0;
     };
 
-    std::vector<TLorentzVector> recoJetP4(nJets);
-    std::vector<TLorentzVector> recoJetP4Shift(nJets);
+    recoJetP4.resize(nJets);
+    recoJetP4Shift.resize(nJets);
     for (size_t i = 0; i < nJets; ++i) {
       const double pTj = getCorrPt(i);
       const double massj = getMassForMode(i);
@@ -761,209 +841,265 @@ void analysisClass::Loop() {
       recoJetP4Shift[i].SetPtEtaPhiM(pTj * shiftFactor, jetEta[i], jetPhi[i], massj * shiftFactor);
     }
 
-    if (applyMuonSelectionCleaning) {
-      auto leafValue = [](TLeaf* leaf, Int_t idx = 0) -> double {
-        return leaf ? static_cast<double>(leaf->GetValue(idx)) : 0.0;
-      };
-
-      TLeaf* nMuonLeaf = fChain->GetLeaf("nScoutingMuonVtx");
-      TLeaf* muPtLeaf = fChain->GetLeaf("ScoutingMuonVtx_pt");
-      TLeaf* muEtaLeaf = fChain->GetLeaf("ScoutingMuonVtx_eta");
-      TLeaf* muPhiLeaf = fChain->GetLeaf("ScoutingMuonVtx_phi");
-      TLeaf* muDxyLeaf = fChain->GetLeaf("ScoutingMuonVtx_trk_dxy");
-      TLeaf* muDzLeaf = fChain->GetLeaf("ScoutingMuonVtx_trk_dz");
-      TLeaf* muNormChi2Leaf = fChain->GetLeaf("ScoutingMuonVtx_normchi2");
-      TLeaf* muHitsLeaf = fChain->GetLeaf("ScoutingMuonVtx_nValidRecoMuonHits");
-      TLeaf* muStationsLeaf = fChain->GetLeaf("ScoutingMuonVtx_nRecoMuonMatchedStations");
-      TLeaf* muPixelHitsLeaf = fChain->GetLeaf("ScoutingMuonVtx_nValidPixelHits");
-      TLeaf* muLayersLeaf = fChain->GetLeaf("ScoutingMuonVtx_nTrackerLayersWithMeasurement");
-
-      struct MuonInfo {
-        double pt;
-        double eta;
-        double phi;
-      };
-
-      const int nMuons = static_cast<int>(leafValue(nMuonLeaf));
-      std::vector<MuonInfo> allMuons;
-      allMuons.reserve(static_cast<size_t>(std::max(0, nMuons)));
-      int nGoodMuons = 0;
+    // Read the scouting muons once so we can build both trigger-study and analysis-side jet collections.
+    scoutingAllMuons.clear();
+    int nGoodScoutingMuons = 0;
+    if (needScoutingMuonBranches) {
+      const int nMuons = static_cast<int>(**nScoutingMuonVtxReader);
+      scoutingAllMuons.reserve(static_cast<size_t>(std::max(0, nMuons)));
 
       for (int i = 0; i < nMuons; ++i) {
-        const double muPt = leafValue(muPtLeaf, i);
-        const double muEta = leafValue(muEtaLeaf, i);
-        const double muPhi = leafValue(muPhiLeaf, i);
-        const double muDxy = leafValue(muDxyLeaf, i);
-        const double muDz = leafValue(muDzLeaf, i);
-        const double muNormChi2 = leafValue(muNormChi2Leaf, i);
-        const double muHits = leafValue(muHitsLeaf, i);
-        const double muStations = leafValue(muStationsLeaf, i);
-        const double muPixelHits = leafValue(muPixelHitsLeaf, i);
-        const double muLayers = leafValue(muLayersLeaf, i);
+        const double muPt = static_cast<double>((*scoutingMuonPtReader)[i]);
+        const double muEta = static_cast<double>((*scoutingMuonEtaReader)[i]);
+        const double muPhi = static_cast<double>((*scoutingMuonPhiReader)[i]);
+        const double muDxy = static_cast<double>((*scoutingMuonDxyReader)[i]);
+        const double muDz = static_cast<double>((*scoutingMuonDzReader)[i]);
+        const double muNormChi2 = static_cast<double>((*scoutingMuonNormChi2Reader)[i]);
+        const double muHits = static_cast<double>((*scoutingMuonHitsReader)[i]);
+        const double muStations = static_cast<double>((*scoutingMuonStationsReader)[i]);
+        const double muPixelHits = static_cast<double>((*scoutingMuonPixelHitsReader)[i]);
+        const double muLayers = static_cast<double>((*scoutingMuonLayersReader)[i]);
 
-        allMuons.push_back({muPt, muEta, muPhi});
+        TLorentzVector muP4;
+        muP4.SetPtEtaPhiM(muPt, muEta, muPhi, 0.105);
+        scoutingAllMuons.push_back(muP4);
         if (passesScoutingMuonID(muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits,
                                  muLayers)) {
-          ++nGoodMuons;
+          ++nGoodScoutingMuons;
         }
       }
+    }
 
-      if (nGoodMuons < 1) continue;
+    const bool hasGoodScoutingMuon =
+        (inputMode == InputSampleMode::kScoutingData) && (nGoodScoutingMuons >= 1);
 
-      std::vector<size_t> muCleanJetIdx;
-      muCleanJetIdx.reserve(nJets);
+    // Remove nearby muon p4 from accepted scouting jets without mutating the input jet collection in place.
+    auto makeMuonCleanedJets = [&](const std::vector<TLorentzVector>& inputJets,
+                                   const std::vector<TLorentzVector>& inputJetsShift,
+                                   std::vector<TLorentzVector>& cleanedJets,
+                                   std::vector<TLorentzVector>& cleanedJetsShift) {
+      cleanedJets = inputJets;
+      cleanedJetsShift = inputJetsShift;
+
       for (size_t j = 0; j < nJets; ++j) {
         if (std::abs(jetEta[j]) > 5.0) continue;
         if (jetID[j] != tightJetIDFlag) continue;
-        if (getCorrPt(j) <= ptCut) continue;
-        muCleanJetIdx.push_back(j);
-      }
+        if (inputJets[j].Pt() <= ptCut) continue;
 
-      for (const auto j : muCleanJetIdx) {
-        TLorentzVector cleanedJetP4;
-        cleanedJetP4.SetPtEtaPhiM(jetPt[j], jetEta[j], jetPhi[j], jetMass[j]);
-        TLorentzVector cleanedJetP4Shift = recoJetP4Shift[j];
-
+        TLorentzVector cleanedJetP4 = cleanedJets[j];
+        TLorentzVector cleanedJetP4Shift = cleanedJetsShift[j];
         bool hadOverlap = false;
-        for (const auto& mu : allMuons) {
-          if (deltaRDistance(jetEta[j], jetPhi[j], mu.eta, mu.phi) >= 0.4) continue;
-          TLorentzVector muP4;
-          muP4.SetPtEtaPhiM(mu.pt, mu.eta, mu.phi, 0.105);
+        for (const auto& muP4 : scoutingAllMuons) {
+          if (deltaRDistance(jetEta[j], jetPhi[j], muP4.Eta(), muP4.Phi()) >= 0.4) continue;
           cleanedJetP4 -= muP4;
           cleanedJetP4Shift -= muP4;
           hadOverlap = true;
         }
 
         if (hadOverlap && cleanedJetP4.Pt() < 1.0) {
-          recoJetP4[j].SetPxPyPzE(0.0, 0.0, 0.0, 0.0);
-          recoJetP4Shift[j].SetPxPyPzE(0.0, 0.0, 0.0, 0.0);
+          cleanedJets[j].SetPxPyPzE(0.0, 0.0, 0.0, 0.0);
+          cleanedJetsShift[j].SetPxPyPzE(0.0, 0.0, 0.0, 0.0);
           continue;
         }
 
-        recoJetP4[j] = cleanedJetP4;
-        recoJetP4Shift[j] = cleanedJetP4Shift;
+        cleanedJets[j] = cleanedJetP4;
+        cleanedJetsShift[j] = cleanedJetP4Shift;
+      }
+    };
+
+    // Start from the nominal reco jets and optionally replace them with the muon-cleaned version for analysis outputs.
+    // Only the analysis-side switch is allowed to change the branches written to the reduced ntuple.
+    const std::vector<TLorentzVector>* analysisJetP4 = &recoJetP4;
+    const std::vector<TLorentzVector>* analysisJetP4Shift = &recoJetP4Shift;
+    if (applyGoodMuonSelection_analysis) {
+      if (!hasGoodScoutingMuon) continue;
+      makeMuonCleanedJets(recoJetP4, recoJetP4Shift, analysisJetP4Storage, analysisJetP4ShiftStorage);
+      analysisJetP4 = &analysisJetP4Storage;
+      analysisJetP4Shift = &analysisJetP4ShiftStorage;
+    }
+
+    const bool analysisUsesMuonCleanedJets = applyGoodMuonSelection_analysis;
+    const std::vector<TLorentzVector>* trigEffGoodMuonJetP4 = nullptr;
+    const std::vector<TLorentzVector>* trigEffGoodMuonJetP4Shift = nullptr;
+    if (hasGoodScoutingMuon) {
+      if (analysisUsesMuonCleanedJets) {
+        trigEffGoodMuonJetP4 = analysisJetP4;
+        trigEffGoodMuonJetP4Shift = analysisJetP4Shift;
+      } else {
+        makeMuonCleanedJets(recoJetP4,
+                            recoJetP4Shift,
+                            trigEffGoodMuonJetP4Storage,
+                            trigEffGoodMuonJetP4ShiftStorage);
+        trigEffGoodMuonJetP4 = &trigEffGoodMuonJetP4Storage;
+        trigEffGoodMuonJetP4Shift = &trigEffGoodMuonJetP4ShiftStorage;
       }
     }
 
-    std::sort(sortedIdx.begin(), sortedIdx.end(),
-              [&](unsigned a, unsigned b) { return recoJetP4[a].Pt() > recoJetP4[b].Pt(); });
+    struct JetRecoSummary {
+      std::vector<unsigned> sortedIdx;
+      int nAk4Analysis = 0;
+      double htAk4Analysis = 0.0;
+      double htAk4TrigEff = 0.0;
+      double htAk4RawForUnclustered = 0.0;
+      TLorentzVector ak4j1, ak4j2;
+      TLorentzVector wj1, wj2, wj1Shift, wj2Shift;
+      double mjjWide = 0.0;
+      double dEtaWide = 0.0;
+      double dPhiWide = 0.0;
+      double mjjWideShift = 0.0;
+      double mjjAk4 = 0.0;
+      double dEtaAk4 = 0.0;
+      double dPhiAk4 = 0.0;
+    };
 
-    int NAK4PF = 0;
-    double HTAK4PF = 0.0;
-    double htAK4RawForUnclustered = 0.0;
-    for (size_t k = 0; k < nJets; ++k) {
-      const auto j = sortedIdx[k];
-      const double pTj = recoJetP4[j].Pt();
-      if (pTj > ptCut) htAK4RawForUnclustered += rawPt[j];
-      if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
-      if (jetID[j] != tightJetIDFlag) continue;
-      if (pTj <= ptCut) continue;
-      ++NAK4PF;
-      HTAK4PF += pTj;
-    }
+    // Rebuild AK4, HT, and wide-dijet observables from a chosen jet collection.
+    auto buildJetRecoSummary = [&](const std::vector<TLorentzVector>& jets,
+                                   const std::vector<TLorentzVector>& jetsShift) {
+      JetRecoSummary out;
+      out.sortedIdx.resize(nJets);
+      std::iota(out.sortedIdx.begin(), out.sortedIdx.end(), 0U);
+      std::sort(out.sortedIdx.begin(), out.sortedIdx.end(),
+                [&](unsigned a, unsigned b) { return jets[a].Pt() > jets[b].Pt(); });
 
-    TLorentzVector wj1, wj2, wj1_shift, wj2_shift;
-    TLorentzVector AK4j1, AK4j2;
+      // Cache the sorted-order jet selections once so the HT and wide-jet steps can reuse them verbatim.
+      std::vector<unsigned> legacyWideIdx;
+      std::vector<unsigned> fastJetInputIdx;
+      legacyWideIdx.reserve(nJets);
+      fastJetInputIdx.reserve(nJets);
 
-    if (nJets >= 2U) {
-      const auto j0 = sortedIdx[0];
-      const auto j1 = sortedIdx[1];
+      for (size_t k = 0; k < nJets; ++k) {
+        const auto j = out.sortedIdx[k];
+        const double pTj = jets[j].Pt();
+        const double absEta = std::fabs(jets[j].Eta());
+        const bool passTightID = (jetID[j] == tightJetIDFlag);
+        if (pTj > ptCut) out.htAk4RawForUnclustered += rawPt[j];
 
-      if (recoJetP4[j0].Pt() > pt0Cut && recoJetP4[j1].Pt() > pt1Cut) {
-        AK4j1 = recoJetP4[j0];
-        AK4j2 = recoJetP4[j1];
-
-        if (useFastJet) {
-          std::vector<fastjet::PseudoJet> fjInputs;
-          std::vector<fastjet::PseudoJet> fjInputsShift;
-          fjInputs.reserve(nJets);
-          fjInputsShift.reserve(nJets);
-
-          for (size_t k = 0; k < nJets; ++k) {
-            const auto j = sortedIdx[k];
-            const double pTj = recoJetP4[j].Pt();
-            const double minPt = (k == 0) ? pt0Cut : ((k == 1) ? pt1Cut : ptCut);
-            if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
-            if (jetID[j] != tightJetIDFlag) continue;
-            if (pTj <= minPt) continue;
-
-            const TLorentzVector& jet = recoJetP4[j];
-            const TLorentzVector& jetShift = recoJetP4Shift[j];
-
-            fjInputs.emplace_back(jet.Px(), jet.Py(), jet.Pz(), jet.E());
-            fjInputsShift.emplace_back(jetShift.Px(), jetShift.Py(), jetShift.Pz(), jetShift.E());
+        if (passTightID && pTj > ptCut) {
+          if (absEta < jetFidRegion) {
+            ++out.nAk4Analysis;
+            out.htAk4Analysis += pTj;
+            legacyWideIdx.push_back(j);
           }
-
-          if (fjInputs.size() > 1U) {
-            fastjet::ClusterSequence clusterSeq(fjInputs, *fjJetDefinition);
-            fastjet::ClusterSequence clusterSeqShift(fjInputsShift, *fjJetDefinition);
-            const auto wideJets = fastjet::sorted_by_pt(clusterSeq.inclusive_jets(0.0));
-            const auto wideJetsShift = fastjet::sorted_by_pt(clusterSeqShift.inclusive_jets(0.0));
-            if (wideJets.size() > 1U && wideJetsShift.size() > 1U) {
-              wj1.SetPxPyPzE(wideJets[0].px(), wideJets[0].py(), wideJets[0].pz(), wideJets[0].e());
-              wj2.SetPxPyPzE(wideJets[1].px(), wideJets[1].py(), wideJets[1].pz(), wideJets[1].e());
-              wj1_shift.SetPxPyPzE(wideJetsShift[0].px(), wideJetsShift[0].py(), wideJetsShift[0].pz(),
-                                   wideJetsShift[0].e());
-              wj2_shift.SetPxPyPzE(wideJetsShift[1].px(), wideJetsShift[1].py(), wideJetsShift[1].pz(),
-                                   wideJetsShift[1].e());
-            }
+          if (absEta < kTriggerStudyHtEtaMax) {
+            out.htAk4TrigEff += pTj;
           }
-        } else {
+        }
 
-          TLorentzVector wj1_tmp, wj2_tmp, wj1s_tmp, wj2s_tmp;
-
-          for (size_t k = 0; k < nJets; ++k) {
-            const auto j = sortedIdx[k];
-            const double pTj = recoJetP4[j].Pt();
-            if (std::fabs(recoJetP4[j].Eta()) >= jetFidRegion) continue;
-            if (jetID[j] != tightJetIDFlag) continue;
-            if (pTj <= ptCut) continue;
-            const TLorentzVector& cj = recoJetP4[j];
-            const TLorentzVector& cjs = recoJetP4Shift[j];
-
-            const double dR1 = cj.DeltaR(AK4j1);
-            const double dR2 = cj.DeltaR(AK4j2);
-
-            if (dR1 < dR2 && dR1 < wideJetDeltaR) {
-              wj1_tmp += cj;
-              wj1s_tmp += cjs;
-            } else if (dR2 < wideJetDeltaR) {
-              wj2_tmp += cj;
-              wj2s_tmp += cjs;
-            }
-          }
-
-          if (wj2_tmp.Pt() > wj1_tmp.Pt()) {
-            std::swap(wj1_tmp, wj2_tmp);
-            std::swap(wj1s_tmp, wj2s_tmp);
-          }
-          wj1 = wj1_tmp;
-          wj2 = wj2_tmp;
-          wj1_shift = wj1s_tmp;
-          wj2_shift = wj2s_tmp;
+        const double minPt = (k == 0) ? pt0Cut : ((k == 1) ? pt1Cut : ptCut);
+        if (passTightID && absEta < jetFidRegion && pTj > minPt) {
+          fastJetInputIdx.push_back(j);
         }
       }
-    }
 
-    double mjjWide = 0.0, dEtaWide = 0.0, dPhiWide = 0.0, mjjWide_shift = 0.0;
-    if (wj1.Pt() > 0.0 && wj2.Pt() > 0.0) {
-      const TLorentzVector wdijet = wj1 + wj2;
-      const TLorentzVector wdijetShift = wj1_shift + wj2_shift;
-      mjjWide = wdijet.M();
-      dEtaWide = std::fabs(wj1.Eta() - wj2.Eta());
-      dPhiWide = std::fabs(wj1.DeltaPhi(wj2));
-      mjjWide_shift = wdijetShift.M();
-    }
+      if (nJets >= 2U) {
+        const auto j0 = out.sortedIdx[0];
+        const auto j1 = out.sortedIdx[1];
 
-    double mjjAK4 = 0.0, dEtaAK4 = 0.0, dPhiAK4 = 0.0;
-    if (AK4j1.Pt() > 0.0 && AK4j2.Pt() > 0.0) {
-      const TLorentzVector dij = AK4j1 + AK4j2;
-      mjjAK4 = dij.M();
-      dEtaAK4 = std::fabs(AK4j1.Eta() - AK4j2.Eta());
-      dPhiAK4 = std::fabs(AK4j1.DeltaPhi(AK4j2));
-    }
+        if (jets[j0].Pt() > pt0Cut && jets[j1].Pt() > pt1Cut) {
+          out.ak4j1 = jets[j0];
+          out.ak4j2 = jets[j1];
 
-    // sumEt = scalar sum of jet pT.
+          if (useFastJet) {
+            // FastJet mode reclusters the accepted AK4 jets directly into the wide-jet pair.
+            std::vector<fastjet::PseudoJet> fjInputs;
+            std::vector<fastjet::PseudoJet> fjInputsShift;
+            fjInputs.reserve(fastJetInputIdx.size());
+            fjInputsShift.reserve(fastJetInputIdx.size());
+
+            for (const auto j : fastJetInputIdx) {
+              fjInputs.emplace_back(jets[j].Px(), jets[j].Py(), jets[j].Pz(), jets[j].E());
+              fjInputsShift.emplace_back(jetsShift[j].Px(), jetsShift[j].Py(), jetsShift[j].Pz(), jetsShift[j].E());
+            }
+
+            if (fjInputs.size() > 1U) {
+              fastjet::ClusterSequence clusterSeq(fjInputs, *fjJetDefinition);
+              fastjet::ClusterSequence clusterSeqShift(fjInputsShift, *fjJetDefinition);
+              const auto wideJets = fastjet::sorted_by_pt(clusterSeq.inclusive_jets(0.0));
+              const auto wideJetsShift = fastjet::sorted_by_pt(clusterSeqShift.inclusive_jets(0.0));
+              if (wideJets.size() > 1U && wideJetsShift.size() > 1U) {
+                out.wj1.SetPxPyPzE(wideJets[0].px(), wideJets[0].py(), wideJets[0].pz(), wideJets[0].e());
+                out.wj2.SetPxPyPzE(wideJets[1].px(), wideJets[1].py(), wideJets[1].pz(), wideJets[1].e());
+                out.wj1Shift.SetPxPyPzE(wideJetsShift[0].px(), wideJetsShift[0].py(), wideJetsShift[0].pz(),
+                                        wideJetsShift[0].e());
+                out.wj2Shift.SetPxPyPzE(wideJetsShift[1].px(), wideJetsShift[1].py(), wideJetsShift[1].pz(),
+                                        wideJetsShift[1].e());
+              }
+            }
+          } else {
+            // Legacy mode grows each wide jet around the two leading AK4 seeds.
+            TLorentzVector wj1Tmp, wj2Tmp, wj1ShiftTmp, wj2ShiftTmp;
+
+            for (const auto j : legacyWideIdx) {
+              const double dR1 = jets[j].DeltaR(out.ak4j1);
+              const double dR2 = jets[j].DeltaR(out.ak4j2);
+
+              if (dR1 < dR2 && dR1 < wideJetDeltaR) {
+                wj1Tmp += jets[j];
+                wj1ShiftTmp += jetsShift[j];
+              } else if (dR2 < wideJetDeltaR) {
+                wj2Tmp += jets[j];
+                wj2ShiftTmp += jetsShift[j];
+              }
+            }
+
+            if (wj2Tmp.Pt() > wj1Tmp.Pt()) {
+              std::swap(wj1Tmp, wj2Tmp);
+              std::swap(wj1ShiftTmp, wj2ShiftTmp);
+            }
+            out.wj1 = wj1Tmp;
+            out.wj2 = wj2Tmp;
+            out.wj1Shift = wj1ShiftTmp;
+            out.wj2Shift = wj2ShiftTmp;
+          }
+        }
+      }
+
+      if (out.wj1.Pt() > 0.0 && out.wj2.Pt() > 0.0) {
+        const TLorentzVector wdijet = out.wj1 + out.wj2;
+        const TLorentzVector wdijetShift = out.wj1Shift + out.wj2Shift;
+        out.mjjWide = wdijet.M();
+        out.dEtaWide = std::fabs(out.wj1.Eta() - out.wj2.Eta());
+        out.dPhiWide = std::fabs(out.wj1.DeltaPhi(out.wj2));
+        out.mjjWideShift = wdijetShift.M();
+      }
+
+      if (out.ak4j1.Pt() > 0.0 && out.ak4j2.Pt() > 0.0) {
+        const TLorentzVector dij = out.ak4j1 + out.ak4j2;
+        out.mjjAk4 = dij.M();
+        out.dEtaAk4 = std::fabs(out.ak4j1.Eta() - out.ak4j2.Eta());
+        out.dPhiAk4 = std::fabs(out.ak4j1.DeltaPhi(out.ak4j2));
+      }
+
+      return out;
+    };
+
+    // Build one jet summary for the saved analysis branches, plus the default and good-muon trigger-study summaries.
+    // A jet summary packages the reconstructed AK4, HT, and wide-dijet observables for one jet collection.
+    const JetRecoSummary defaultSummary = buildJetRecoSummary(recoJetP4, recoJetP4Shift);
+    const JetRecoSummary* analysisSummaryPtr = &defaultSummary;
+    JetRecoSummary analysisSummaryStorage;
+    if (analysisUsesMuonCleanedJets) {
+      analysisSummaryStorage = buildJetRecoSummary(*analysisJetP4, *analysisJetP4Shift);
+      analysisSummaryPtr = &analysisSummaryStorage;
+    }
+    const JetRecoSummary& analysisSummary = *analysisSummaryPtr;
+    // Default trigger study histograms
+    const JetRecoSummary& defaultSummaryRef = defaultSummary;
+    // Good-muon trigger-study histograms
+    JetRecoSummary emptyGoodMuonSummary;
+    JetRecoSummary goodMuonSummaryStorage;
+    const JetRecoSummary* goodMuonSummaryPtr = &emptyGoodMuonSummary;
+    if (trigEffGoodMuonJetP4 != nullptr) {
+      if (analysisUsesMuonCleanedJets) {
+        goodMuonSummaryPtr = analysisSummaryPtr;
+      } else {
+        goodMuonSummaryStorage = buildJetRecoSummary(*trigEffGoodMuonJetP4, *trigEffGoodMuonJetP4Shift);
+        goodMuonSummaryPtr = &goodMuonSummaryStorage;
+      }
+    }
+    const JetRecoSummary& goodMuonSummary = *goodMuonSummaryPtr;
+
+    // Derive MET-based event variables from the nominal corrected jet collection used for the saved branches.
     double sumEtVal = 0.0;
     for (size_t i = 0; i < nJets; ++i) {
       const double pTj = getCorrPt(i);
@@ -977,11 +1113,12 @@ void analysisClass::Loop() {
     }
 
     float unclusteredEnFracVal = (sumEtVal > 0.0)
-                                     ? static_cast<float>((sumEtVal - htAK4RawForUnclustered) / sumEtVal)
+                                     ? static_cast<float>((sumEtVal - analysisSummary.htAk4RawForUnclustered) / sumEtVal)
                                      : -1.0f;
     if (unclusteredEnFracVal > 1.0f) unclusteredEnFracVal = 1.0f;
     if (unclusteredEnFracVal < -1.0f) unclusteredEnFracVal = -1.0f;
 
+    // Map the saved jet-composition outputs back to the branch family used for this event.
     auto getChMultOut = [&](size_t idx) -> int {
       if (useStandardLikeJets) return static_cast<int>((*chHadMultMC)[idx]);
       const int chVal = static_cast<int>((*chHadMultData)[idx]);
@@ -1000,88 +1137,89 @@ void analysisClass::Loop() {
 
     resetCuts();
 
+    // Fill the reduced ntuple from the nominal analysis summary only; trigger-study variants stay in histograms.
     fillVariableWithValue("run", runNoEvt);
     fillVariableWithValue("event", static_cast<double>(evtNoEvt));
     fillVariableWithValue("lumi", lumiEvt);
     fillVariableWithValue("nVtx", nvtxEvt);
 
-    fillVariableWithValue("nJet", (wj1.Pt() > 0.0 && wj2.Pt() > 0.0) ? 2 : 0);
+    const auto& branchSortedIdx = analysisSummary.sortedIdx;
+    fillVariableWithValue("nJet", (analysisSummary.wj1.Pt() > 0.0 && analysisSummary.wj2.Pt() > 0.0) ? 2 : 0);
     fillVariableWithValue("met", metVal);
     fillVariableWithValue("metphi", metPhiVal);
     fillVariableWithValue("metSig", metSigVal);
-    fillVariableWithValue("NAK4PF", NAK4PF);
+    fillVariableWithValue("NAK4PF", analysisSummary.nAk4Analysis);
     fillVariableWithValue("PassJSON", passJSON(runNoEvt, lumiEvt, isDataEvt));
 
-    if (AK4j1.Pt() > 0.0 && nJets >= 1U) {
-      const auto j0 = sortedIdx[0];
+    if (analysisSummary.ak4j1.Pt() > 0.0 && branchSortedIdx.size() >= 1U) {
+      const auto j0 = branchSortedIdx[0];
       fillVariableWithValue("IdTight_j1", jetID[j0]);
-      fillVariableWithValue("pTAK4PF_j1", AK4j1.Pt());
-      fillVariableWithValue("etaAK4PF_j1", AK4j1.Eta());
-      fillVariableWithValue("phiAK4PF_j1", AK4j1.Phi());
+      fillVariableWithValue("pTAK4PF_j1", analysisSummary.ak4j1.Pt());
+      fillVariableWithValue("etaAK4PF_j1", analysisSummary.ak4j1.Eta());
+      fillVariableWithValue("phiAK4PF_j1", analysisSummary.ak4j1.Phi());
       fillVariableWithValue("jetJecAK4PF_j1", doReapplyJEC ? jecFactor[j0] : jecFacInput[j0]);
       fillVariableWithValue("jetJecUncAK4PF_j1", doReapplyJEC ? jecUncRel[j0] : jecUncInput[j0]);
 
       fillVariableWithValue("neutrHadEnFrac_j1", nhf[j0]);
       fillVariableWithValue("chargedHadEnFrac_j1", chf[j0]);
       fillVariableWithValue("photonEnFrac_j1", phf[j0]);
-      // fillVariableWithValue("eleEnFract_j1", elf[j0]);
       fillVariableWithValue("muEnFract_j1", muf[j0]);
       fillVariableWithValue("neutrElectromFrac_j1", nemf[j0]);
-      // fillVariableWithValue("chargedElectromFrac_j1", cemf[j0]);
       fillVariableWithValue("chargedMult_j1", getChMultOut(j0));
       fillVariableWithValue("neutrMult_j1", getNeMultOut(j0));
       fillVariableWithValue("photonMult_j1", getPhoMultOut(j0));
     }
 
-    if (AK4j2.Pt() > 0.0 && nJets >= 2U) {
-      const auto j1 = sortedIdx[1];
+    if (analysisSummary.ak4j2.Pt() > 0.0 && branchSortedIdx.size() >= 2U) {
+      const auto j1 = branchSortedIdx[1];
       fillVariableWithValue("IdTight_j2", jetID[j1]);
-      fillVariableWithValue("pTAK4PF_j2", AK4j2.Pt());
-      fillVariableWithValue("etaAK4PF_j2", AK4j2.Eta());
-      fillVariableWithValue("phiAK4PF_j2", AK4j2.Phi());
+      fillVariableWithValue("pTAK4PF_j2", analysisSummary.ak4j2.Pt());
+      fillVariableWithValue("etaAK4PF_j2", analysisSummary.ak4j2.Eta());
+      fillVariableWithValue("phiAK4PF_j2", analysisSummary.ak4j2.Phi());
       fillVariableWithValue("jetJecAK4PF_j2", doReapplyJEC ? jecFactor[j1] : jecFacInput[j1]);
       fillVariableWithValue("jetJecUncAK4PF_j2", doReapplyJEC ? jecUncRel[j1] : jecUncInput[j1]);
 
       fillVariableWithValue("neutrHadEnFrac_j2", nhf[j1]);
       fillVariableWithValue("chargedHadEnFrac_j2", chf[j1]);
       fillVariableWithValue("photonEnFrac_j2", phf[j1]);
-      // fillVariableWithValue("eleEnFract_j2", elf[j1]);
       fillVariableWithValue("muEnFract_j2", muf[j1]);
       fillVariableWithValue("neutrElectromFrac_j2", nemf[j1]);
-      // fillVariableWithValue("chargedElectromFrac_j2", cemf[j1]);
       fillVariableWithValue("chargedMult_j2", getChMultOut(j1));
       fillVariableWithValue("neutrMult_j2", getNeMultOut(j1));
       fillVariableWithValue("photonMult_j2", getPhoMultOut(j1));
 
-      fillVariableWithValue("Dijet_MassAK4PF", mjjAK4);
-      fillVariableWithValue("CosThetaStarAK4PF", TMath::TanH((AK4j1.Eta() - AK4j2.Eta()) / 2.0));
-      fillVariableWithValue("deltaETAjjAK4PF", dEtaAK4);
-      fillVariableWithValue("deltaPHIjjAK4PF", dPhiAK4);
+      fillVariableWithValue("Dijet_MassAK4PF", analysisSummary.mjjAk4);
+      fillVariableWithValue("CosThetaStarAK4PF",
+                            TMath::TanH((analysisSummary.ak4j1.Eta() - analysisSummary.ak4j2.Eta()) / 2.0));
+      fillVariableWithValue("deltaETAjjAK4PF", analysisSummary.dEtaAk4);
+      fillVariableWithValue("deltaPHIjjAK4PF", analysisSummary.dPhiAk4);
     }
 
-    if (wj1.Pt() > 0.0) {
-      fillVariableWithValue("pTWJ_j1", wj1.Pt());
-      fillVariableWithValue("etaWJ_j1", wj1.Eta());
-      fillVariableWithValue("massWJ_j1", wj1.M());
-      fillVariableWithValue("phiWJ_j1", wj1.Phi());
-      fillVariableWithValue("rapidityWJ_j1", wj1.Rapidity());
+    if (analysisSummary.wj1.Pt() > 0.0) {
+      fillVariableWithValue("pTWJ_j1", analysisSummary.wj1.Pt());
+      fillVariableWithValue("etaWJ_j1", analysisSummary.wj1.Eta());
+      fillVariableWithValue("massWJ_j1", analysisSummary.wj1.M());
+      fillVariableWithValue("phiWJ_j1", analysisSummary.wj1.Phi());
+      fillVariableWithValue("rapidityWJ_j1", analysisSummary.wj1.Rapidity());
     }
 
-    if (wj2.Pt() > 0.0) {
-      fillVariableWithValue("pTWJ_j2", wj2.Pt());
-      fillVariableWithValue("etaWJ_j2", wj2.Eta());
-      fillVariableWithValue("deltaETAjj", dEtaWide);
-      fillVariableWithValue("mjj", mjjWide);
-      fillVariableWithValue("mjj_shiftJEC", mjjWide_shift);
-      fillVariableWithValue("massWJ_j2", wj2.M());
-      fillVariableWithValue("phiWJ_j2", wj2.Phi());
-      fillVariableWithValue("CosThetaStarWJ", TMath::TanH((wj1.Eta() - wj2.Eta()) / 2.0));
-      fillVariableWithValue("deltaPHIjj", dPhiWide);
-      fillVariableWithValue("rapidityWJ_j2", wj2.Rapidity());
+    if (analysisSummary.wj2.Pt() > 0.0) {
+      fillVariableWithValue("pTWJ_j2", analysisSummary.wj2.Pt());
+      fillVariableWithValue("etaWJ_j2", analysisSummary.wj2.Eta());
+      fillVariableWithValue("deltaETAjj", analysisSummary.dEtaWide);
+      fillVariableWithValue("mjj", analysisSummary.mjjWide);
+      fillVariableWithValue("mjj_shiftJEC", analysisSummary.mjjWideShift);
+      fillVariableWithValue("massWJ_j2", analysisSummary.wj2.M());
+      fillVariableWithValue("phiWJ_j2", analysisSummary.wj2.Phi());
+      fillVariableWithValue("CosThetaStarWJ",
+                            TMath::TanH((analysisSummary.wj1.Eta() - analysisSummary.wj2.Eta()) / 2.0));
+      fillVariableWithValue("deltaPHIjj", analysisSummary.dPhiWide);
+      fillVariableWithValue("rapidityWJ_j2", analysisSummary.wj2.Rapidity());
     }
 
-    const double METoverHTAK4PF = (HTAK4PF > 0.0) ? double(metVal / HTAK4PF) : 0.0;
-    fillVariableWithValue("HTAK4PF", HTAK4PF);
+    const double METoverHTAK4PF =
+        (analysisSummary.htAk4Analysis > 0.0) ? double(metVal / analysisSummary.htAk4Analysis) : 0.0;
+    fillVariableWithValue("HTAK4PF", analysisSummary.htAk4Analysis);
     fillVariableWithValue("METoverHTAK4PF", METoverHTAK4PF);
     fillVariableWithValue("unclusteredEnFracAK4PF", unclusteredEnFracVal);
 
@@ -1095,9 +1233,10 @@ void analysisClass::Loop() {
 
     const bool passPFScoutingHT = trigJetHT ? static_cast<bool>(**trigJetHT) : false;
     const bool passPFScoutingSingleMuon = trigSingleMuon ? static_cast<bool>(**trigSingleMuon) : false;
+    // Evaluate the optional JetHT-side L1 flag once so both the ntuple and trigger-study histograms can reuse it.
     bool passRequiredL1 = true;
     bool passVetoL1 = true;
-    if (applyL1TriggerVeto) {
+    if (canEvaluateL1ForPFScoutingHT) {
       passRequiredL1 = false;
       for (const auto& bitReader : requiredL1Readers) {
         if (static_cast<bool>(**bitReader)) {
@@ -1112,30 +1251,91 @@ void analysisClass::Loop() {
         }
       }
     }
-    const bool passPFScoutingHTForHist = passPFScoutingHT && passRequiredL1 && passVetoL1;
-    fillVariableWithValue("passHLT_PFScoutingHT", passPFScoutingHTForHist ? 1 : 0);
+    const bool passL1ForPFScoutingHT = canEvaluateL1ForPFScoutingHT ? (passRequiredL1 && passVetoL1) : false;
+    fillVariableWithValue("passHLT_PFScoutingHT", passPFScoutingHT ? 1 : 0);
     fillVariableWithValue("passHLT_PFScouting_SingleMuon", passPFScoutingSingleMuon ? 1 : 0);
+    fillVariableWithValue("passL1ForPFScoutingHT", canEvaluateL1ForPFScoutingHT ? (passL1ForPFScoutingHT ? 1 : 0) : -1);
 
     evaluateCuts();
 
-    const bool fullAnalysis =
-        passedCut("PassJSON") &&
-        passedCut("nVtx") &&
-        passedCut("IdTight_j1") &&
-        passedCut("IdTight_j2") &&
-        (getVariableValue("pTWJ_j1") > getPreCutValue1("pT_WJ1")) &&
-        (getVariableValue("pTWJ_j2") > getPreCutValue1("pT_WJ2")) &&
-        (getVariableValue("etaWJ_j1") > getPreCutValue1("eta_WJ1")) &&
-        (getVariableValue("etaWJ_j1") < getPreCutValue2("eta_WJ1")) &&
-        (getVariableValue("etaWJ_j2") > getPreCutValue1("eta_WJ2")) &&
-        (getVariableValue("etaWJ_j2") < getPreCutValue2("eta_WJ2")) &&
-        (getVariableValue("deltaETAjj") < getPreCutValue1("Deta_WJJ"));
+    // Apply the trigger-study selections on top of the shared JSON and vertex requirements.
+    const bool passTriggerStudyBaseSelection = passedCut("PassJSON") && passedCut("nVtx");
+    auto passesWideDijetTriggerStudy = [&](const JetRecoSummary& summary) {
+      if (!passTriggerStudyBaseSelection || summary.sortedIdx.size() < 2U) return false;
+      const auto j0 = summary.sortedIdx[0];
+      const auto j1 = summary.sortedIdx[1];
+      return (jetID[j0] == tightJetIDFlag) &&
+             (jetID[j1] == tightJetIDFlag) &&
+             (summary.wj1.Pt() > pTWJ1Min) &&
+             (summary.wj2.Pt() > pTWJ2Min) &&
+             (summary.wj1.Eta() > etaWJ1Min) &&
+             (summary.wj1.Eta() < etaWJ1Max) &&
+             (summary.wj2.Eta() > etaWJ2Min) &&
+             (summary.wj2.Eta() < etaWJ2Max) &&
+             (summary.dEtaWide < detaWJJMax);
+    };
+    auto passesAk4TriggerStudy = [&](const JetRecoSummary& summary) {
+      if (!passTriggerStudyBaseSelection || summary.sortedIdx.size() < 2U) return false;
+      const auto j0 = summary.sortedIdx[0];
+      const auto j1 = summary.sortedIdx[1];
+      return (jetID[j0] == tightJetIDFlag) &&
+             (jetID[j1] == tightJetIDFlag) &&
+             (summary.ak4j1.Pt() > pTWJ1Min) &&
+             (summary.ak4j2.Pt() > pTWJ2Min) &&
+             (summary.ak4j1.Eta() > etaWJ1Min) &&
+             (summary.ak4j1.Eta() < etaWJ1Max) &&
+             (summary.ak4j2.Eta() > etaWJ2Min) &&
+             (summary.ak4j2.Eta() < etaWJ2Max) &&
+             (summary.dEtaAk4 < detaWJJMax);
+    };
+    // Fill each trigger-study variant without changing the nominal analysis branches.
+    auto fillTriggerStudy = [&](TriggerStudyMethod method,
+                                const JetRecoSummary& summary,
+                                bool requireGoodMuon,
+                                bool requireL1ForJetHT) {
+      if (!h_trigStudy[kWideDijet][method][0]) return;
+      if (requireGoodMuon && !hasGoodScoutingMuon) return;
+      if (requireL1ForJetHT && !canEvaluateL1ForPFScoutingHT) return;
 
-    if (fullAnalysis) {
-      h_mjj_HLTpass[0]->Fill(mjjWide);
-      h_mjj_noTrig_1GeVbin->Fill(mjjWide);
-      if (passPFScoutingHTForHist) h_mjj_HLTpass[1]->Fill(mjjWide);
-      if (passPFScoutingSingleMuon) h_mjj_HLTpass[2]->Fill(mjjWide);
+      if (passesWideDijetTriggerStudy(summary)) {
+        h_trigStudy[kWideDijet][method][0]->Fill(summary.mjjWide);
+        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kWideDijet][method][1]->Fill(summary.mjjWide);
+        }
+        if (passPFScoutingSingleMuon) h_trigStudy[kWideDijet][method][2]->Fill(summary.mjjWide);
+      }
+
+      if (passesAk4TriggerStudy(summary)) {
+        h_trigStudy[kAk4Dijet][method][0]->Fill(summary.mjjAk4);
+        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kAk4Dijet][method][1]->Fill(summary.mjjAk4);
+        }
+        if (passPFScoutingSingleMuon) h_trigStudy[kAk4Dijet][method][2]->Fill(summary.mjjAk4);
+      }
+
+      if (passTriggerStudyBaseSelection) {
+        h_trigStudy[kHtAk4][method][0]->Fill(summary.htAk4TrigEff);
+        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kHtAk4][method][1]->Fill(summary.htAk4TrigEff);
+        }
+        if (passPFScoutingSingleMuon) h_trigStudy[kHtAk4][method][2]->Fill(summary.htAk4TrigEff);
+      }
+    };
+
+    // Nominal (Legacy) wide-dijet histograms
+    const bool legacyWideSelection = passesWideDijetTriggerStudy(defaultSummaryRef);
+    if (legacyWideSelection) {
+      h_mjj_HLTpass[0]->Fill(defaultSummaryRef.mjjWide);
+      h_mjj_noTrig_1GeVbin->Fill(defaultSummaryRef.mjjWide);
+      if (passPFScoutingHT) h_mjj_HLTpass[1]->Fill(defaultSummaryRef.mjjWide);
+      if (passPFScoutingSingleMuon) h_mjj_HLTpass[2]->Fill(defaultSummaryRef.mjjWide);
+    }
+
+    fillTriggerStudy(kDefaultStudy, defaultSummaryRef, false, false);
+    if (produceAdditionalTriggerStudyPlots) {
+      fillTriggerStudy(kL1Study, defaultSummaryRef, false, true);
+      fillTriggerStudy(kGoodMuonStudy, goodMuonSummary, true, false);
+      fillTriggerStudy(kGoodMuonL1Study, goodMuonSummary, true, true);
     }
 
     fillReducedSkimTree();
@@ -1143,6 +1343,16 @@ void analysisClass::Loop() {
 
   for (int i = 0; i < 3; ++i) {
     h_mjj_HLTpass[i]->Write();
+  }
+  h_mjj_noTrig_1GeVbin->Write();
+  // Write the full trigger-study histogram grid after the event loop so downstream scripts can choose the method later.
+  for (int obs = 0; obs < kNTriggerStudyObservables; ++obs) {
+    for (int method = 0; method < kNTriggerStudyMethods; ++method) {
+      for (int trig = 0; trig < 3; ++trig) {
+        if (!h_trigStudy[obs][method][trig]) continue;
+        h_trigStudy[obs][method][trig]->Write();
+      }
+    }
   }
   std::cout << "[analysisClass] Loop end\n";
 }
