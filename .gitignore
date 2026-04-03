@@ -51,6 +51,8 @@ scripts/kinematics_plots/
 scripts/2024*/
 *.bak
 fits_*
+scripts/plot_trigger_efficiency_hist
+
 
 !Makefile
 !.gitignore

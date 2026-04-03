@@ -41,8 +41,18 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 
 ---
 
+## Trigger Efficiency (From histograms saved in nTuples)
 
-## Trigger Efficiency
+```bash
+g++ -std=c++20 plot_trigger_efficiency_hist.cpp $(root-config --cflags --libs) -o plot_trigger_efficiency_hist
+
+./plot_trigger_efficiency_hist --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --output-dir trigger_efficiency_hist_2024I --lumi-pb 11451.783064 --year 2024I
+```
+
+
+
+
+## Trigger Efficiency (From Trees - Legacy ONLY)
 
 ```bash
 # Build only once
