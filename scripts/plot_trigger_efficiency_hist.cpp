@@ -819,16 +819,10 @@ OutputPaths make_output_paths(const fs::path& base_output_dir,
 }
 
 void print_case_output_info(const OutputPaths& paths, const PlotConfig& plot, const CaseConfig& study_case) {
+  (void)paths;
   const auto info = info_tag();
-  std::cout << info << " Observable       : " << plot.observable_folder << std::endl;
-  std::cout << info << " Binning          : " << plot.binning_folder << std::endl;
-  std::cout << info << " Case             : " << study_case.folder_tag << std::endl;
-  std::cout << info << " Output ROOT file : " << paths.root_file << std::endl;
-  std::cout << info << " Summary CSV      : " << paths.summary_csv << std::endl;
-  std::cout << info << " Summary TSV      : " << paths.summary_tsv << std::endl;
-  std::cout << info << " Efficiency PDF   : " << paths.eff_pdf << std::endl;
-  std::cout << info << " Efficiency Zoom  : " << paths.eff_zoom_pdf << std::endl;
-  std::cout << info << " Counts PDF       : " << paths.counts_pdf << std::endl;
+  std::cout << info << ' ' << plot.observable_folder << " | " << plot.binning_folder << " | " << study_case.folder_tag
+            << std::endl;
 }
 
 }  // namespace
@@ -897,7 +891,6 @@ int main(int argc, char** argv) {
 
         const OutputPaths paths = make_output_paths(base_output_dir, opts.output_prefix, plot, study_case);
         print_case_output_info(paths, plot, study_case);
-        std::cout << info_tag() << " Files contributing histograms: " << rebinned.files_with_any_hist << std::endl;
 
         TFile root_out(paths.root_file.string().c_str(), "RECREATE");
         if (root_out.IsZombie()) {
