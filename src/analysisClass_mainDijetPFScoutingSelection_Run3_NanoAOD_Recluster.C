@@ -526,6 +526,7 @@ void analysisClass::Loop() {
   }
 
   static const int nMassBins = 103;
+  static const int nEvenDijetBins = 14000;
   static const double massBoundaries[nMassBins + 1] = {
       1, 3, 6, 10, 16, 23, 31, 40, 50, 61, 74, 88, 103, 119, 137, 156, 176, 197, 220, 244, 270, 296, 325,
       354, 386, 419, 453, 489, 526, 565, 606, 649, 693, 740, 788, 838, 890, 944, 1000, 1058, 1118, 1181, 1246, 1313, 1383, 1455, 1530, 1607, 1687,
@@ -533,32 +534,40 @@ void analysisClass::Loop() {
       4686, 4869, 5058, 5253, 5455, 5663, 5877, 6099, 6328, 6564, 6808, 7060, 7320, 7589, 7866, 8152, 8447, 8752, 9067, 9391, 9726, 10072, 10430,
       10798, 11179, 11571, 11977, 12395, 12827, 13272, 13732, 14000};
 
-  const char* HLTname[3] = {"noTrig", "PFScouting_JetHT", "PFScouting_SingleMuon"};
+  enum TriggerStudyTrigger { kNoTrig = 0, kJetHTTrig = 1, kSingleMuonTrig = 2, kJetHTAndSingleMuonTrig = 3, kNTriggerStudyTriggers = 4 };
+  const char* HLTname[kNTriggerStudyTriggers] = {"noTrig", "PFScouting_JetHT", "PFScouting_SingleMuon",
+                                                 "PFScouting_JetHTAndSingleMuon"};
   enum TriggerStudyObservable { kWideDijet = 0, kAk4Dijet = 1, kHtAk4 = 2, kNTriggerStudyObservables = 3 };
   enum TriggerStudyMethod { kDefaultStudy = 0, kL1Study = 1, kGoodMuonStudy = 2, kGoodMuonL1Study = 3, kNTriggerStudyMethods = 4 };
   const char* triggerStudyObservableName[kNTriggerStudyObservables] = {"wideDijet", "AK4Jets", "HTAK4PF"};
   const char* triggerStudyMethodName[kNTriggerStudyMethods] = {"default", "L1", "goodMuon", "goodMuonL1"};
 
-  TH1F* h_mjj_HLTpass[3];
+  TH1F* h_mjj_HLTpass[kNTriggerStudyTriggers];
   TH1F* h_mjj_noTrig_1GeVbin = new TH1F("h_mjj_noTrig_1GeVbin", "", 14000, 0, 14000);
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < kNTriggerStudyTriggers; ++i) {
     h_mjj_HLTpass[i] = new TH1F(Form("h_mjj_HLTpass_%s", HLTname[i]), "", nMassBins, massBoundaries);
   }
 
   // Book the trigger-study histograms once per observable and per control-sample method.
-  TH1F* h_trigStudy[kNTriggerStudyObservables][kNTriggerStudyMethods][3] = {};
+  TH1F* h_trigStudy[kNTriggerStudyObservables][kNTriggerStudyMethods][kNTriggerStudyTriggers] = {};
+  TH1F* h_trigStudyEven1GeV[kNTriggerStudyObservables][kNTriggerStudyMethods][kNTriggerStudyTriggers] = {};
   for (int obs = 0; obs < kNTriggerStudyObservables; ++obs) {
     for (int method = 0; method < kNTriggerStudyMethods; ++method) {
       if (!produceAdditionalTriggerStudyPlots && method != kDefaultStudy) continue;
-      for (int trig = 0; trig < 3; ++trig) {
+      for (int trig = 0; trig < kNTriggerStudyTriggers; ++trig) {
         const TString hname = Form("h_%s_HLTpass_%s_%s",
                                    triggerStudyObservableName[obs],
                                    triggerStudyMethodName[method],
                                    HLTname[trig]);
         if (obs == kHtAk4) {
-          h_trigStudy[obs][method][trig] = new TH1F(hname, "", 150, 0.0, 1500.0);
+          h_trigStudy[obs][method][trig] = new TH1F(hname, "", 1500, 0.0, 1500.0);
         } else {
           h_trigStudy[obs][method][trig] = new TH1F(hname, "", nMassBins, massBoundaries);
+        }
+        if (obs == kWideDijet || obs == kAk4Dijet) {
+          const TString even_hname =
+              Form("h_%sEven1GeV_HLTpass_%s_%s", triggerStudyObservableName[obs], triggerStudyMethodName[method], HLTname[trig]);
+          h_trigStudyEven1GeV[obs][method][trig] = new TH1F(even_hname, "", nEvenDijetBins, 0.0, 14000.0);
         }
       }
     }
@@ -1330,37 +1339,76 @@ void analysisClass::Loop() {
       if (requireL1ForJetHT && !canEvaluateL1ForPFScoutingHT) return;
 
       if (passesWideDijetTriggerStudy(summary)) {
-        h_trigStudy[kWideDijet][method][0]->Fill(summary.mjjWide);
-        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
-          h_trigStudy[kWideDijet][method][1]->Fill(summary.mjjWide);
+        h_trigStudy[kWideDijet][method][kNoTrig]->Fill(summary.mjjWide);
+        if (h_trigStudyEven1GeV[kWideDijet][method][kNoTrig]) {
+          h_trigStudyEven1GeV[kWideDijet][method][kNoTrig]->Fill(summary.mjjWide);
         }
-        if (passPFScoutingSingleMuon) h_trigStudy[kWideDijet][method][2]->Fill(summary.mjjWide);
+        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kWideDijet][method][kJetHTTrig]->Fill(summary.mjjWide);
+          if (h_trigStudyEven1GeV[kWideDijet][method][kJetHTTrig]) {
+            h_trigStudyEven1GeV[kWideDijet][method][kJetHTTrig]->Fill(summary.mjjWide);
+          }
+        }
+        if (passPFScoutingSingleMuon) h_trigStudy[kWideDijet][method][kSingleMuonTrig]->Fill(summary.mjjWide);
+        if (passPFScoutingSingleMuon && h_trigStudyEven1GeV[kWideDijet][method][kSingleMuonTrig]) {
+          h_trigStudyEven1GeV[kWideDijet][method][kSingleMuonTrig]->Fill(summary.mjjWide);
+        }
+        if (passPFScoutingSingleMuon && passPFScoutingHT &&
+            (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kWideDijet][method][kJetHTAndSingleMuonTrig]->Fill(summary.mjjWide);
+          if (h_trigStudyEven1GeV[kWideDijet][method][kJetHTAndSingleMuonTrig]) {
+            h_trigStudyEven1GeV[kWideDijet][method][kJetHTAndSingleMuonTrig]->Fill(summary.mjjWide);
+          }
+        }
       }
 
       if (passesAk4TriggerStudy(summary)) {
-        h_trigStudy[kAk4Dijet][method][0]->Fill(summary.mjjAk4);
-        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
-          h_trigStudy[kAk4Dijet][method][1]->Fill(summary.mjjAk4);
+        h_trigStudy[kAk4Dijet][method][kNoTrig]->Fill(summary.mjjAk4);
+        if (h_trigStudyEven1GeV[kAk4Dijet][method][kNoTrig]) {
+          h_trigStudyEven1GeV[kAk4Dijet][method][kNoTrig]->Fill(summary.mjjAk4);
         }
-        if (passPFScoutingSingleMuon) h_trigStudy[kAk4Dijet][method][2]->Fill(summary.mjjAk4);
+        if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kAk4Dijet][method][kJetHTTrig]->Fill(summary.mjjAk4);
+          if (h_trigStudyEven1GeV[kAk4Dijet][method][kJetHTTrig]) {
+            h_trigStudyEven1GeV[kAk4Dijet][method][kJetHTTrig]->Fill(summary.mjjAk4);
+          }
+        }
+        if (passPFScoutingSingleMuon) h_trigStudy[kAk4Dijet][method][kSingleMuonTrig]->Fill(summary.mjjAk4);
+        if (passPFScoutingSingleMuon && h_trigStudyEven1GeV[kAk4Dijet][method][kSingleMuonTrig]) {
+          h_trigStudyEven1GeV[kAk4Dijet][method][kSingleMuonTrig]->Fill(summary.mjjAk4);
+        }
+        if (passPFScoutingSingleMuon && passPFScoutingHT &&
+            (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kAk4Dijet][method][kJetHTAndSingleMuonTrig]->Fill(summary.mjjAk4);
+          if (h_trigStudyEven1GeV[kAk4Dijet][method][kJetHTAndSingleMuonTrig]) {
+            h_trigStudyEven1GeV[kAk4Dijet][method][kJetHTAndSingleMuonTrig]->Fill(summary.mjjAk4);
+          }
+        }
       }
 
       if (passTriggerStudyBaseSelection) {
-        h_trigStudy[kHtAk4][method][0]->Fill(summary.htAk4TrigEff);
+        h_trigStudy[kHtAk4][method][kNoTrig]->Fill(summary.htAk4TrigEff);
         if (passPFScoutingHT && (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
-          h_trigStudy[kHtAk4][method][1]->Fill(summary.htAk4TrigEff);
+          h_trigStudy[kHtAk4][method][kJetHTTrig]->Fill(summary.htAk4TrigEff);
         }
-        if (passPFScoutingSingleMuon) h_trigStudy[kHtAk4][method][2]->Fill(summary.htAk4TrigEff);
+        if (passPFScoutingSingleMuon) h_trigStudy[kHtAk4][method][kSingleMuonTrig]->Fill(summary.htAk4TrigEff);
+        if (passPFScoutingSingleMuon && passPFScoutingHT &&
+            (!requireL1ForJetHT || passL1ForPFScoutingHT)) {
+          h_trigStudy[kHtAk4][method][kJetHTAndSingleMuonTrig]->Fill(summary.htAk4TrigEff);
+        }
       }
     };
 
     // Nominal (Legacy) wide-dijet histograms
     const bool legacyWideSelection = passesWideDijetTriggerStudy(defaultSummaryRef);
     if (legacyWideSelection) {
-      h_mjj_HLTpass[0]->Fill(defaultSummaryRef.mjjWide);
+      h_mjj_HLTpass[kNoTrig]->Fill(defaultSummaryRef.mjjWide);
       h_mjj_noTrig_1GeVbin->Fill(defaultSummaryRef.mjjWide);
-      if (passPFScoutingHT) h_mjj_HLTpass[1]->Fill(defaultSummaryRef.mjjWide);
-      if (passPFScoutingSingleMuon) h_mjj_HLTpass[2]->Fill(defaultSummaryRef.mjjWide);
+      if (passPFScoutingHT) h_mjj_HLTpass[kJetHTTrig]->Fill(defaultSummaryRef.mjjWide);
+      if (passPFScoutingSingleMuon) h_mjj_HLTpass[kSingleMuonTrig]->Fill(defaultSummaryRef.mjjWide);
+      if (passPFScoutingSingleMuon && passPFScoutingHT) {
+        h_mjj_HLTpass[kJetHTAndSingleMuonTrig]->Fill(defaultSummaryRef.mjjWide);
+      }
     }
 
     fillTriggerStudy(kDefaultStudy, defaultSummaryRef, false, false);
@@ -1373,16 +1421,24 @@ void analysisClass::Loop() {
     fillReducedSkimTree();
   }
 
-  for (int i = 0; i < 3; ++i) {
+  for (int i = 0; i < kNTriggerStudyTriggers; ++i) {
     h_mjj_HLTpass[i]->Write();
   }
   h_mjj_noTrig_1GeVbin->Write();
   // Write the full trigger-study histogram grid after the event loop so downstream scripts can choose the method later.
   for (int obs = 0; obs < kNTriggerStudyObservables; ++obs) {
     for (int method = 0; method < kNTriggerStudyMethods; ++method) {
-      for (int trig = 0; trig < 3; ++trig) {
+      for (int trig = 0; trig < kNTriggerStudyTriggers; ++trig) {
         if (!h_trigStudy[obs][method][trig]) continue;
         h_trigStudy[obs][method][trig]->Write();
+      }
+    }
+  }
+  for (int obs = 0; obs < kNTriggerStudyObservables; ++obs) {
+    for (int method = 0; method < kNTriggerStudyMethods; ++method) {
+      for (int trig = 0; trig < kNTriggerStudyTriggers; ++trig) {
+        if (!h_trigStudyEven1GeV[obs][method][trig]) continue;
+        h_trigStudyEven1GeV[obs][method][trig]->Write();
       }
     }
   }

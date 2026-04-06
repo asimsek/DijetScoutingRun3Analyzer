@@ -1,6 +1,6 @@
 #include <TCanvas.h>
-#include <TEfficiency.h>
 #include <TError.h>
+#include <TEfficiency.h>
 #include <TFile.h>
 #include <TGraphAsymmErrors.h>
 #include <TH1.h>
@@ -51,10 +51,12 @@ constexpr int kTurnOnConsecutivePoints = 3;
 
 struct Options {
   std::string input_list;
+  std::vector<std::string> input_roots;
   std::string output_dir;
   std::string output_prefix = "pfscouting_saved_hist_trigger";
   double lumi_pb = 5490.0;
   std::string year = "2024";
+  int even_bin_width_gev = 10;
 };
 
 struct SummaryRow {
@@ -68,12 +70,15 @@ struct SummaryRow {
   double numerator_count = 0.0;
 };
 
-struct ObservableConfig {
-  std::string folder_tag;
+struct PlotConfig {
+  std::string observable_folder;
+  std::string binning_folder;
   std::string source_tag;
+  std::string binning_label;
   std::string jet_label;
   std::string axis_title;
   std::string selection_label;
+  bool rebin_even = false;
   double full_min_gev = 0.0;
   double full_max_gev = 0.0;
   double zoom_min_gev = 0.0;
@@ -103,10 +108,12 @@ struct OutputPaths {
   std::string stem;
 };
 
-const std::array<ObservableConfig, 3> kObservables = {{
-    {"wideJet", "wideDijet", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", 220.0, 6000.0, 100.0, 650.0},
-    {"AK4PFJet", "AK4Jets", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", 220.0, 6000.0, 100.0, 650.0},
-    {"HTAK4PF", "HTAK4PF", "AK4 PF H_{T}", "AK4 PF H_{T} [TeV]", "p_{T} > 30 GeV, |#eta| < 2.5", 0.0, 1500.0, 0.0, 800.0},
+const std::array<PlotConfig, 5> kPlots = {{
+    {"wideJet", "dijetBinned", "wideDijet", "Dijet bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 220.0, 6000.0, 100.0, 650.0},
+    {"wideJet", "even10GeV", "wideDijetEven1GeV", "10 GeV bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 220.0, 6000.0, 100.0, 650.0},
+    {"AK4PFJet", "dijetBinned", "AK4Jets", "Dijet bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 220.0, 6000.0, 100.0, 650.0},
+    {"AK4PFJet", "even10GeV", "AK4JetsEven1GeV", "10 GeV bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 220.0, 6000.0, 100.0, 650.0},
+    {"HTAK4PF", "even10GeV", "HTAK4PF", "10 GeV bins", "AK4 PF H_{T}", "AK4 PF H_{T} [TeV]", "p_{T} > 30 GeV, |#eta| < 2.5", true, 0.0, 1500.0, 0.0, 800.0},
 }};
 
 const std::array<CaseConfig, 4> kCases = {{
@@ -143,13 +150,19 @@ std::string warn_tag() {
   return colored_tag("[WARN]", kAnsiBrightRed);
 }
 
+std::string error_tag() {
+  return colored_tag("[ERROR]", kAnsiBrightRed);
+}
+
 void print_usage(const char* argv0) {
   std::cout
-      << "Usage: " << argv0 << " --input-list <file> [options]\n\n"
+      << "Usage: " << argv0 << " [--input-list <file>] [--input-root <file>] [options]\n\n"
       << "Options:\n"
       << "  --input-list <file>      Text file listing ROOT files to read.\n"
+      << "  --input-root <file>      ROOT file to read directly. Can be given more than once.\n"
       << "  --output-dir <dir>       Output directory (default: trigger_efficiency_saved_hists_<year>).\n"
       << "  --output-prefix <text>   Prefix for output file names.\n"
+      << "  --even-bin-width-gev <n> Rebin the saved 1 GeV even histograms to n GeV (default: 10).\n"
       << "  --lumi-pb <value>        Integrated luminosity in pb^-1 (default: 5490).\n"
       << "  --year <label>           Data-taking label shown on the plots (default: 2024).\n"
       << "  --help                   Show this help message.\n";
@@ -168,10 +181,14 @@ Options parse_args(int argc, char** argv) {
 
     if (arg == "--input-list") {
       opts.input_list = require_value(arg);
+    } else if (arg == "--input-root") {
+      opts.input_roots.push_back(require_value(arg));
     } else if (arg == "--output-dir") {
       opts.output_dir = require_value(arg);
     } else if (arg == "--output-prefix") {
       opts.output_prefix = require_value(arg);
+    } else if (arg == "--even-bin-width-gev") {
+      opts.even_bin_width_gev = std::stoi(require_value(arg));
     } else if (arg == "--lumi-pb") {
       opts.lumi_pb = std::stod(require_value(arg));
     } else if (arg == "--year") {
@@ -184,14 +201,26 @@ Options parse_args(int argc, char** argv) {
     }
   }
 
-  if (opts.input_list.empty()) {
-    die("--input-list is required");
+  if (opts.input_list.empty() && opts.input_roots.empty()) {
+    die("At least one input source is required: use --input-list and/or --input-root");
+  }
+  if (opts.even_bin_width_gev <= 0) {
+    die("--even-bin-width-gev must be a positive integer");
   }
   if (opts.output_dir.empty()) {
     opts.output_dir = "trigger_efficiency_saved_hists_" +
                       std::regex_replace(opts.year, std::regex(R"([^A-Za-z0-9_.-]+)"), "_");
   }
   return opts;
+}
+
+PlotConfig resolve_plot_config(const PlotConfig& plot, const Options& opts) {
+  PlotConfig resolved = plot;
+  if (resolved.rebin_even) {
+    resolved.binning_folder = "even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+    resolved.binning_label = std::to_string(opts.even_bin_width_gev) + " GeV bins";
+  }
+  return resolved;
 }
 
 bool has_wildcards(const std::string& text) {
@@ -290,6 +319,17 @@ std::vector<std::string> read_data_inputs(const std::string& list_path) {
   return files;
 }
 
+std::vector<std::string> read_direct_inputs(const std::vector<std::string>& input_roots) {
+  std::vector<std::string> files;
+  files.reserve(input_roots.size());
+  const fs::path base_dir = fs::current_path();
+  for (const auto& token : input_roots) {
+    const auto expanded = expand_source_token(token, base_dir);
+    files.insert(files.end(), expanded.begin(), expanded.end());
+  }
+  return deduplicate(files);
+}
+
 void configure_root_style() {
   gROOT->SetBatch(kTRUE);
   TH1::SetDefaultSumw2(kTRUE);
@@ -343,6 +383,42 @@ std::string format_table_value(double value) {
   return os.str();
 }
 
+std::unique_ptr<TH1D> clone_hist_as_double(const TH1& source, const std::string& name);
+
+std::unique_ptr<TH1D> rebin_histogram_even_gev(const TH1D& source, int target_bin_width_gev, const std::string& name) {
+  const TAxis* xaxis = source.GetXaxis();
+  if (source.GetNbinsX() <= 0) {
+    return clone_hist_as_double(source, name);
+  }
+
+  const double source_bin_width = xaxis->GetBinWidth(1);
+  if (source_bin_width <= 0.0) {
+    die("Encountered a histogram with non-positive bin width while rebinnning: " + std::string(source.GetName()));
+  }
+
+  const double raw_factor = static_cast<double>(target_bin_width_gev) / source_bin_width;
+  const int rebin_factor = static_cast<int>(std::llround(raw_factor));
+  if (std::fabs(raw_factor - static_cast<double>(rebin_factor)) > 1e-9 || rebin_factor <= 0) {
+    die("Requested even bin width is incompatible with histogram binning for " + std::string(source.GetName()));
+  }
+
+  if (rebin_factor == 1) {
+    return clone_hist_as_double(source, name);
+  }
+  if (source.GetNbinsX() % rebin_factor != 0) {
+    die("Requested even bin width does not divide the histogram binning for " + std::string(source.GetName()));
+  }
+
+  auto clone = clone_hist_as_double(source, name + "_tmp");
+  auto* rebinned_raw = clone->Rebin(rebin_factor, name.c_str());
+  TH1D* rebinned = dynamic_cast<TH1D*>(rebinned_raw);
+  if (!rebinned) {
+    die("Failed to rebin histogram " + std::string(source.GetName()));
+  }
+  rebinned->SetDirectory(nullptr);
+  return std::unique_ptr<TH1D>(rebinned);
+}
+
 std::unique_ptr<TH1D> clone_hist_as_double(const TH1& source, const std::string& name) {
   const TAxis* xaxis = source.GetXaxis();
   std::vector<double> edges;
@@ -388,16 +464,12 @@ bool has_hist_contents(const TH1D& hist) {
   return hist.GetEntries() > 0.0 || hist.Integral(0, hist.GetNbinsX() + 1) > 0.0;
 }
 
-std::string trigger_hist_name(const ObservableConfig& observable, const CaseConfig& study_case, const char* trig_name) {
-  return "h_" + observable.source_tag + "_HLTpass_" + study_case.source_tag + "_" + trig_name;
-}
-
-std::string legacy_wide_hist_name(const char* trig_name) {
-  return std::string("h_mjj_HLTpass_") + trig_name;
+std::string trigger_hist_name(const PlotConfig& plot, const CaseConfig& study_case, const char* trig_name) {
+  return "h_" + plot.source_tag + "_HLTpass_" + study_case.source_tag + "_" + trig_name;
 }
 
 MergedHistSet merge_case_histograms(const std::vector<std::string>& files,
-                                    const ObservableConfig& observable,
+                                    const PlotConfig& plot,
                                     const CaseConfig& study_case) {
   MergedHistSet merged;
   for (const auto& file_name : files) {
@@ -407,33 +479,58 @@ MergedHistSet merge_case_histograms(const std::vector<std::string>& files,
       continue;
     }
 
-    const bool allow_legacy_wide_fallback =
-        (observable.folder_tag == "wideJet" && study_case.folder_tag == "nominal");
-    const std::string no_trig_name = trigger_hist_name(observable, study_case, "noTrig");
-    const std::string jetht_name = trigger_hist_name(observable, study_case, "PFScouting_JetHT");
-    const std::string singlemu_name = trigger_hist_name(observable, study_case, "PFScouting_SingleMuon");
+    const std::string no_trig_name = trigger_hist_name(plot, study_case, "noTrig");
+    const std::string overlap_name = trigger_hist_name(plot, study_case, "PFScouting_JetHTAndSingleMuon");
+    const std::string singlemu_name = trigger_hist_name(plot, study_case, "PFScouting_SingleMuon");
 
     bool found_any = false;
     found_any |= merge_histogram(*file,
                                  no_trig_name,
-                                 allow_legacy_wide_fallback ? legacy_wide_hist_name("noTrig") : "",
-                                 observable.folder_tag + "_" + study_case.folder_tag + "_all",
+                                 "",
+                                 plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_all",
                                  merged.all);
     found_any |= merge_histogram(*file,
-                                 jetht_name,
-                                 allow_legacy_wide_fallback ? legacy_wide_hist_name("PFScouting_JetHT") : "",
-                                 observable.folder_tag + "_" + study_case.folder_tag + "_numerator",
+                                 overlap_name,
+                                 "",
+                                 plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_numerator",
                                  merged.numerator);
     found_any |= merge_histogram(*file,
                                  singlemu_name,
-                                 allow_legacy_wide_fallback ? legacy_wide_hist_name("PFScouting_SingleMuon") : "",
-                                 observable.folder_tag + "_" + study_case.folder_tag + "_denominator",
+                                 "",
+                                 plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_denominator",
                                  merged.denominator);
     if (found_any) {
       ++merged.files_with_any_hist;
     }
   }
   return merged;
+}
+
+void rebin_merged_histograms(MergedHistSet& merged,
+                             const PlotConfig& plot,
+                             const CaseConfig& study_case,
+                             int even_bin_width_gev) {
+  if (!plot.rebin_even) {
+    return;
+  }
+  if (merged.all) {
+    merged.all = rebin_histogram_even_gev(
+        *merged.all,
+        even_bin_width_gev,
+        plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_all_rebinned");
+  }
+  if (merged.numerator) {
+    merged.numerator = rebin_histogram_even_gev(
+        *merged.numerator,
+        even_bin_width_gev,
+        plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_numerator_rebinned");
+  }
+  if (merged.denominator) {
+    merged.denominator = rebin_histogram_even_gev(
+        *merged.denominator,
+        even_bin_width_gev,
+        plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_denominator_rebinned");
+  }
 }
 
 std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency, const TH1D& denom_hist, const TH1D& numer_hist) {
@@ -541,7 +638,7 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
                           TFile& root_out,
                           double lumi_pb,
                           const std::string& year,
-                          const ObservableConfig& observable,
+                          const PlotConfig& plot,
                           const std::string& plot_tag,
                           const std::string& case_label,
                           double x_min_gev,
@@ -549,16 +646,17 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
                           int marker_style = 20,
                           int marker_color = kBlack,
                           bool draw_turnon_lines = false) {
-  TCanvas canvas(("c_trigger_efficiency_" + observable.folder_tag + "_" + plot_tag).c_str(), "", 800, 800);
+  TCanvas canvas(("c_trigger_efficiency_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag).c_str(), "", 800, 800);
   canvas.cd();
   gPad->SetTopMargin(0.08);
   gPad->SetRightMargin(0.05);
   gPad->SetLeftMargin(0.16);
   gPad->SetBottomMargin(0.13);
 
-  auto graph_tev = graph_to_tev(graph, "g_pfscouting_jetht_efficiency_tev_" + observable.folder_tag + "_" + plot_tag);
+  auto graph_tev =
+      graph_to_tev(graph, "g_pfscouting_jetht_efficiency_tev_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag);
   graph_tev->SetTitle("");
-  graph_tev->GetXaxis()->SetTitle(observable.axis_title.c_str());
+  graph_tev->GetXaxis()->SetTitle(plot.axis_title.c_str());
   graph_tev->GetYaxis()->SetTitle("Trigger efficiency");
   graph_tev->GetXaxis()->SetLimits(x_min_gev / 1000.0, x_max_gev / 1000.0);
   graph_tev->GetXaxis()->SetTitleSize(0.05);
@@ -627,15 +725,14 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
   legend.AddEntry(graph_tev.get(), legend_label.c_str(), "pe");
   legend.Draw();
 
-  TPaveText cut_box(0.56, 0.18, 0.94, 0.31, "NDC");
+  TPaveText cut_box(0.62, 0.18, 0.95, 0.27, "NDC");
   cut_box.SetBorderSize(0);
   cut_box.SetFillStyle(0);
   cut_box.SetTextAlign(23);
   cut_box.SetTextSize(0.032);
   cut_box.SetTextFont(42);
-  cut_box.AddText(observable.jet_label.c_str());
-  cut_box.AddText(observable.selection_label.c_str());
-  cut_box.AddText(case_label.c_str());
+  cut_box.AddText(plot.jet_label.c_str());
+  cut_box.AddText(plot.selection_label.c_str());
   cut_box.Draw();
 
   draw_labels_right(format_lumi_label(lumi_pb));
@@ -652,9 +749,9 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
                              const fs::path& output_pdf,
                              TFile& root_out,
                              const std::string& year,
-                             const ObservableConfig& observable,
+                             const PlotConfig& plot,
                              const std::string& case_label) {
-  TCanvas canvas(("c_trigger_event_counts_" + observable.folder_tag + "_" + case_label).c_str(), "", 800, 800);
+  TCanvas canvas(("c_trigger_event_counts_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label).c_str(), "", 800, 800);
   canvas.cd();
   gPad->SetTopMargin(0.08);
   gPad->SetRightMargin(0.05);
@@ -662,13 +759,15 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
   gPad->SetBottomMargin(0.13);
   gPad->SetLogy();
 
-  auto h_denom_plot = hist_to_tev(denom_hist, "h_denom_counts_plot_" + observable.folder_tag + "_" + case_label);
-  auto h_numer_plot = hist_to_tev(numer_hist, "h_numer_counts_plot_" + observable.folder_tag + "_" + case_label);
+  auto h_denom_plot =
+      hist_to_tev(denom_hist, "h_denom_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label);
+  auto h_numer_plot =
+      hist_to_tev(numer_hist, "h_numer_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label);
 
   h_denom_plot->SetTitle("");
-  h_denom_plot->GetXaxis()->SetTitle(observable.axis_title.c_str());
+  h_denom_plot->GetXaxis()->SetTitle(plot.axis_title.c_str());
   h_denom_plot->GetYaxis()->SetTitle("Events / bin");
-  h_denom_plot->GetXaxis()->SetRangeUser(observable.full_min_gev / 1000.0, observable.full_max_gev / 1000.0);
+  h_denom_plot->GetXaxis()->SetRangeUser(plot.full_min_gev / 1000.0, plot.full_max_gev / 1000.0);
   h_denom_plot->GetXaxis()->SetTitleSize(0.05);
   h_denom_plot->GetYaxis()->SetTitleSize(0.05);
   h_denom_plot->GetXaxis()->SetLabelSize(0.045);
@@ -694,15 +793,6 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
   legend.AddEntry(h_numer_plot.get(), "Numerator", "l");
   legend.Draw();
 
-  TPaveText case_box(0.56, 0.18, 0.94, 0.24, "NDC");
-  case_box.SetBorderSize(0);
-  case_box.SetFillStyle(0);
-  case_box.SetTextAlign(23);
-  case_box.SetTextSize(0.032);
-  case_box.SetTextFont(42);
-  case_box.AddText(case_label.c_str());
-  case_box.Draw();
-
   draw_labels_right(year + " (" + kDefaultSqrtS + ")");
   gPad->RedrawAxis();
 
@@ -713,12 +803,12 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
 
 OutputPaths make_output_paths(const fs::path& base_output_dir,
                               const std::string& output_prefix,
-                              const ObservableConfig& observable,
+                              const PlotConfig& plot,
                               const CaseConfig& study_case) {
   OutputPaths paths;
-  paths.directory = base_output_dir / observable.folder_tag / study_case.folder_tag;
+  paths.directory = base_output_dir / plot.observable_folder / plot.binning_folder / study_case.folder_tag;
   fs::create_directories(paths.directory);
-  paths.stem = output_prefix + "_" + observable.folder_tag + "_" + study_case.folder_tag;
+  paths.stem = output_prefix + "_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag;
   paths.root_file = paths.directory / (paths.stem + ".root");
   paths.summary_csv = paths.directory / (paths.stem + "_summary.csv");
   paths.summary_tsv = paths.directory / (paths.stem + "_summary.tsv");
@@ -728,9 +818,10 @@ OutputPaths make_output_paths(const fs::path& base_output_dir,
   return paths;
 }
 
-void print_case_output_info(const OutputPaths& paths, const ObservableConfig& observable, const CaseConfig& study_case) {
+void print_case_output_info(const OutputPaths& paths, const PlotConfig& plot, const CaseConfig& study_case) {
   const auto info = info_tag();
-  std::cout << info << " Observable       : " << observable.folder_tag << std::endl;
+  std::cout << info << " Observable       : " << plot.observable_folder << std::endl;
+  std::cout << info << " Binning          : " << plot.binning_folder << std::endl;
   std::cout << info << " Case             : " << study_case.folder_tag << std::endl;
   std::cout << info << " Output ROOT file : " << paths.root_file << std::endl;
   std::cout << info << " Summary CSV      : " << paths.summary_csv << std::endl;
@@ -749,63 +840,94 @@ int main(int argc, char** argv) {
     configure_root_style();
 
     const Options opts = parse_args(argc, argv);
-    const std::vector<std::string> input_files = read_data_inputs(opts.input_list);
+    std::vector<std::string> input_files;
+    if (!opts.input_list.empty()) {
+      const auto listed_files = read_data_inputs(opts.input_list);
+      input_files.insert(input_files.end(), listed_files.begin(), listed_files.end());
+    }
+    if (!opts.input_roots.empty()) {
+      const auto direct_files = read_direct_inputs(opts.input_roots);
+      input_files.insert(input_files.end(), direct_files.begin(), direct_files.end());
+    }
+    input_files = deduplicate(input_files);
+    if (input_files.empty()) {
+      die("No ROOT files were found from the provided --input-list/--input-root arguments");
+    }
     const fs::path base_output_dir = fs::absolute(opts.output_dir);
     fs::create_directories(base_output_dir);
 
     std::cout << info_tag() << " Reading " << input_files.size() << " ROOT file(s)" << std::endl;
 
-    for (const auto& observable : kObservables) {
+    for (const auto& plot_template : kPlots) {
       for (const auto& study_case : kCases) {
-        const auto merged = merge_case_histograms(input_files, observable, study_case);
+        const PlotConfig plot = resolve_plot_config(plot_template, opts);
+        auto rebinned = merge_case_histograms(input_files, plot, study_case);
+        rebin_merged_histograms(rebinned, plot, study_case, opts.even_bin_width_gev);
 
-        if (!merged.denominator || !merged.numerator) {
-          std::cout << warn_tag() << ' ' << observable.folder_tag << '/' << study_case.folder_tag
-                    << ": required histograms are missing, skipping." << std::endl;
+        if (!rebinned.denominator || !rebinned.numerator) {
+          std::cerr << error_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
+                    << study_case.folder_tag
+                    << ": missing required histograms. Need numerator=PFScouting_JetHTAndSingleMuon and "
+                       "denominator=PFScouting_SingleMuon."
+                    << std::endl;
           continue;
         }
 
-        if (!has_hist_contents(*merged.denominator)) {
-          std::cout << warn_tag() << ' ' << observable.folder_tag << '/' << study_case.folder_tag
-                    << ": denominator histogram is empty, skipping." << std::endl;
+        if (!has_hist_contents(*rebinned.denominator)) {
+          std::cerr << error_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
+                    << study_case.folder_tag
+                    << ": denominator histogram PFScouting_SingleMuon is empty." << std::endl;
           continue;
         }
 
-        if (!TEfficiency::CheckConsistency(*merged.numerator, *merged.denominator)) {
-          std::cout << warn_tag() << ' ' << observable.folder_tag << '/' << study_case.folder_tag
-                    << ": numerator/denominator histograms are inconsistent, skipping." << std::endl;
+        if (!has_hist_contents(*rebinned.numerator)) {
+          std::cerr << error_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
+                    << study_case.folder_tag
+                    << ": numerator histogram PFScouting_JetHTAndSingleMuon is empty." << std::endl;
           continue;
         }
 
-        const OutputPaths paths = make_output_paths(base_output_dir, opts.output_prefix, observable, study_case);
-        print_case_output_info(paths, observable, study_case);
-        std::cout << info_tag() << " Files contributing histograms: " << merged.files_with_any_hist << std::endl;
+        if (!TEfficiency::CheckConsistency(*rebinned.numerator, *rebinned.denominator)) {
+          std::cerr << error_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
+                    << study_case.folder_tag
+                    << ": PFScouting_JetHTAndSingleMuon and PFScouting_SingleMuon are not TEfficiency-consistent."
+                    << std::endl;
+          continue;
+        }
+
+        const OutputPaths paths = make_output_paths(base_output_dir, opts.output_prefix, plot, study_case);
+        print_case_output_info(paths, plot, study_case);
+        std::cout << info_tag() << " Files contributing histograms: " << rebinned.files_with_any_hist << std::endl;
 
         TFile root_out(paths.root_file.string().c_str(), "RECREATE");
         if (root_out.IsZombie()) {
           die("Could not create output ROOT file: " + paths.root_file.string());
         }
 
-        merged.denominator->SetName(("h_denominator_" + observable.folder_tag + "_" + study_case.folder_tag).c_str());
-        merged.numerator->SetName(("h_numerator_" + observable.folder_tag + "_" + study_case.folder_tag).c_str());
-        merged.denominator->Write();
-        merged.numerator->Write();
-        if (merged.all) {
-          merged.all->SetName(("h_all_" + observable.folder_tag + "_" + study_case.folder_tag).c_str());
-          merged.all->Write();
+        rebinned.denominator->SetName(("h_denominator_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
+        rebinned.numerator->SetName(("h_numerator_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
+        rebinned.denominator->Write();
+        rebinned.numerator->Write();
+        if (rebinned.all) {
+          rebinned.all->SetName(("h_all_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
+          rebinned.all->Write();
         }
 
-        TEfficiency efficiency(*merged.numerator, *merged.denominator);
-        efficiency.SetName(("teff_" + observable.folder_tag + "_" + study_case.folder_tag).c_str());
+        auto ratio_hist = clone_hist_as_double(*rebinned.numerator,
+                                               "h_ratio_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag);
+        ratio_hist->Divide(rebinned.denominator.get());
+        ratio_hist->Write();
+
+        TEfficiency efficiency(*rebinned.numerator, *rebinned.denominator);
+        efficiency.SetName(("teff_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
         efficiency.SetStatisticOption(TEfficiency::kFCP);
         auto graph = std::unique_ptr<TGraphAsymmErrors>(efficiency.CreateGraph());
-        graph->SetName(("g_efficiency_" + observable.folder_tag + "_" + study_case.folder_tag).c_str());
-
-        const auto summary_rows = build_summary_rows(efficiency, *merged.denominator, *merged.numerator);
+        const auto summary_rows = build_summary_rows(efficiency, *rebinned.denominator, *rebinned.numerator);
+        efficiency.Write();
+        graph->SetName(("g_efficiency_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
         write_summary_csv(paths.summary_csv, summary_rows);
         write_summary_tsv(paths.summary_tsv, summary_rows);
 
-        efficiency.Write();
         graph->Write();
 
         draw_efficiency_plot(*graph,
@@ -813,11 +935,11 @@ int main(int argc, char** argv) {
                              root_out,
                              opts.lumi_pb,
                              opts.year,
-                             observable,
+                             plot,
                              study_case.folder_tag + "_full",
                              study_case.folder_tag,
-                             observable.full_min_gev,
-                             observable.full_max_gev,
+                             plot.full_min_gev,
+                             plot.full_max_gev,
                              20,
                              kBlue + 1,
                              true);
@@ -826,20 +948,20 @@ int main(int argc, char** argv) {
                              root_out,
                              opts.lumi_pb,
                              opts.year,
-                             observable,
+                             plot,
                              study_case.folder_tag + "_zoom",
                              study_case.folder_tag,
-                             observable.zoom_min_gev,
-                             observable.zoom_max_gev,
+                             plot.zoom_min_gev,
+                             plot.zoom_max_gev,
                              20,
                              kBlue + 1,
                              true);
-        draw_count_overlay_plot(*merged.denominator,
-                                *merged.numerator,
+        draw_count_overlay_plot(*rebinned.denominator,
+                                *rebinned.numerator,
                                 paths.counts_pdf,
                                 root_out,
                                 opts.year,
-                                observable,
+                                plot,
                                 study_case.folder_tag);
       }
     }

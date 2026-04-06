@@ -44,20 +44,27 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 ## Trigger Efficiency (From histograms saved in nTuples)
 
 ```bash
+### Merge ONLY histograms in the nTuples for trigger efficiency studies; "-T" argument solely merges histograms and skips trees.
+hadd -T ScoutingPFRun3_Run2024I_ScoutNano_v1_NANOAOD_ALLHisto.root /eos/uscms/store/user/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ScoutingPFRun3_Run2024I_ScoutNano_v1_NANOAOD_n*_reduced_skim.root
+
+### Build the script (just once)
 g++ -std=c++20 plot_trigger_efficiency_hist.cpp $(root-config --cflags --libs) -o plot_trigger_efficiency_hist
 
-./plot_trigger_efficiency_hist --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --output-dir trigger_efficiency_hist_2024I --lumi-pb 11451.783064 --year 2024I
+### Calculate efficiency from the merged root file
+./plot_trigger_efficiency_hist --input-root ScoutingPFRun3_Run2024I_ScoutNano_v1_NANOAOD_ALLHisto.root --output-dir trigger_efficiency_hist_2024I --lumi-pb 11451.783064 --year 2024I
 ```
 
 
 
 
-## Trigger Efficiency (From Trees - Legacy ONLY)
+## SKIP THIS ONE: Trigger Efficiency (From Trees - Legacy ONLY)
 
 ```bash
+#### SKIP THIS ONE
 # Build only once
 c++ -std=c++17 -O3 -o plot_trigger_efficiency plot_trigger_efficiency.cpp $(root-config --cflags --libs)
 
+#### SKIP THIS ONE
 ./plot_trigger_efficiency --scouting-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --lumi-pb 11451.783064 --year "2024I"  --use-scouting-for-efficiency
 ```
 
