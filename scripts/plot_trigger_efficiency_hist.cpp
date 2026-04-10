@@ -64,10 +64,17 @@ struct SummaryRow {
   int bin_high = 0;
   std::string bin_range;
   double efficiency = std::numeric_limits<double>::quiet_NaN();
+  double inefficiency = std::numeric_limits<double>::quiet_NaN();
   double eff_err_low = std::numeric_limits<double>::quiet_NaN();
   double eff_err_up = std::numeric_limits<double>::quiet_NaN();
+  double all_count = 0.0;
   double denominator_count = 0.0;
   double numerator_count = 0.0;
+  double inv_sqrt_n = std::numeric_limits<double>::quiet_NaN();
+  double diff_inv_sqrt_n_minus_inefficiency = std::numeric_limits<double>::quiet_NaN();
+  double legacy_mjj_all_count = std::numeric_limits<double>::quiet_NaN();
+  double legacy_mjj_inv_sqrt_n = std::numeric_limits<double>::quiet_NaN();
+  double legacy_mjj_diff_inv_sqrt_n_minus_inefficiency = std::numeric_limits<double>::quiet_NaN();
 };
 
 struct PlotConfig {
@@ -83,6 +90,8 @@ struct PlotConfig {
   double full_max_gev = 0.0;
   double zoom_min_gev = 0.0;
   double zoom_max_gev = 0.0;
+  double counts_min_gev = 30.0;
+  double counts_max_gev = 6000.0;
 };
 
 struct CaseConfig {
@@ -94,6 +103,7 @@ struct MergedHistSet {
   std::unique_ptr<TH1D> all;
   std::unique_ptr<TH1D> numerator;
   std::unique_ptr<TH1D> denominator;
+  std::unique_ptr<TH1D> legacy_mjj_all;
   size_t files_with_any_hist = 0;
 };
 
@@ -101,7 +111,6 @@ struct OutputPaths {
   fs::path directory;
   fs::path root_file;
   fs::path summary_csv;
-  fs::path summary_tsv;
   fs::path eff_pdf;
   fs::path eff_zoom_pdf;
   fs::path counts_pdf;
@@ -109,11 +118,11 @@ struct OutputPaths {
 };
 
 const std::array<PlotConfig, 5> kPlots = {{
-    {"wideJet", "dijetBinned", "wideDijet", "Dijet bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 220.0, 6000.0, 100.0, 650.0},
-    {"wideJet", "even10GeV", "wideDijetEven1GeV", "10 GeV bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 220.0, 6000.0, 100.0, 650.0},
-    {"AK4PFJet", "dijetBinned", "AK4Jets", "Dijet bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 220.0, 6000.0, 100.0, 650.0},
-    {"AK4PFJet", "even10GeV", "AK4JetsEven1GeV", "10 GeV bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 220.0, 6000.0, 100.0, 650.0},
-    {"HTAK4PF", "even10GeV", "HTAK4PF", "10 GeV bins", "AK4 PF H_{T}", "AK4 PF H_{T} [TeV]", "p_{T} > 30 GeV, |#eta| < 2.5", true, 0.0, 1500.0, 0.0, 800.0},
+    {"wideJet", "dijetBinned", "wideDijet", "Dijet bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
+    {"wideJet", "even10GeV", "wideDijetEven1GeV", "10 GeV bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
+    {"AK4PFJet", "dijetBinned", "AK4Jets", "Dijet bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
+    {"AK4PFJet", "even10GeV", "AK4JetsEven1GeV", "10 GeV bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
+    {"HTAK4PF", "even10GeV", "HTAK4PF", "10 GeV bins", "AK4 PF H_{T}", "AK4 PF H_{T} [TeV]", "p_{T} > 30 GeV, |#eta| < 2.5", true, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
 }};
 
 const std::array<CaseConfig, 4> kCases = {{
@@ -383,6 +392,13 @@ std::string format_table_value(double value) {
   return os.str();
 }
 
+std::string format_count_value(double value) {
+  if (std::isnan(value)) {
+    return "";
+  }
+  return std::to_string(static_cast<long long>(std::llround(value)));
+}
+
 std::unique_ptr<TH1D> clone_hist_as_double(const TH1& source, const std::string& name);
 
 std::unique_ptr<TH1D> rebin_histogram_even_gev(const TH1D& source, int target_bin_width_gev, const std::string& name) {
@@ -499,6 +515,12 @@ MergedHistSet merge_case_histograms(const std::vector<std::string>& files,
                                  "",
                                  plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_denominator",
                                  merged.denominator);
+    const std::string legacy_no_trig_name = plot.rebin_even ? "h_mjj_noTrig_1GeVbin" : "h_mjj_HLTpass_noTrig";
+    found_any |= merge_histogram(*file,
+                                 legacy_no_trig_name,
+                                 "",
+                                 plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_legacy_mjj_all",
+                                 merged.legacy_mjj_all);
     if (found_any) {
       ++merged.files_with_any_hist;
     }
@@ -531,9 +553,19 @@ void rebin_merged_histograms(MergedHistSet& merged,
         even_bin_width_gev,
         plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_denominator_rebinned");
   }
+  if (merged.legacy_mjj_all) {
+    merged.legacy_mjj_all = rebin_histogram_even_gev(
+        *merged.legacy_mjj_all,
+        even_bin_width_gev,
+        plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_legacy_mjj_all_rebinned");
+  }
 }
 
-std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency, const TH1D& denom_hist, const TH1D& numer_hist) {
+std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency,
+                                           const TH1D& denom_hist,
+                                           const TH1D& numer_hist,
+                                           const TH1D* all_hist,
+                                           const TH1D* legacy_mjj_all_hist) {
   std::vector<SummaryRow> rows;
   rows.reserve(denom_hist.GetNbinsX());
   const TAxis* xaxis = denom_hist.GetXaxis();
@@ -542,12 +574,29 @@ std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency, const TH1D& 
     row.bin_low = static_cast<int>(std::lround(xaxis->GetBinLowEdge(bin_idx)));
     row.bin_high = static_cast<int>(std::lround(xaxis->GetBinUpEdge(bin_idx)));
     row.bin_range = std::to_string(row.bin_low) + "-" + std::to_string(row.bin_high);
+    row.all_count = all_hist ? all_hist->GetBinContent(bin_idx) : 0.0;
+    if (legacy_mjj_all_hist) {
+      row.legacy_mjj_all_count = legacy_mjj_all_hist->GetBinContent(bin_idx);
+    }
     row.denominator_count = denom_hist.GetBinContent(bin_idx);
     row.numerator_count = numer_hist.GetBinContent(bin_idx);
     if (row.denominator_count > 0.0) {
       row.efficiency = efficiency.GetEfficiency(bin_idx);
+      row.inefficiency = 1.0 - row.efficiency;
       row.eff_err_low = efficiency.GetEfficiencyErrorLow(bin_idx);
       row.eff_err_up = efficiency.GetEfficiencyErrorUp(bin_idx);
+    }
+    if (row.all_count > 0.0) {
+      row.inv_sqrt_n = 1.0 / std::sqrt(row.all_count);
+    }
+    if (!std::isnan(row.inv_sqrt_n) && !std::isnan(row.inefficiency)) {
+      row.diff_inv_sqrt_n_minus_inefficiency = row.inv_sqrt_n - row.inefficiency;
+    }
+    if (row.legacy_mjj_all_count > 0.0) {
+      row.legacy_mjj_inv_sqrt_n = 1.0 / std::sqrt(row.legacy_mjj_all_count);
+    }
+    if (!std::isnan(row.legacy_mjj_inv_sqrt_n) && !std::isnan(row.inefficiency)) {
+      row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency = row.legacy_mjj_inv_sqrt_n - row.inefficiency;
     }
     rows.push_back(row);
   }
@@ -559,32 +608,23 @@ void write_summary_csv(const fs::path& path, const std::vector<SummaryRow>& rows
   if (!out) {
     die("Could not write summary CSV: " + path.string());
   }
-  out << "bin_range,bin_low,bin_high,efficiency,eff_err_low,eff_err_up,denominator_count,numerator_count\n";
+  out << "bin_range,bin_low,bin_high,efficiency,inefficiency,eff_err_low,eff_err_up,all_count,denominator_count,numerator_count,inv_sqrt_n,diff_inv_sqrt_n_minus_inefficiency,legacy_mjj_all_count,legacy_mjj_inv_sqrt_n,legacy_mjj_diff_inv_sqrt_n_minus_inefficiency\n";
   for (const auto& row : rows) {
     out << row.bin_range << ','
         << row.bin_low << ','
         << row.bin_high << ','
         << format_table_value(row.efficiency) << ','
+        << format_table_value(row.inefficiency) << ','
         << format_table_value(row.eff_err_low) << ','
         << format_table_value(row.eff_err_up) << ','
-        << static_cast<long long>(std::llround(row.denominator_count)) << ','
-        << static_cast<long long>(std::llround(row.numerator_count)) << '\n';
-  }
-}
-
-void write_summary_tsv(const fs::path& path, const std::vector<SummaryRow>& rows) {
-  std::ofstream out(path);
-  if (!out) {
-    die("Could not write summary TSV: " + path.string());
-  }
-  out << "Bin Range\tEff.\tEff. Err Low\tEff. Err Up\tDenominator\tNumerator\n";
-  for (const auto& row : rows) {
-    out << row.bin_range << '\t'
-        << format_table_value(row.efficiency) << '\t'
-        << format_table_value(row.eff_err_low) << '\t'
-        << format_table_value(row.eff_err_up) << '\t'
-        << static_cast<long long>(std::llround(row.denominator_count)) << '\t'
-        << static_cast<long long>(std::llround(row.numerator_count)) << '\n';
+        << format_count_value(row.all_count) << ','
+        << format_count_value(row.denominator_count) << ','
+        << format_count_value(row.numerator_count) << ','
+        << format_table_value(row.inv_sqrt_n) << ','
+        << format_table_value(row.diff_inv_sqrt_n_minus_inefficiency) << ','
+        << format_count_value(row.legacy_mjj_all_count) << ','
+        << format_table_value(row.legacy_mjj_inv_sqrt_n) << ','
+        << format_table_value(row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency) << '\n';
   }
 }
 
@@ -643,6 +683,7 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
                           const std::string& case_label,
                           double x_min_gev,
                           double x_max_gev,
+                          double first_positive_legacy_diff_gev,
                           int marker_style = 20,
                           int marker_color = kBlack,
                           bool draw_turnon_lines = false) {
@@ -698,7 +739,6 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
     };
 
     const double x99 = find_turnon_x(0.99);
-    const double x100 = find_turnon_x(0.999999);
     if (!std::isnan(x99)) {
       auto line99 = std::make_unique<TLine>(x99, kEfficiencyYMin, x99, kEfficiencyYMax);
       line99->SetLineColor(kCyan + 1);
@@ -707,13 +747,14 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
       line99->Draw();
       turnon_lines.push_back(std::move(line99));
     }
-    if (!std::isnan(x100)) {
-      auto line100 = std::make_unique<TLine>(x100, kEfficiencyYMin, x100, kEfficiencyYMax);
-      line100->SetLineColor(kRed + 1);
-      line100->SetLineStyle(2);
-      line100->SetLineWidth(2);
-      line100->Draw();
-      turnon_lines.push_back(std::move(line100));
+    if (!std::isnan(first_positive_legacy_diff_gev)) {
+      const double x_legacy = first_positive_legacy_diff_gev / 1000.0;
+      auto line_legacy = std::make_unique<TLine>(x_legacy, kEfficiencyYMin, x_legacy, kEfficiencyYMax);
+      line_legacy->SetLineColor(kRed + 1);
+      line_legacy->SetLineStyle(2);
+      line_legacy->SetLineWidth(2);
+      line_legacy->Draw();
+      turnon_lines.push_back(std::move(line_legacy));
     }
   }
 
@@ -767,7 +808,6 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
   h_denom_plot->SetTitle("");
   h_denom_plot->GetXaxis()->SetTitle(plot.axis_title.c_str());
   h_denom_plot->GetYaxis()->SetTitle("Events / bin");
-  h_denom_plot->GetXaxis()->SetRangeUser(plot.full_min_gev / 1000.0, plot.full_max_gev / 1000.0);
   h_denom_plot->GetXaxis()->SetTitleSize(0.05);
   h_denom_plot->GetYaxis()->SetTitleSize(0.05);
   h_denom_plot->GetXaxis()->SetLabelSize(0.045);
@@ -782,7 +822,17 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
   h_numer_plot->SetLineColor(kRed + 1);
   h_numer_plot->SetLineWidth(2);
 
-  h_denom_plot->Draw("HIST");
+  TH1F* frame = gPad->DrawFrame(plot.counts_min_gev / 1000.0, 0.5, plot.counts_max_gev / 1000.0, std::max(10.0, y_max * 5.0));
+  frame->SetTitle("");
+  frame->GetXaxis()->SetTitle(plot.axis_title.c_str());
+  frame->GetYaxis()->SetTitle("Events / bin");
+  frame->GetXaxis()->SetTitleSize(0.05);
+  frame->GetYaxis()->SetTitleSize(0.05);
+  frame->GetXaxis()->SetLabelSize(0.045);
+  frame->GetYaxis()->SetLabelSize(0.045);
+  frame->GetYaxis()->SetTitleOffset(1.35);
+
+  h_denom_plot->Draw("HIST SAME");
   h_numer_plot->Draw("HIST SAME");
 
   TLegend legend(0.58, 0.76, 0.94, 0.90);
@@ -811,7 +861,6 @@ OutputPaths make_output_paths(const fs::path& base_output_dir,
   paths.stem = output_prefix + "_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag;
   paths.root_file = paths.directory / (paths.stem + ".root");
   paths.summary_csv = paths.directory / (paths.stem + "_summary.csv");
-  paths.summary_tsv = paths.directory / (paths.stem + "_summary.tsv");
   paths.eff_pdf = paths.directory / (paths.stem + "_efficiency.pdf");
   paths.eff_zoom_pdf = paths.directory / (paths.stem + "_efficiency_zoom.pdf");
   paths.counts_pdf = paths.directory / (paths.stem + "_counts.pdf");
@@ -823,6 +872,16 @@ void print_case_output_info(const OutputPaths& paths, const PlotConfig& plot, co
   const auto info = info_tag();
   std::cout << info << ' ' << plot.observable_folder << " | " << plot.binning_folder << " | " << study_case.folder_tag
             << std::endl;
+}
+
+double find_first_positive_legacy_diff_edge_gev(const std::vector<SummaryRow>& rows) {
+  for (const auto& row : rows) {
+    if (!std::isnan(row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency) &&
+        row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency > 0.0) {
+      return static_cast<double>(row.bin_low);
+    }
+  }
+  return std::numeric_limits<double>::quiet_NaN();
 }
 
 }  // namespace
@@ -904,6 +963,20 @@ int main(int argc, char** argv) {
         if (rebinned.all) {
           rebinned.all->SetName(("h_all_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
           rebinned.all->Write();
+        } else {
+          std::cerr << warn_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
+                    << study_case.folder_tag
+                    << ": noTrig histogram is missing, so 1/sqrt(N) will be left empty in the summary." << std::endl;
+        }
+        if (rebinned.legacy_mjj_all) {
+          rebinned.legacy_mjj_all->SetName(
+              ("h_legacy_mjj_all_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
+          rebinned.legacy_mjj_all->Write();
+        } else {
+          std::cerr << warn_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
+                    << study_case.folder_tag
+                    << ": legacy noTrig histogram is missing, so the legacy 1/sqrt(N) columns will be left empty."
+                    << std::endl;
         }
 
         auto ratio_hist = clone_hist_as_double(*rebinned.numerator,
@@ -915,11 +988,12 @@ int main(int argc, char** argv) {
         efficiency.SetName(("teff_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
         efficiency.SetStatisticOption(TEfficiency::kFCP);
         auto graph = std::unique_ptr<TGraphAsymmErrors>(efficiency.CreateGraph());
-        const auto summary_rows = build_summary_rows(efficiency, *rebinned.denominator, *rebinned.numerator);
+        const auto summary_rows = build_summary_rows(
+            efficiency, *rebinned.denominator, *rebinned.numerator, rebinned.all.get(), rebinned.legacy_mjj_all.get());
+        const double first_positive_legacy_diff_gev = find_first_positive_legacy_diff_edge_gev(summary_rows);
         efficiency.Write();
         graph->SetName(("g_efficiency_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
         write_summary_csv(paths.summary_csv, summary_rows);
-        write_summary_tsv(paths.summary_tsv, summary_rows);
 
         graph->Write();
 
@@ -933,6 +1007,7 @@ int main(int argc, char** argv) {
                              study_case.folder_tag,
                              plot.full_min_gev,
                              plot.full_max_gev,
+                             first_positive_legacy_diff_gev,
                              20,
                              kBlue + 1,
                              true);
@@ -946,6 +1021,7 @@ int main(int argc, char** argv) {
                              study_case.folder_tag,
                              plot.zoom_min_gev,
                              plot.zoom_max_gev,
+                             first_positive_legacy_diff_gev,
                              20,
                              kBlue + 1,
                              true);
