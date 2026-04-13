@@ -351,7 +351,8 @@ BRILPY=/cvmfs/cms-bril.cern.ch/brilconda310/bin/python3
 ### Install brilcalc
 $BRILPY -m pip install --user --upgrade brilws
 
-export PATH=$HOME/.local/bin:$PATH
+echo 'export PATH=$HOME/.local/bin:$PATH' >> ~/.bash_profile
+source ~/.bash_profile
 
 ## Validate
 which brilcalc

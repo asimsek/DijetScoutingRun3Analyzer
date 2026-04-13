@@ -199,6 +199,8 @@ class baseClass : public rootNtupleClass {
 
   void fillSkimTree();
   void fillReducedSkimTree();
+  TFile* getHistogramOutputFile() const { return reduced_skim_file_ ? reduced_skim_file_ : output_root_; }
+  const std::string& getOutputFileNameStem() const { return *outputFileName_; }
 
   PileupReweighter pileupReweighter_;
 

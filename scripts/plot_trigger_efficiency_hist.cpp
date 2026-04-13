@@ -60,8 +60,8 @@ struct Options {
 };
 
 struct SummaryRow {
-  int bin_low = 0;
-  int bin_high = 0;
+  double bin_low = std::numeric_limits<double>::quiet_NaN();
+  double bin_high = std::numeric_limits<double>::quiet_NaN();
   std::string bin_range;
   double efficiency = std::numeric_limits<double>::quiet_NaN();
   double inefficiency = std::numeric_limits<double>::quiet_NaN();
@@ -81,17 +81,24 @@ struct PlotConfig {
   std::string observable_folder;
   std::string binning_folder;
   std::string source_tag;
-  std::string binning_label;
+  std::string output_group_folder;
   std::string jet_label;
   std::string axis_title;
   std::string selection_label;
   bool rebin_even = false;
+  bool omit_binning_subfolder = false;
   double full_min_gev = 0.0;
   double full_max_gev = 0.0;
   double zoom_min_gev = 0.0;
   double zoom_max_gev = 0.0;
   double counts_min_gev = 30.0;
   double counts_max_gev = 6000.0;
+  double x_scale = 1000.0;
+  bool use_legacy_mjj_counts = true;
+  bool draw_99_efficiency_line = true;
+  bool draw_full_efficiency_line = true;
+  bool write_zoom_plot = true;
+  bool write_counts_plot = true;
 };
 
 struct CaseConfig {
@@ -117,12 +124,20 @@ struct OutputPaths {
   std::string stem;
 };
 
-const std::array<PlotConfig, 5> kPlots = {{
-    {"wideJet", "dijetBinned", "wideDijet", "Dijet bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
-    {"wideJet", "even10GeV", "wideDijetEven1GeV", "10 GeV bins", "Wide PF-jets", "Wide-jet dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
-    {"AK4PFJet", "dijetBinned", "AK4Jets", "Dijet bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
-    {"AK4PFJet", "even10GeV", "AK4JetsEven1GeV", "10 GeV bins", "AK4 PF-jets", "AK4 PF dijet mass [TeV]", "|#eta| < 2.5, |#Delta#eta| < 1.3", true, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
-    {"HTAK4PF", "even10GeV", "HTAK4PF", "10 GeV bins", "AK4 PF H_{T}", "AK4 PF H_{T} [TeV]", "p_{T} > 30 GeV, |#eta| < 2.5", true, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0},
+// PlotConfig order:
+// {observable_folder, binning_folder, source_tag, output_group_folder, jet_label, axis_title, selection_label,
+//  rebin_even, omit_binning_subfolder, full_min_gev, full_max_gev, zoom_min_gev, zoom_max_gev,
+//  counts_min_gev, counts_max_gev, x_scale, use_legacy_mjj_counts,
+//  draw_99_efficiency_line, draw_full_efficiency_line, write_zoom_plot, write_counts_plot}
+const std::array<PlotConfig, 8> kPlots = {{
+    {"wideJet",  "dijetBinned",  "wideDijet",         "",              "Wide PF-jets",  "Wide-jet dijet mass [TeV]",  "|#eta| < 2.5, |#Delta#eta| < 1.3",  false, false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0, 1000.0, true,  true,  true,  true,  true },
+    {"wideJet",  "even10GeV",    "wideDijetEven1GeV", "",              "Wide PF-jets",  "Wide-jet dijet mass [TeV]",  "|#eta| < 2.5, |#Delta#eta| < 1.3",  true,  false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0, 1000.0, true,  true,  true,  true,  true },
+    {"AK4PFJet", "dijetBinned",  "AK4Jets",           "",              "AK4 PF-jets",   "AK4 PF dijet mass [TeV]",    "|#eta| < 2.5, |#Delta#eta| < 1.3",  false, false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0, 1000.0, true,  true,  true,  true,  true },
+    {"AK4PFJet", "even10GeV",    "AK4JetsEven1GeV",   "",              "AK4 PF-jets",   "AK4 PF dijet mass [TeV]",    "|#eta| < 2.5, |#Delta#eta| < 1.3",  true,  false, 100.0, 2000.0, 100.0, 900.0, 0.0, 6000.0, 1000.0, true,  true,  true,  true,  true },
+    {"HTAK4PF",  "even10GeV",    "HTAK4PF",           "",              "AK4 PF H_{T}",  "AK4 PF H_{T} [TeV]",         "p_{T} > 30 GeV, |#eta| < 2.5",      true,  false, 100.0, 1600.0, 100.0, 900.0, 0.0, 6000.0, 1000.0, true,  true,  true,  true,  true },
+    {"muonEta",  "fixedBinning", "muonEta",           "muonID_study",  "",              "Muon #eta",                  "",                                  false, true,  -2.4,  2.4,   -2.4,  2.4,  -2.4, 2.4,    1.0,    false, false, false, false, false},
+    {"muonPt",   "fixedBinning", "muonPt",            "muonID_study",  "",              "Muon p_{T} [GeV]",           "",                                  false, true,  0.0,   200.0, 0.0,   120.0, 0.0, 200.0,  1.0,    false, false, false, false, false},
+    {"muonPV",   "fixedBinning", "muonPV",            "muonID_study",  "",              "Number of primary vertices", "",                                  false, true,  0.0,   80.0,  0.0,   80.0,  0.0, 80.0,   1.0,    false, false, false, false, false},
 }};
 
 const std::array<CaseConfig, 4> kCases = {{
@@ -227,7 +242,6 @@ PlotConfig resolve_plot_config(const PlotConfig& plot, const Options& opts) {
   PlotConfig resolved = plot;
   if (resolved.rebin_even) {
     resolved.binning_folder = "even" + std::to_string(opts.even_bin_width_gev) + "GeV";
-    resolved.binning_label = std::to_string(opts.even_bin_width_gev) + " GeV bins";
   }
   return resolved;
 }
@@ -392,6 +406,25 @@ std::string format_table_value(double value) {
   return os.str();
 }
 
+std::string format_bin_edge(double value) {
+  if (std::isnan(value)) {
+    return "";
+  }
+  if (std::fabs(value - std::round(value)) < 1e-9) {
+    return std::to_string(static_cast<long long>(std::llround(value)));
+  }
+  std::ostringstream os;
+  os << std::fixed << std::setprecision(6) << value;
+  std::string text = os.str();
+  while (!text.empty() && text.back() == '0') {
+    text.pop_back();
+  }
+  if (!text.empty() && text.back() == '.') {
+    text.pop_back();
+  }
+  return text;
+}
+
 std::string format_count_value(double value) {
   if (std::isnan(value)) {
     return "";
@@ -515,12 +548,15 @@ MergedHistSet merge_case_histograms(const std::vector<std::string>& files,
                                  "",
                                  plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_denominator",
                                  merged.denominator);
-    const std::string legacy_no_trig_name = plot.rebin_even ? "h_mjj_noTrig_1GeVbin" : "h_mjj_HLTpass_noTrig";
-    found_any |= merge_histogram(*file,
-                                 legacy_no_trig_name,
-                                 "",
-                                 plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_legacy_mjj_all",
-                                 merged.legacy_mjj_all);
+    if (plot.use_legacy_mjj_counts) {
+      const std::string legacy_no_trig_name = plot.rebin_even ? "h_mjj_noTrig_1GeVbin" : "h_mjj_HLTpass_noTrig";
+      found_any |= merge_histogram(*file,
+                                   legacy_no_trig_name,
+                                   "",
+                                   plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag +
+                                       "_legacy_mjj_all",
+                                   merged.legacy_mjj_all);
+    }
     if (found_any) {
       ++merged.files_with_any_hist;
     }
@@ -571,9 +607,9 @@ std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency,
   const TAxis* xaxis = denom_hist.GetXaxis();
   for (int bin_idx = 1; bin_idx <= denom_hist.GetNbinsX(); ++bin_idx) {
     SummaryRow row;
-    row.bin_low = static_cast<int>(std::lround(xaxis->GetBinLowEdge(bin_idx)));
-    row.bin_high = static_cast<int>(std::lround(xaxis->GetBinUpEdge(bin_idx)));
-    row.bin_range = std::to_string(row.bin_low) + "-" + std::to_string(row.bin_high);
+    row.bin_low = xaxis->GetBinLowEdge(bin_idx);
+    row.bin_high = xaxis->GetBinUpEdge(bin_idx);
+    row.bin_range = format_bin_edge(row.bin_low) + "-" + format_bin_edge(row.bin_high);
     row.all_count = all_hist ? all_hist->GetBinContent(bin_idx) : 0.0;
     if (legacy_mjj_all_hist) {
       row.legacy_mjj_all_count = legacy_mjj_all_hist->GetBinContent(bin_idx);
@@ -611,8 +647,8 @@ void write_summary_csv(const fs::path& path, const std::vector<SummaryRow>& rows
   out << "bin_range,bin_low,bin_high,efficiency,inefficiency,eff_err_low,eff_err_up,all_count,denominator_count,numerator_count,inv_sqrt_n,diff_inv_sqrt_n_minus_inefficiency,legacy_mjj_all_count,legacy_mjj_inv_sqrt_n,legacy_mjj_diff_inv_sqrt_n_minus_inefficiency\n";
   for (const auto& row : rows) {
     out << row.bin_range << ','
-        << row.bin_low << ','
-        << row.bin_high << ','
+        << format_bin_edge(row.bin_low) << ','
+        << format_bin_edge(row.bin_high) << ','
         << format_table_value(row.efficiency) << ','
         << format_table_value(row.inefficiency) << ','
         << format_table_value(row.eff_err_low) << ','
@@ -628,26 +664,34 @@ void write_summary_csv(const fs::path& path, const std::vector<SummaryRow>& rows
   }
 }
 
-std::unique_ptr<TGraphAsymmErrors> graph_to_tev(const TGraphAsymmErrors& source, const std::string& name) {
+std::unique_ptr<TGraphAsymmErrors> graph_scale_x(const TGraphAsymmErrors& source,
+                                                 const std::string& name,
+                                                 double scale) {
   auto graph = std::make_unique<TGraphAsymmErrors>(source);
   graph->SetName(name.c_str());
+  if (scale == 0.0) {
+    die("Encountered a zero x-scale while building a plot graph");
+  }
   for (int i = 0; i < graph->GetN(); ++i) {
-    graph->GetX()[i] /= 1000.0;
-    graph->GetEXlow()[i] /= 1000.0;
-    graph->GetEXhigh()[i] /= 1000.0;
+    graph->GetX()[i] /= scale;
+    graph->GetEXlow()[i] /= scale;
+    graph->GetEXhigh()[i] /= scale;
   }
   return graph;
 }
 
-std::unique_ptr<TH1D> hist_to_tev(const TH1D& source, const std::string& name) {
-  std::vector<double> tev_bins;
-  const TAxis* xaxis = source.GetXaxis();
-  tev_bins.reserve(source.GetNbinsX() + 1);
-  for (int bin = 1; bin <= source.GetNbinsX(); ++bin) {
-    tev_bins.push_back(xaxis->GetBinLowEdge(bin) / 1000.0);
+std::unique_ptr<TH1D> hist_scale_x(const TH1D& source, const std::string& name, double scale) {
+  if (scale == 0.0) {
+    die("Encountered a zero x-scale while building a plot histogram");
   }
-  tev_bins.push_back(xaxis->GetBinUpEdge(source.GetNbinsX()) / 1000.0);
-  auto hist = std::make_unique<TH1D>(name.c_str(), "", static_cast<int>(tev_bins.size()) - 1, tev_bins.data());
+  std::vector<double> scaled_bins;
+  const TAxis* xaxis = source.GetXaxis();
+  scaled_bins.reserve(source.GetNbinsX() + 1);
+  for (int bin = 1; bin <= source.GetNbinsX(); ++bin) {
+    scaled_bins.push_back(xaxis->GetBinLowEdge(bin) / scale);
+  }
+  scaled_bins.push_back(xaxis->GetBinUpEdge(source.GetNbinsX()) / scale);
+  auto hist = std::make_unique<TH1D>(name.c_str(), "", static_cast<int>(scaled_bins.size()) - 1, scaled_bins.data());
   hist->SetDirectory(nullptr);
   for (int bin = 0; bin <= source.GetNbinsX() + 1; ++bin) {
     hist->SetBinContent(bin, source.GetBinContent(bin));
@@ -686,7 +730,8 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
                           double first_positive_legacy_diff_gev,
                           int marker_style = 20,
                           int marker_color = kBlack,
-                          bool draw_turnon_lines = false) {
+                          bool draw_99_efficiency_line = false,
+                          bool draw_full_efficiency_line = false) {
   TCanvas canvas(("c_trigger_efficiency_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag).c_str(), "", 800, 800);
   canvas.cd();
   gPad->SetTopMargin(0.08);
@@ -694,61 +739,65 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
   gPad->SetLeftMargin(0.16);
   gPad->SetBottomMargin(0.13);
 
-  auto graph_tev =
-      graph_to_tev(graph, "g_pfscouting_jetht_efficiency_tev_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag);
-  graph_tev->SetTitle("");
-  graph_tev->GetXaxis()->SetTitle(plot.axis_title.c_str());
-  graph_tev->GetYaxis()->SetTitle("Trigger efficiency");
-  graph_tev->GetXaxis()->SetLimits(x_min_gev / 1000.0, x_max_gev / 1000.0);
-  graph_tev->GetXaxis()->SetTitleSize(0.05);
-  graph_tev->GetYaxis()->SetTitleSize(0.05);
-  graph_tev->GetXaxis()->SetLabelSize(0.045);
-  graph_tev->GetYaxis()->SetLabelSize(0.045);
-  graph_tev->GetYaxis()->SetTitleOffset(1.35);
-  graph_tev->SetMarkerStyle(marker_style);
-  graph_tev->SetMarkerSize(1.0);
-  graph_tev->SetMarkerColor(marker_color);
-  graph_tev->SetLineColor(marker_color);
-  graph_tev->SetMinimum(kEfficiencyYMin);
-  graph_tev->SetMaximum(kEfficiencyYMax);
-  graph_tev->Draw("AP");
+  auto graph_plot =
+      graph_scale_x(graph, "g_pfscouting_jetht_efficiency_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag,
+                    plot.x_scale);
+  graph_plot->SetTitle("");
+  graph_plot->GetXaxis()->SetTitle(plot.axis_title.c_str());
+  const bool is_muon_selection_study = (plot.output_group_folder == "muonID_study");
+  graph_plot->GetYaxis()->SetTitle(is_muon_selection_study ? "Efficiency" : "Trigger efficiency");
+  graph_plot->GetXaxis()->SetLimits(x_min_gev / plot.x_scale, x_max_gev / plot.x_scale);
+  graph_plot->GetXaxis()->SetTitleSize(0.05);
+  graph_plot->GetYaxis()->SetTitleSize(0.05);
+  graph_plot->GetXaxis()->SetLabelSize(0.045);
+  graph_plot->GetYaxis()->SetLabelSize(0.045);
+  graph_plot->GetYaxis()->SetTitleOffset(1.35);
+  graph_plot->SetMarkerStyle(marker_style);
+  graph_plot->SetMarkerSize(1.0);
+  graph_plot->SetMarkerColor(marker_color);
+  graph_plot->SetLineColor(marker_color);
+  graph_plot->SetMinimum(kEfficiencyYMin);
+  graph_plot->SetMaximum(kEfficiencyYMax);
+  graph_plot->Draw("AP");
 
   std::vector<std::unique_ptr<TLine>> turnon_lines;
-  if (draw_turnon_lines) {
+  if (draw_99_efficiency_line || draw_full_efficiency_line) {
     auto find_turnon_x = [&](double threshold) -> double {
-      const int n_points = graph_tev->GetN();
+      const int n_points = graph_plot->GetN();
       if (n_points <= 0) {
         return std::numeric_limits<double>::quiet_NaN();
       }
 
       const int required_points = std::min(kTurnOnConsecutivePoints, n_points);
-      for (int i = 0; i < graph_tev->GetN(); ++i) {
+      for (int i = 0; i < graph_plot->GetN(); ++i) {
         bool sustained = true;
         for (int j = 0; j < required_points; ++j) {
           const int idx = i + j;
-          if (idx >= n_points || graph_tev->GetY()[idx] < threshold) {
+          if (idx >= n_points || graph_plot->GetY()[idx] < threshold) {
             sustained = false;
             break;
           }
         }
         if (sustained) {
-          return graph_tev->GetX()[i];
+          return graph_plot->GetX()[i];
         }
       }
       return std::numeric_limits<double>::quiet_NaN();
     };
 
-    const double x99 = find_turnon_x(0.99);
-    if (!std::isnan(x99)) {
-      auto line99 = std::make_unique<TLine>(x99, kEfficiencyYMin, x99, kEfficiencyYMax);
-      line99->SetLineColor(kCyan + 1);
-      line99->SetLineStyle(2);
-      line99->SetLineWidth(2);
-      line99->Draw();
-      turnon_lines.push_back(std::move(line99));
+    if (draw_99_efficiency_line) {
+      const double x99 = find_turnon_x(0.99);
+      if (!std::isnan(x99)) {
+        auto line99 = std::make_unique<TLine>(x99, kEfficiencyYMin, x99, kEfficiencyYMax);
+        line99->SetLineColor(kCyan + 1);
+        line99->SetLineStyle(2);
+        line99->SetLineWidth(2);
+        line99->Draw();
+        turnon_lines.push_back(std::move(line99));
+      }
     }
-    if (!std::isnan(first_positive_legacy_diff_gev)) {
-      const double x_legacy = first_positive_legacy_diff_gev / 1000.0;
+    if (draw_full_efficiency_line && !std::isnan(first_positive_legacy_diff_gev)) {
+      const double x_legacy = first_positive_legacy_diff_gev / plot.x_scale;
       auto line_legacy = std::make_unique<TLine>(x_legacy, kEfficiencyYMin, x_legacy, kEfficiencyYMax);
       line_legacy->SetLineColor(kRed + 1);
       line_legacy->SetLineStyle(2);
@@ -763,7 +812,7 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
   legend.SetFillStyle(0);
   legend.SetTextSize(0.034);
   const std::string legend_label = "Data [" + year + "]";
-  legend.AddEntry(graph_tev.get(), legend_label.c_str(), "pe");
+  legend.AddEntry(graph_plot.get(), legend_label.c_str(), "pe");
   legend.Draw();
 
   TPaveText cut_box(0.62, 0.18, 0.95, 0.27, "NDC");
@@ -780,7 +829,7 @@ void draw_efficiency_plot(TGraphAsymmErrors& graph,
   gPad->RedrawAxis();
 
   root_out.cd();
-  graph_tev->Write();
+  graph_plot->Write();
   canvas.Write();
   canvas.SaveAs(output_pdf.string().c_str());
 }
@@ -801,9 +850,11 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
   gPad->SetLogy();
 
   auto h_denom_plot =
-      hist_to_tev(denom_hist, "h_denom_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label);
+      hist_scale_x(denom_hist, "h_denom_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label,
+                   plot.x_scale);
   auto h_numer_plot =
-      hist_to_tev(numer_hist, "h_numer_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label);
+      hist_scale_x(numer_hist, "h_numer_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label,
+                   plot.x_scale);
 
   h_denom_plot->SetTitle("");
   h_denom_plot->GetXaxis()->SetTitle(plot.axis_title.c_str());
@@ -822,7 +873,8 @@ void draw_count_overlay_plot(const TH1D& denom_hist,
   h_numer_plot->SetLineColor(kRed + 1);
   h_numer_plot->SetLineWidth(2);
 
-  TH1F* frame = gPad->DrawFrame(plot.counts_min_gev / 1000.0, 0.5, plot.counts_max_gev / 1000.0, std::max(10.0, y_max * 5.0));
+  TH1F* frame =
+      gPad->DrawFrame(plot.counts_min_gev / plot.x_scale, 0.5, plot.counts_max_gev / plot.x_scale, std::max(10.0, y_max * 5.0));
   frame->SetTitle("");
   frame->GetXaxis()->SetTitle(plot.axis_title.c_str());
   frame->GetYaxis()->SetTitle("Events / bin");
@@ -856,9 +908,18 @@ OutputPaths make_output_paths(const fs::path& base_output_dir,
                               const PlotConfig& plot,
                               const CaseConfig& study_case) {
   OutputPaths paths;
-  paths.directory = base_output_dir / plot.observable_folder / plot.binning_folder / study_case.folder_tag;
+  const std::string top_folder = plot.output_group_folder.empty() ? plot.observable_folder : plot.output_group_folder;
+  paths.directory = base_output_dir / top_folder;
+  if (!plot.omit_binning_subfolder && !plot.binning_folder.empty()) {
+    paths.directory /= plot.binning_folder;
+  }
+  paths.directory /= study_case.folder_tag;
   fs::create_directories(paths.directory);
-  paths.stem = output_prefix + "_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag;
+  paths.stem = output_prefix + "_" + plot.observable_folder;
+  if (!plot.omit_binning_subfolder && !plot.binning_folder.empty()) {
+    paths.stem += "_" + plot.binning_folder;
+  }
+  paths.stem += "_" + study_case.folder_tag;
   paths.root_file = paths.directory / (paths.stem + ".root");
   paths.summary_csv = paths.directory / (paths.stem + "_summary.csv");
   paths.eff_pdf = paths.directory / (paths.stem + "_efficiency.pdf");
@@ -870,15 +931,18 @@ OutputPaths make_output_paths(const fs::path& base_output_dir,
 void print_case_output_info(const OutputPaths& paths, const PlotConfig& plot, const CaseConfig& study_case) {
   (void)paths;
   const auto info = info_tag();
-  std::cout << info << ' ' << plot.observable_folder << " | " << plot.binning_folder << " | " << study_case.folder_tag
-            << std::endl;
+  std::cout << info << ' ' << plot.observable_folder;
+  if (!plot.omit_binning_subfolder && !plot.binning_folder.empty()) {
+    std::cout << " | " << plot.binning_folder;
+  }
+  std::cout << " | " << study_case.folder_tag << std::endl;
 }
 
 double find_first_positive_legacy_diff_edge_gev(const std::vector<SummaryRow>& rows) {
   for (const auto& row : rows) {
     if (!std::isnan(row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency) &&
         row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency > 0.0) {
-      return static_cast<double>(row.bin_low);
+      return row.bin_low;
     }
   }
   return std::numeric_limits<double>::quiet_NaN();
@@ -972,7 +1036,7 @@ int main(int argc, char** argv) {
           rebinned.legacy_mjj_all->SetName(
               ("h_legacy_mjj_all_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag).c_str());
           rebinned.legacy_mjj_all->Write();
-        } else {
+        } else if (plot.use_legacy_mjj_counts) {
           std::cerr << warn_tag() << ' ' << plot.observable_folder << '/' << plot.binning_folder << '/'
                     << study_case.folder_tag
                     << ": legacy noTrig histogram is missing, so the legacy 1/sqrt(N) columns will be left empty."
@@ -1010,28 +1074,34 @@ int main(int argc, char** argv) {
                              first_positive_legacy_diff_gev,
                              20,
                              kBlue + 1,
-                             true);
-        draw_efficiency_plot(*graph,
-                             paths.eff_zoom_pdf,
-                             root_out,
-                             opts.lumi_pb,
-                             opts.year,
-                             plot,
-                             study_case.folder_tag + "_zoom",
-                             study_case.folder_tag,
-                             plot.zoom_min_gev,
-                             plot.zoom_max_gev,
-                             first_positive_legacy_diff_gev,
-                             20,
-                             kBlue + 1,
-                             true);
-        draw_count_overlay_plot(*rebinned.denominator,
-                                *rebinned.numerator,
-                                paths.counts_pdf,
-                                root_out,
-                                opts.year,
-                                plot,
-                                study_case.folder_tag);
+                             plot.draw_99_efficiency_line,
+                             plot.draw_full_efficiency_line);
+        if (plot.write_zoom_plot) {
+          draw_efficiency_plot(*graph,
+                               paths.eff_zoom_pdf,
+                               root_out,
+                               opts.lumi_pb,
+                               opts.year,
+                               plot,
+                               study_case.folder_tag + "_zoom",
+                               study_case.folder_tag,
+                               plot.zoom_min_gev,
+                               plot.zoom_max_gev,
+                               first_positive_legacy_diff_gev,
+                               20,
+                               kBlue + 1,
+                               plot.draw_99_efficiency_line,
+                               plot.draw_full_efficiency_line);
+        }
+        if (plot.write_counts_plot) {
+          draw_count_overlay_plot(*rebinned.denominator,
+                                  *rebinned.numerator,
+                                  paths.counts_pdf,
+                                  root_out,
+                                  opts.year,
+                                  plot,
+                                  study_case.folder_tag);
+        }
       }
     }
 

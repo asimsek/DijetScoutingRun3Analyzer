@@ -182,6 +182,29 @@ double deltaRDistance(double eta1, double phi1, double eta2, double phi2) {
 }
 
 // Shared good-muon definition used by the trigger-efficiency control sample.
+bool passesScoutingMuonIDWithOptions(double pt,
+                                     double eta,
+                                     double trkDxy,
+                                     double trkDz,
+                                     double normChi2,
+                                     double nValidRecoMuonHits,
+                                     double nRecoMuonMatchedStations,
+                                     double nValidPixelHits,
+                                     double nTrackerLayersWithMeasurement,
+                                     bool applyPtCut,
+                                     bool applyEtaCut) {
+  if (applyPtCut && pt <= 30.0) return false;
+  if (applyEtaCut && std::abs(eta) >= 0.8) return false;
+  if (std::abs(trkDxy) >= 0.2) return false;
+  if (std::abs(trkDz) >= 0.5) return false;
+  if (normChi2 >= 10.0) return false;
+  if (nValidRecoMuonHits < 1.0) return false;
+  if (nRecoMuonMatchedStations < 2.0) return false;
+  if (nValidPixelHits < 1.0) return false;
+  if (nTrackerLayersWithMeasurement < 6.0) return false;
+  return true;
+}
+
 bool passesScoutingMuonID(double pt,
                           double eta,
                           double trkDxy,
@@ -191,16 +214,49 @@ bool passesScoutingMuonID(double pt,
                           double nRecoMuonMatchedStations,
                           double nValidPixelHits,
                           double nTrackerLayersWithMeasurement) {
-  if (pt <= 30.0) return false;
-  if (std::abs(eta) >= 0.8) return false;
-  if (std::abs(trkDxy) >= 0.2) return false;
-  if (std::abs(trkDz) >= 0.5) return false;
-  if (normChi2 >= 3.0) return false;
-  if (nValidRecoMuonHits <= 0.0) return false;
-  if (nRecoMuonMatchedStations <= 2.0) return false;
-  if (nValidPixelHits <= 1.0) return false;
-  if (nTrackerLayersWithMeasurement <= 7.0) return false;
-  return true;
+  return passesScoutingMuonIDWithOptions(pt, eta, trkDxy, trkDz, normChi2, nValidRecoMuonHits,
+                                         nRecoMuonMatchedStations, nValidPixelHits,
+                                         nTrackerLayersWithMeasurement, true, true);
+}
+
+bool passesScoutingMuonID_forEtaStudy(double pt,
+                                      double eta,
+                                      double trkDxy,
+                                      double trkDz,
+                                      double normChi2,
+                                      double nValidRecoMuonHits,
+                                      double nRecoMuonMatchedStations,
+                                      double nValidPixelHits,
+                                      double nTrackerLayersWithMeasurement) {
+  return passesScoutingMuonIDWithOptions(pt, eta, trkDxy, trkDz, normChi2, nValidRecoMuonHits,
+                                         nRecoMuonMatchedStations, nValidPixelHits,
+                                         nTrackerLayersWithMeasurement, true, false);
+}
+
+bool passesScoutingMuonID_forPtStudy(double pt,
+                                     double eta,
+                                     double trkDxy,
+                                     double trkDz,
+                                     double normChi2,
+                                     double nValidRecoMuonHits,
+                                     double nRecoMuonMatchedStations,
+                                     double nValidPixelHits,
+                                     double nTrackerLayersWithMeasurement) {
+  return passesScoutingMuonIDWithOptions(pt, eta, trkDxy, trkDz, normChi2, nValidRecoMuonHits,
+                                         nRecoMuonMatchedStations, nValidPixelHits,
+                                         nTrackerLayersWithMeasurement, false, true);
+}
+
+bool passesScoutingMuonID_forPVStudyDenominator(double pt,
+                                                double eta,
+                                                double trkDxy,
+                                                double trkDz,
+                                                double normChi2,
+                                                double nValidRecoMuonHits,
+                                                double nRecoMuonMatchedStations,
+                                                double nValidPixelHits,
+                                                double nTrackerLayersWithMeasurement) {
+  return (pt > 30.0) && (std::abs(eta) < 0.8);
 }
 
 std::string formatWithCommas(Long64_t value) {
@@ -303,9 +359,10 @@ void analysisClass::Loop() {
       (getPreCutValue1("produceAdditionalTriggerStudyPlots") > 0.5);
   const bool applyGoodMuonSelection_analysis =
       (inputMode == InputSampleMode::kScoutingData) && (getPreCutValue1("applyGoodMuonSelection_analysis") > 0.5);
+  const bool produceMuonTriggerStudyPlots = (inputMode == InputSampleMode::kScoutingData);
   const bool needScoutingMuonBranches =
       (inputMode == InputSampleMode::kScoutingData) &&
-      (applyGoodMuonSelection_analysis || produceAdditionalTriggerStudyPlots);
+      (applyGoodMuonSelection_analysis || produceAdditionalTriggerStudyPlots || produceMuonTriggerStudyPlots);
 
   std::cout << "[analysisClass] Input mode: "
             << (useStandardMC ? "MC"
@@ -537,9 +594,18 @@ void analysisClass::Loop() {
   enum TriggerStudyTrigger { kNoTrig = 0, kJetHTTrig = 1, kSingleMuonTrig = 2, kJetHTAndSingleMuonTrig = 3, kNTriggerStudyTriggers = 4 };
   const char* HLTname[kNTriggerStudyTriggers] = {"noTrig", "PFScouting_JetHT", "PFScouting_SingleMuon",
                                                  "PFScouting_JetHTAndSingleMuon"};
-  enum TriggerStudyObservable { kWideDijet = 0, kAk4Dijet = 1, kHtAk4 = 2, kNTriggerStudyObservables = 3 };
+  enum TriggerStudyObservable {
+    kWideDijet = 0,
+    kAk4Dijet = 1,
+    kHtAk4 = 2,
+    kMuonEta = 3,
+    kMuonPt = 4,
+    kMuonPV = 5,
+    kNTriggerStudyObservables = 6
+  };
   enum TriggerStudyMethod { kDefaultStudy = 0, kL1Study = 1, kGoodMuonStudy = 2, kGoodMuonL1Study = 3, kNTriggerStudyMethods = 4 };
-  const char* triggerStudyObservableName[kNTriggerStudyObservables] = {"wideDijet", "AK4Jets", "HTAK4PF"};
+  const char* triggerStudyObservableName[kNTriggerStudyObservables] = {
+      "wideDijet", "AK4Jets", "HTAK4PF", "muonEta", "muonPt", "muonPV"};
   const char* triggerStudyMethodName[kNTriggerStudyMethods] = {"default", "L1", "goodMuon", "goodMuonL1"};
 
   TH1F* h_mjj_HLTpass[kNTriggerStudyTriggers];
@@ -549,9 +615,11 @@ void analysisClass::Loop() {
   }
 
   // Book the trigger-study histograms once per observable and per control-sample method.
+  // Muon observables use fixed binning: eta in [-2.4, 2.4], pT in [0, 200] GeV, PV in [0, 80].
   TH1F* h_trigStudy[kNTriggerStudyObservables][kNTriggerStudyMethods][kNTriggerStudyTriggers] = {};
   TH1F* h_trigStudyEven1GeV[kNTriggerStudyObservables][kNTriggerStudyMethods][kNTriggerStudyTriggers] = {};
   for (int obs = 0; obs < kNTriggerStudyObservables; ++obs) {
+    if ((obs == kMuonEta || obs == kMuonPt || obs == kMuonPV) && !produceMuonTriggerStudyPlots) continue;
     for (int method = 0; method < kNTriggerStudyMethods; ++method) {
       if (!produceAdditionalTriggerStudyPlots && method != kDefaultStudy) continue;
       for (int trig = 0; trig < kNTriggerStudyTriggers; ++trig) {
@@ -561,6 +629,12 @@ void analysisClass::Loop() {
                                    HLTname[trig]);
         if (obs == kHtAk4) {
           h_trigStudy[obs][method][trig] = new TH1F(hname, "", 1500, 0.0, 1500.0);
+        } else if (obs == kMuonEta) {
+          h_trigStudy[obs][method][trig] = new TH1F(hname, "", 48, -2.4, 2.4);
+        } else if (obs == kMuonPt) {
+          h_trigStudy[obs][method][trig] = new TH1F(hname, "", 200, 0.0, 200.0);
+        } else if (obs == kMuonPV) {
+          h_trigStudy[obs][method][trig] = new TH1F(hname, "", 80, 0.0, 80.0);
         } else {
           h_trigStudy[obs][method][trig] = new TH1F(hname, "", nMassBins, massBoundaries);
         }
@@ -855,6 +929,16 @@ void analysisClass::Loop() {
     // Read the scouting muons once so we can build both trigger-study and analysis-side jet collections.
     scoutingAllMuons.clear();
     int nGoodScoutingMuons = 0;
+    bool hasEtaStudyProbeMuon = false;
+    bool etaStudyProbePassesFullID = false;
+    bool hasPtStudyProbeMuon = false;
+    bool ptStudyProbePassesFullID = false;
+    bool hasPvStudyDenominatorMuon = false;
+    bool hasPvStudyNumeratorMuon = false;
+    double etaStudyProbeValue = 0.0;
+    double ptStudyProbeValue = 0.0;
+    double etaStudyProbeRankPt = -1.0;
+    double ptStudyProbeRankPt = -1.0;
     if (needScoutingMuonBranches) {
       const int nMuons = static_cast<int>(**nScoutingMuonVtxReader);
       scoutingAllMuons.reserve(static_cast<size_t>(std::max(0, nMuons)));
@@ -874,10 +958,32 @@ void analysisClass::Loop() {
         TLorentzVector muP4;
         muP4.SetPtEtaPhiM(muPt, muEta, muPhi, 0.105);
         scoutingAllMuons.push_back(muP4);
-        if (passesScoutingMuonID(muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits,
-                                 muLayers)) {
+        const bool passesFullMuonID =
+            passesScoutingMuonID(muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits, muLayers);
+        const bool passesEtaStudyDenominator = passesScoutingMuonID_forEtaStudy(
+            muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits, muLayers);
+        const bool passesPtStudyDenominator = passesScoutingMuonID_forPtStudy(
+            muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits, muLayers);
+        const bool passesPvStudyDenominator = passesScoutingMuonID_forPVStudyDenominator(
+            muPt, muEta, muDxy, muDz, muNormChi2, muHits, muStations, muPixelHits, muLayers);
+
+        if (passesFullMuonID) {
           ++nGoodScoutingMuons;
         }
+        if (passesEtaStudyDenominator && muPt > etaStudyProbeRankPt) {
+          hasEtaStudyProbeMuon = true;
+          etaStudyProbeRankPt = muPt;
+          etaStudyProbeValue = muEta;
+          etaStudyProbePassesFullID = passesFullMuonID;
+        }
+        if (passesPtStudyDenominator && muPt > ptStudyProbeRankPt) {
+          hasPtStudyProbeMuon = true;
+          ptStudyProbeRankPt = muPt;
+          ptStudyProbeValue = muPt;
+          ptStudyProbePassesFullID = passesFullMuonID;
+        }
+        hasPvStudyDenominatorMuon = hasPvStudyDenominatorMuon || passesPvStudyDenominator;
+        hasPvStudyNumeratorMuon = hasPvStudyNumeratorMuon || passesFullMuonID;
       }
     }
 
@@ -1399,6 +1505,42 @@ void analysisClass::Loop() {
       }
     };
 
+    // Fill the muon selection-efficiency studies using one highest-pT probe muon per event.
+    auto fillMuonTriggerStudy = [&](TriggerStudyMethod method, bool requireL1ForJetHT) {
+      if (!produceMuonTriggerStudyPlots) return;
+      if (!h_trigStudy[kMuonEta][method][kNoTrig]) return;
+      if (!passTriggerStudyBaseSelection) return;
+      if (requireL1ForJetHT && !canEvaluateL1ForPFScoutingHT) return;
+
+      const bool passSingleMuonControlSample =
+          passPFScoutingSingleMuon && (!requireL1ForJetHT || passL1ForPFScoutingHT);
+
+      if (hasEtaStudyProbeMuon) {
+        h_trigStudy[kMuonEta][method][kNoTrig]->Fill(etaStudyProbeValue);
+        if (passSingleMuonControlSample) h_trigStudy[kMuonEta][method][kSingleMuonTrig]->Fill(etaStudyProbeValue);
+        if (passSingleMuonControlSample && etaStudyProbePassesFullID) {
+          h_trigStudy[kMuonEta][method][kJetHTAndSingleMuonTrig]->Fill(etaStudyProbeValue);
+        }
+      }
+
+      if (hasPtStudyProbeMuon) {
+        h_trigStudy[kMuonPt][method][kNoTrig]->Fill(ptStudyProbeValue);
+        if (passSingleMuonControlSample) h_trigStudy[kMuonPt][method][kSingleMuonTrig]->Fill(ptStudyProbeValue);
+        if (passSingleMuonControlSample && ptStudyProbePassesFullID) {
+          h_trigStudy[kMuonPt][method][kJetHTAndSingleMuonTrig]->Fill(ptStudyProbeValue);
+        }
+      }
+
+      if (hasPvStudyDenominatorMuon) {
+        const double pvValue = static_cast<double>(nvtxEvt);
+        h_trigStudy[kMuonPV][method][kNoTrig]->Fill(pvValue);
+        if (passSingleMuonControlSample) h_trigStudy[kMuonPV][method][kSingleMuonTrig]->Fill(pvValue);
+        if (passSingleMuonControlSample && hasPvStudyNumeratorMuon) {
+          h_trigStudy[kMuonPV][method][kJetHTAndSingleMuonTrig]->Fill(pvValue);
+        }
+      }
+    };
+
     // Nominal (Legacy) wide-dijet histograms
     const bool legacyWideSelection = passesWideDijetTriggerStudy(defaultSummaryRef);
     if (legacyWideSelection) {
@@ -1412,14 +1554,27 @@ void analysisClass::Loop() {
     }
 
     fillTriggerStudy(kDefaultStudy, defaultSummaryRef, false, false);
+    fillMuonTriggerStudy(kDefaultStudy, false);
     if (produceAdditionalTriggerStudyPlots) {
       fillTriggerStudy(kL1Study, defaultSummaryRef, false, true);
       fillTriggerStudy(kGoodMuonStudy, goodMuonSummary, true, false);
       fillTriggerStudy(kGoodMuonL1Study, goodMuonSummary, true, true);
+      fillMuonTriggerStudy(kL1Study, true);
+      fillMuonTriggerStudy(kGoodMuonStudy, false);
+      fillMuonTriggerStudy(kGoodMuonL1Study, true);
     }
 
     fillReducedSkimTree();
   }
+
+  // Write the trigger-study histograms into the active reduced-skim output when available.
+  TFile* triggerStudyOutput = getHistogramOutputFile();
+  if (!triggerStudyOutput) {
+    std::cerr << "[analysisClass] ERROR: no output ROOT file is available for trigger-study histograms.\n";
+    std::cout << "[analysisClass] Loop end\n";
+    return;
+  }
+  triggerStudyOutput->cd();
 
   for (int i = 0; i < kNTriggerStudyTriggers; ++i) {
     h_mjj_HLTpass[i]->Write();

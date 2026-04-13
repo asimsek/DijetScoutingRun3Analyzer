@@ -27,11 +27,22 @@ baseClass::baseClass(std::string* inputList,
                      std::string* outputFileName,
                      std::string* cutEfficFile)
   : PileupWeight_(1.0),
+    output_root_(nullptr),
     fillSkim_(true),
     fillAllPreviousCuts_(true),
     fillAllOtherCuts_(true),
     fillAllSameLevelAndLowerLevelCuts_(true),
     fillAllCuts_(true),
+    produceSkim_(false),
+    NAfterSkim_(0),
+    skim_file_(nullptr),
+    skim_tree_(nullptr),
+    hCount_(nullptr),
+    produceReducedSkim_(false),
+    NAfterReducedSkim_(0),
+    reduced_skim_file_(nullptr),
+    reduced_skim_tree_(nullptr),
+    hReducedCount_(nullptr),
     oldKey_("")
 {
   nOptimizerCuts_ = 20;
@@ -52,11 +63,11 @@ baseClass::~baseClass()
   if (!writeSkimTree())         { STDOUT("ERROR: writeSkimTree did not complete successfully."); }
   if (!writeReducedSkimTree())  { STDOUT("ERROR: writeReducedSkimTree did not complete successfully."); }
 
-  // if (output_root_) output_root_->Close();
+  // if (output_root_)         output_root_->Close();
   if (produceSkim_)         skim_file_->Close();
   if (produceReducedSkim_)  reduced_skim_file_->Close();
 
-  // Keep only skim/reduced outputs; remove legacy main ROOT and cut-efficiency DAT files.
+  // Keep only skim/reduced-skim outputs; remove legacy main ROOT and cut-efficiency DAT files.
   std::remove(((*outputFileName_) + ".root").c_str());
   std::remove(((*cutEfficFile_) + ".dat").c_str());
 }
