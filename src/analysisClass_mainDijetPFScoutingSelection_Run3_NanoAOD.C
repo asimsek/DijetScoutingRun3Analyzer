@@ -363,6 +363,8 @@ void analysisClass::Loop() {
       (getPreCutValue1("produceAdditionalTriggerStudyPlots") > 0.5);
   const bool applyGoodMuonSelection_analysis =
       (inputMode == InputSampleMode::kScoutingData) && (getPreCutValue1("applyGoodMuonSelection_analysis") > 0.5);
+  const bool storeAllEventsWithGoodMuonFlag_analysis =
+      applyGoodMuonSelection_analysis && (getPreCutValue1("storeAllEventsWithGoodMuonFlag_analysis") > 0.5);
   const bool produceMuonTriggerStudyPlots = (inputMode == InputSampleMode::kScoutingData);
   const bool needScoutingMuonBranches =
       (inputMode == InputSampleMode::kScoutingData) &&
@@ -1035,14 +1037,13 @@ void analysisClass::Loop() {
     // Only the analysis-side switch is allowed to change the branches written to the reduced ntuple.
     const std::vector<TLorentzVector>* analysisJetP4 = &recoJetP4;
     const std::vector<TLorentzVector>* analysisJetP4Shift = &recoJetP4Shift;
-    if (applyGoodMuonSelection_analysis) {
-      if (!hasGoodScoutingMuon) continue;
+    if (applyGoodMuonSelection_analysis && hasGoodScoutingMuon) {
       makeMuonCleanedJets(recoJetP4, recoJetP4Shift, analysisJetP4Storage, analysisJetP4ShiftStorage);
       analysisJetP4 = &analysisJetP4Storage;
       analysisJetP4Shift = &analysisJetP4ShiftStorage;
     }
 
-    const bool analysisUsesMuonCleanedJets = applyGoodMuonSelection_analysis;
+    const bool analysisUsesMuonCleanedJets = applyGoodMuonSelection_analysis && hasGoodScoutingMuon;
     const std::vector<TLorentzVector>* trigEffGoodMuonJetP4 = nullptr;
     const std::vector<TLorentzVector>* trigEffGoodMuonJetP4Shift = nullptr;
     if (hasGoodScoutingMuon) {
@@ -1223,7 +1224,9 @@ void analysisClass::Loop() {
     }
     const JetRecoSummary& goodMuonSummary = *goodMuonSummaryPtr;
 
-    // Derive MET-based event variables from the nominal corrected jet collection used for the saved branches.
+    // Derive MET-based event variables. In good-muon analysis mode, keep these
+    // aligned with the saved muon-cleaned jet collection; otherwise preserve the
+    // nominal reduced-ntuple definitions.
     double sumEtVal = 0.0;
     for (size_t i = 0; i < nJets; ++i) {
       const double pTj = getCorrPt(i);
@@ -1231,14 +1234,36 @@ void analysisClass::Loop() {
     }
     if (sumEtVal <= 0.0) sumEtVal = -1.0;
 
-    float metSigVal = -1.0f;
-    if (metVal >= 0.0f && sumEtVal > 0.0) {
-      metSigVal = static_cast<float>(static_cast<double>(metVal) / std::sqrt(sumEtVal));
+    double cleanedSumEtVal = -1.0;
+    double cleanedHtForUnclusteredVal = 0.0;
+    if (analysisUsesMuonCleanedJets) {
+      cleanedSumEtVal = 0.0;
+      for (const auto& jetP4 : *analysisJetP4) {
+        const double pTj = jetP4.Pt();
+        if (pTj <= 0.0) continue;
+        cleanedSumEtVal += pTj;
+        if (pTj > ptCut) cleanedHtForUnclusteredVal += pTj;
+      }
+      if (cleanedSumEtVal <= 0.0) cleanedSumEtVal = -1.0;
     }
 
-    float unclusteredEnFracVal = (sumEtVal > 0.0)
-                                     ? static_cast<float>((sumEtVal - analysisSummary.htAk4RawForUnclustered) / sumEtVal)
-                                     : -1.0f;
+    const double metSigSumEtVal = analysisUsesMuonCleanedJets ? cleanedSumEtVal : sumEtVal;
+
+    float metSigVal = -1.0f;
+    if (metVal >= 0.0f && metSigSumEtVal > 0.0) {
+      metSigVal = static_cast<float>(static_cast<double>(metVal) / std::sqrt(metSigSumEtVal));
+    }
+
+    float unclusteredEnFracVal = -1.0f;
+    if (analysisUsesMuonCleanedJets) {
+      if (cleanedSumEtVal > 0.0) {
+        unclusteredEnFracVal =
+            static_cast<float>((cleanedSumEtVal - cleanedHtForUnclusteredVal) / cleanedSumEtVal);
+      }
+    } else if (sumEtVal > 0.0) {
+      unclusteredEnFracVal =
+          static_cast<float>((sumEtVal - analysisSummary.htAk4RawForUnclustered) / sumEtVal);
+    }
     if (unclusteredEnFracVal > 1.0f) unclusteredEnFracVal = 1.0f;
     if (unclusteredEnFracVal < -1.0f) unclusteredEnFracVal = -1.0f;
 
@@ -1261,11 +1286,20 @@ void analysisClass::Loop() {
 
     resetCuts();
 
-    // Fill the reduced ntuple from the nominal analysis summary only; trigger-study variants stay in histograms.
+    // Fill the reduced ntuple from the active analysis summary; trigger-study-only
+    // variants stay in histograms.
     fillVariableWithValue("run", runNoEvt);
     fillVariableWithValue("event", static_cast<double>(evtNoEvt));
     fillVariableWithValue("lumi", lumiEvt);
     fillVariableWithValue("nVtx", nvtxEvt);
+
+    const double passJsonValue = passJSON(runNoEvt, lumiEvt, isDataEvt);
+    const bool passJsonSelection =
+        (passJsonValue >= getCutMinValue1("PassJSON")) && (passJsonValue <= getCutMaxValue1("PassJSON"));
+    const bool passNVtxSelection =
+        (nvtxEvt >= getCutMinValue1("nVtx")) && (nvtxEvt <= getCutMaxValue1("nVtx"));
+    const bool passTriggerStudyBaseSelection = passJsonSelection && passNVtxSelection;
+    const bool passGoodMuonBaseSelection = hasGoodScoutingMuon && passTriggerStudyBaseSelection;
 
     const auto& branchSortedIdx = analysisSummary.sortedIdx;
     fillVariableWithValue("nJet", (analysisSummary.wj1.Pt() > 0.0 && analysisSummary.wj2.Pt() > 0.0) ? 2 : 0);
@@ -1273,7 +1307,8 @@ void analysisClass::Loop() {
     fillVariableWithValue("metphi", metPhiVal);
     fillVariableWithValue("metSig", metSigVal);
     fillVariableWithValue("NAK4PF", analysisSummary.nAk4Analysis);
-    fillVariableWithValue("PassJSON", passJSON(runNoEvt, lumiEvt, isDataEvt));
+    fillVariableWithValue("passGoodMuonBaseSelection", passGoodMuonBaseSelection ? 1.0 : 0.0);
+    fillVariableWithValue("PassJSON", passJsonValue);
 
     if (analysisSummary.ak4j1.Pt() > 0.0 && branchSortedIdx.size() >= 1U) {
       const auto j0 = branchSortedIdx[0];
@@ -1383,7 +1418,6 @@ void analysisClass::Loop() {
     evaluateCuts();
 
     // Apply the trigger-study selections on top of the shared JSON and vertex requirements.
-    const bool passTriggerStudyBaseSelection = passedCut("PassJSON") && passedCut("nVtx");
     auto passesWideDijetTriggerStudy = [&](const JetRecoSummary& summary) {
       if (!passTriggerStudyBaseSelection || summary.sortedIdx.size() < 2U) return false;
       const auto j0 = summary.sortedIdx[0];
@@ -1541,7 +1575,12 @@ void analysisClass::Loop() {
       fillMuonTriggerStudy(kGoodMuonL1Study, true);
     }
 
-    fillReducedSkimTree();
+    // In good-muon analysis mode, the reduced ntuple stores only events that
+    // satisfy the scouting MuonID requirement and the shared trigger-study base
+    // selection, with all saved jet branches built from the muon-cleaned jets.
+    if (!applyGoodMuonSelection_analysis || storeAllEventsWithGoodMuonFlag_analysis || passGoodMuonBaseSelection) {
+      fillReducedSkimTree();
+    }
   }
 
   // Write the trigger-study histograms into the active reduced-skim output when available.

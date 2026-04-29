@@ -30,6 +30,7 @@ noJECs                           0          -          -       -       -1
 # shiftJECs: value1=0/1 (off/on), value2 = sign (+1 or -1) used if on
 shiftJECs                        0          1          -       -       -1
 applyGoodMuonSelection_analysis  0          -          -       -       -1
+storeAllEventsWithGoodMuonFlag_analysis  0  -          -       -       -1
 produceAdditionalTriggerStudyPlots  1       -          -       -       -1
 
 
@@ -38,6 +39,7 @@ produceAdditionalTriggerStudyPlots  1       -          -       -       -1
 
 # JSON & primary vertices
 PassJSON                         0.5         1         -      -      0       2          -0.5  1.5   SAVE
+passGoodMuonBaseSelection        -0.5        1.5       -      -      0       2          -0.5  1.5   SAVE
 nVtx                             0           +inf      -      -      1       50         0     50    SAVE
 nJet                             1           +inf      -      -      1       3          -0.5  2.5   SAVE
 

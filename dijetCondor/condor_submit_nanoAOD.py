@@ -374,6 +374,7 @@ def build_cmssw_tarball(cmssw_base: Path, condor_folder: Path) -> str:
             "-czf",
             str(tar_file),
             "--exclude=tmp",
+            "--exclude=scripts",
             "--exclude=Limits",
             "--exclude=CombineHarvester",
             "--exclude=HiggsAnalysis",

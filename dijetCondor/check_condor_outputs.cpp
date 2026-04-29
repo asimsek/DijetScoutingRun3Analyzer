@@ -1,5 +1,6 @@
 #include <TChain.h>
 #include <TFile.h>
+#include <TParameter.h>
 #include <TROOT.h>
 #include <TTree.h>
 
@@ -41,6 +42,7 @@ struct Options {
   std::string path1;
   std::string path2;
   bool resubmit = false;
+  bool dry_run = false;
   bool verbose = false;
   std::string config;
   std::string input_tree = "Events";
@@ -49,6 +51,7 @@ struct Options {
   bool check_subdirs = false;
   bool no_per_file = false;
   bool total_events = false;
+  bool good_muon = false;
   std::string dataset;
   int request_memory_mb = 0;
   int threads = 0;
@@ -68,6 +71,16 @@ struct CountResult {
   long long entries = 0;
   int added = 0;
   std::string tree;
+  bool has_expected_events = false;
+  long long expected_events = 0;
+  bool has_actual_events = false;
+  long long actual_events = 0;
+  bool has_apply_goodmuon_selection_analysis = false;
+  int apply_goodmuon_selection_analysis = 0;
+  bool has_store_all_events_with_goodmuon_flag_analysis = false;
+  int store_all_events_with_goodmuon_flag_analysis = 0;
+  bool has_reduced_skim_is_filtered = false;
+  int reduced_skim_is_filtered = 0;
   std::string error;
 };
 
@@ -75,6 +88,16 @@ struct FileScanResult {
   long long entries = 0;
   int added = 0;
   std::string tree;
+  bool has_expected_events = false;
+  long long expected_events = 0;
+  bool has_actual_events = false;
+  long long actual_events = 0;
+  bool has_apply_goodmuon_selection_analysis = false;
+  int apply_goodmuon_selection_analysis = 0;
+  bool has_store_all_events_with_goodmuon_flag_analysis = false;
+  int store_all_events_with_goodmuon_flag_analysis = 0;
+  bool has_reduced_skim_is_filtered = false;
+  int reduced_skim_is_filtered = 0;
   std::string error;
 };
 
@@ -89,6 +112,16 @@ struct GroupAccumulator {
   int added = 0;
   std::string tree;
   bool mixed_tree = false;
+  bool has_expected_events = false;
+  long long expected_events = 0;
+  bool has_actual_events = false;
+  long long actual_events = 0;
+  bool has_apply_goodmuon_selection_analysis = false;
+  int apply_goodmuon_selection_analysis = 0;
+  bool has_store_all_events_with_goodmuon_flag_analysis = false;
+  int store_all_events_with_goodmuon_flag_analysis = 0;
+  bool has_reduced_skim_is_filtered = false;
+  int reduced_skim_is_filtered = 0;
   std::string error;
 };
 
@@ -334,6 +367,17 @@ std::optional<std::string> eos_xrootd_fallback(const std::string& file_path) {
   return std::nullopt;
 }
 
+template <typename T>
+bool read_tparameter(TFile& file, const char* object_path, T& value) {
+  TParameter<T>* param = nullptr;
+  file.GetObject(object_path, param);
+  if (!param) {
+    return false;
+  }
+  value = param->GetVal();
+  return true;
+}
+
 void print_progress_line(const std::string& label, std::size_t done, std::size_t total) {
   static constexpr std::size_t kBarWidth = 32;
   const double frac = total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total);
@@ -484,9 +528,9 @@ DasInputPlan build_das_input_plan(
 
 void print_help(const char* argv0) {
   std::cout
-      << "usage: " << argv0 << " [--resubmit] [--verbose] [--config CONFIG] [--input-tree INPUT_TREE]\n"
+      << "usage: " << argv0 << " [--resubmit] [--dry-run] [--verbose] [--config CONFIG] [--input-tree INPUT_TREE]\n"
       << "       [--job-start N] [--job-end M] [--check-subdirs] [--noPerFile]\n"
-      << "       [--total-events] [--dataset DATASET] [--request-memory-mb MB]\n"
+      << "       [--total-events] [--goodMuon] [--dataset DATASET] [--request-memory-mb MB]\n"
       << "       [--threads N] path1 [path2]\n\n"
       << "Mode A: check missing Condor outputs using cjobs_dir + eos_output_dir.\n"
       << "Mode B: with a single path (directory or .root file), count entries automatically.\n";
@@ -510,6 +554,8 @@ Options parse_args(int argc, char** argv) {
       std::exit(0);
     } else if (arg == "--resubmit") {
       opt.resubmit = true;
+    } else if (arg == "--dry-run") {
+      opt.dry_run = true;
     } else if (arg == "--verbose") {
       opt.verbose = true;
     } else if (arg == "--config") {
@@ -526,6 +572,8 @@ Options parse_args(int argc, char** argv) {
       opt.no_per_file = true;
     } else if (arg == "--total-events") {
       opt.total_events = true;
+    } else if (arg == "--goodMuon") {
+      opt.good_muon = true;
     } else if (arg == "--dataset") {
       opt.dataset = need_value(arg);
     } else if (arg == "--request-memory-mb") {
@@ -963,6 +1011,35 @@ FileScanResult count_file_entries(const std::string& file_path, const std::vecto
     return result;
   }
 
+  Long64_t expected_events = 0;
+  if (read_tparameter(*file, "metaData/expectedEvents", expected_events)) {
+    result.has_expected_events = true;
+    result.expected_events = static_cast<long long>(expected_events);
+  }
+  Long64_t actual_events = 0;
+  if (read_tparameter(*file, "metaData/actualEvents", actual_events)) {
+    result.has_actual_events = true;
+    result.actual_events = static_cast<long long>(actual_events);
+  }
+  int apply_goodmuon_selection_analysis = 0;
+  if (read_tparameter(*file, "metaData/applyGoodMuonSelection_analysis", apply_goodmuon_selection_analysis)) {
+    result.has_apply_goodmuon_selection_analysis = true;
+    result.apply_goodmuon_selection_analysis = apply_goodmuon_selection_analysis;
+  }
+  int store_all_events_with_goodmuon_flag_analysis = 0;
+  if (read_tparameter(
+          *file,
+          "metaData/storeAllEventsWithGoodMuonFlag_analysis",
+          store_all_events_with_goodmuon_flag_analysis)) {
+    result.has_store_all_events_with_goodmuon_flag_analysis = true;
+    result.store_all_events_with_goodmuon_flag_analysis = store_all_events_with_goodmuon_flag_analysis;
+  }
+  int reduced_skim_is_filtered = 0;
+  if (read_tparameter(*file, "metaData/reducedSkimIsFiltered", reduced_skim_is_filtered)) {
+    result.has_reduced_skim_is_filtered = true;
+    result.reduced_skim_is_filtered = reduced_skim_is_filtered;
+  }
+
   result.added = 1;
   const std::vector<std::string> tree_candidates =
       trees.empty() ? std::vector<std::string>{"rootTupleTree/tree"} : trees;
@@ -1109,6 +1186,26 @@ std::map<std::string, CountResult> count_groups_batch(
         const FileScanResult result = count_file_entries(task.file_path, spec.trees);
         acc.entries += result.entries;
         acc.added += result.added;
+        if (result.has_expected_events) {
+          acc.has_expected_events = true;
+          acc.expected_events += result.expected_events;
+        }
+        if (result.has_actual_events) {
+          acc.has_actual_events = true;
+          acc.actual_events += result.actual_events;
+        }
+        if (result.has_apply_goodmuon_selection_analysis) {
+          acc.has_apply_goodmuon_selection_analysis = true;
+          acc.apply_goodmuon_selection_analysis = result.apply_goodmuon_selection_analysis;
+        }
+        if (result.has_store_all_events_with_goodmuon_flag_analysis) {
+          acc.has_store_all_events_with_goodmuon_flag_analysis = true;
+          acc.store_all_events_with_goodmuon_flag_analysis = result.store_all_events_with_goodmuon_flag_analysis;
+        }
+        if (result.has_reduced_skim_is_filtered) {
+          acc.has_reduced_skim_is_filtered = true;
+          acc.reduced_skim_is_filtered = result.reduced_skim_is_filtered;
+        }
         if (!result.error.empty() && acc.error.empty()) {
           acc.error = result.error;
         }
@@ -1132,6 +1229,26 @@ std::map<std::string, CountResult> count_groups_batch(
       CountResult& dest = out[item.first];
       dest.entries += item.second.entries;
       dest.added += item.second.added;
+      if (item.second.has_expected_events) {
+        dest.has_expected_events = true;
+        dest.expected_events += item.second.expected_events;
+      }
+      if (item.second.has_actual_events) {
+        dest.has_actual_events = true;
+        dest.actual_events += item.second.actual_events;
+      }
+      if (item.second.has_apply_goodmuon_selection_analysis) {
+        dest.has_apply_goodmuon_selection_analysis = true;
+        dest.apply_goodmuon_selection_analysis = item.second.apply_goodmuon_selection_analysis;
+      }
+      if (item.second.has_store_all_events_with_goodmuon_flag_analysis) {
+        dest.has_store_all_events_with_goodmuon_flag_analysis = true;
+        dest.store_all_events_with_goodmuon_flag_analysis = item.second.store_all_events_with_goodmuon_flag_analysis;
+      }
+      if (item.second.has_reduced_skim_is_filtered) {
+        dest.has_reduced_skim_is_filtered = true;
+        dest.reduced_skim_is_filtered = item.second.reduced_skim_is_filtered;
+      }
       if (dest.tree.empty()) {
         dest.tree = item.second.tree;
       } else if (!item.second.tree.empty() && dest.tree != item.second.tree) {
@@ -1338,14 +1455,45 @@ bool update_jdl_request_memory(const fs::path& jdl_path, int memory_mb) {
   return changed;
 }
 
-void update_missing_jdls_request_memory(const std::vector<fs::path>& jdls, int memory_mb) {
+void update_missing_jdls_request_memory(const std::vector<fs::path>& jdls, int memory_mb, bool dry_run) {
   if (memory_mb <= 0) {
     return;
   }
   int updated = 0;
   for (const fs::path& jdl : jdls) {
     try {
-      if (update_jdl_request_memory(jdl, memory_mb)) {
+      if (dry_run) {
+        const std::vector<std::string> lines = read_lines(jdl);
+        static const std::regex request_re("^\\s*request_memory\\s*=", std::regex::icase);
+        static const std::regex queue_re("^\\s*queue\\b", std::regex::icase);
+        const std::string new_line = "request_memory = " + std::to_string(memory_mb);
+        bool found = false;
+        bool would_change = false;
+        for (const std::string& line : lines) {
+          if (std::regex_search(line, request_re)) {
+            found = true;
+            if (trim(line) != new_line) {
+              would_change = true;
+            }
+          }
+        }
+        if (!found) {
+          for (const std::string& line : lines) {
+            if (std::regex_search(line, queue_re)) {
+              would_change = true;
+              break;
+            }
+          }
+          if (!would_change) {
+            would_change = true;
+          }
+        }
+        if (would_change) {
+          ++updated;
+          std::cout << kSubGreen << " DRY-RUN request_memory = " << memory_mb
+                    << " in " << jdl.filename().string() << "\n";
+        }
+      } else if (update_jdl_request_memory(jdl, memory_mb)) {
         ++updated;
       }
     } catch (const std::exception& ex) {
@@ -1353,34 +1501,42 @@ void update_missing_jdls_request_memory(const std::vector<fs::path>& jdls, int m
                 << "\n";
     }
   }
-  std::cout << kInfo << " request_memory  : " << memory_mb << " MB\n";
-  std::cout << kInfo << " jdl updated     : " << updated << "/" << jdls.size() << "\n";
+  std::cout << kInfo << " request_memory  : " << memory_mb << " MB"
+            << (dry_run ? " (dry-run)" : "") << "\n";
+  std::cout << kInfo << " jdl " << (dry_run ? "would update" : "updated")
+            << "     : " << updated << "/" << jdls.size() << "\n";
 }
 
-void resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls) {
+void resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls, bool dry_run) {
   if (jdls.empty()) {
-    std::cout << kInfo << " No missing jobs to resubmit.\n";
+    std::cout << kInfo << " No missing jobs to " << (dry_run ? "preview" : "resubmit") << ".\n";
     return;
   }
-  std::cout << kInfo << " Resubmitting " << jdls.size() << " missing job(s)...\n";
+  std::cout << kInfo << " " << (dry_run ? "Previewing" : "Resubmitting")
+            << " " << jdls.size() << " missing job(s)...\n";
   for (const fs::path& jdl : jdls) {
-    const std::string cmd =
-        "cd " + shell_quote(cjobs_dir.string()) + " && condor_submit -terse " + shell_quote(jdl.filename().string());
-    const CommandResult result = run_command_capture(cmd);
-    if (result.exit_code != 0) {
-      std::cout << kError << " Failed to resubmit " << jdl.filename().string() << "\n";
+    const std::string submit_cmd = "condor_submit -terse " + jdl.filename().string();
+    if (dry_run) {
+      std::cout << kSubGreen << " DRY-RUN " << submit_cmd << "\n";
+    } else {
+      const std::string cmd =
+          "cd " + shell_quote(cjobs_dir.string()) + " && condor_submit -terse " + shell_quote(jdl.filename().string());
+      const CommandResult result = run_command_capture(cmd);
+      if (result.exit_code != 0) {
+        std::cout << kError << " Failed to resubmit " << jdl.filename().string() << "\n";
+        const std::string text = trim(result.output);
+        if (!text.empty()) {
+          std::cout << text << "\n";
+        }
+        continue;
+      }
       const std::string text = trim(result.output);
       if (!text.empty()) {
-        std::cout << text << "\n";
+        std::cout << kSubGreen << " " << jdl.filename().string() << " -> "
+                  << text.substr(text.find_last_of('\n') + 1) << "\n";
+      } else {
+        std::cout << kSubGreen << " " << jdl.filename().string() << " submitted\n";
       }
-      continue;
-    }
-    const std::string text = trim(result.output);
-    if (!text.empty()) {
-      std::cout << kSubGreen << " " << jdl.filename().string() << " -> "
-                << text.substr(text.find_last_of('\n') + 1) << "\n";
-    } else {
-      std::cout << kSubGreen << " " << jdl.filename().string() << " submitted\n";
     }
   }
 }
@@ -1546,15 +1702,49 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
         row.output_events = out_it->second.entries;
         row.output_tree = out_it->second.tree;
         summary.total_output_events += row.output_events;
+        if (opt.good_muon) {
+          if (!out_it->second.has_expected_events || !out_it->second.has_actual_events) {
+            if (row.status == "OK") {
+              row.status = "COUNT_ERROR";
+              row.note = "missing metaData/expectedEvents or metaData/actualEvents";
+            } else {
+              row.note += "; missing metaData/expectedEvents or metaData/actualEvents";
+            }
+          } else if (out_it->second.has_apply_goodmuon_selection_analysis &&
+                     out_it->second.apply_goodmuon_selection_analysis != 1) {
+            if (row.status == "OK") {
+              row.status = "COUNT_ERROR";
+              row.note = "output metadata says applyGoodMuonSelection_analysis=0";
+            } else {
+              row.note += "; output metadata says applyGoodMuonSelection_analysis=0";
+            }
+          }
+        }
       }
     }
 
     if (row.status == "OK") {
-      if (row.input_events != row.output_events) {
-        row.status = "EVENT_MISMATCH";
-        row.note = "input_events != output_events";
+      if (opt.good_muon) {
+        const auto out_it = batch_results.find("out:" + std::to_string(job.index));
+        if (out_it == batch_results.end()) {
+          row.status = "COUNT_ERROR";
+          row.note = "missing batched output result";
+        } else if (row.input_events != out_it->second.expected_events) {
+          row.status = "EVENT_MISMATCH";
+          row.note = "input_events != metaData/expectedEvents";
+        } else if (row.output_events != out_it->second.actual_events) {
+          row.status = "EVENT_MISMATCH";
+          row.note = "output_tree_entries != metaData/actualEvents";
+        } else {
+          ++summary.ok_jobs;
+        }
       } else {
-        ++summary.ok_jobs;
+        if (row.input_events != row.output_events) {
+          row.status = "EVENT_MISMATCH";
+          row.note = "input_events != output_events";
+        } else {
+          ++summary.ok_jobs;
+        }
       }
     }
 
@@ -1604,6 +1794,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     if (opt.resubmit) {
       std::cout << kWarnRed << " --resubmit is ignored in single-path mode.\n";
     }
+    if (opt.dry_run) {
+      std::cout << kWarnRed << " --dry-run is ignored in single-path mode.\n";
+    }
     if (opt.request_memory_mb > 0) {
       std::cout << kWarnRed << " --request-memory-mb is ignored in single-path mode.\n";
     }
@@ -1612,6 +1805,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     }
     if (opt.job_start || opt.job_end) {
       std::cout << kWarnRed << " --job-start/--job-end are ignored in single-path mode.\n";
+    }
+    if (opt.good_muon) {
+      std::cout << kWarnRed << " --goodMuon is ignored in single-path mode.\n";
     }
 
     if (fs::is_regular_file(path1)) {
@@ -1650,6 +1846,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     if (opt.resubmit) {
       std::cout << kWarnRed << " --resubmit is ignored with --noPerFile.\n";
     }
+    if (opt.dry_run) {
+      std::cout << kWarnRed << " --dry-run is ignored with --noPerFile.\n";
+    }
     if (opt.request_memory_mb > 0) {
       std::cout << kWarnRed << " --request-memory-mb is ignored with --noPerFile.\n";
     }
@@ -1658,6 +1857,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     }
     if (opt.job_start || opt.job_end) {
       std::cout << kWarnRed << " --job-start/--job-end are ignored with --noPerFile.\n";
+    }
+    if (opt.good_muon) {
+      std::cout << kWarnRed << " --goodMuon is ignored with --noPerFile.\n";
     }
 
     const std::vector<fs::path> roots = get_existing_root_files(eos_dir, opt.check_subdirs);
@@ -1669,6 +1871,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
   }
 
   const bool has_config = !opt.config.empty();
+  if (opt.good_muon && !has_config) {
+    std::cout << kWarnRed << " --goodMuon only affects per-job checks with --config.\n";
+  }
   if (has_config && opt.total_events) {
     std::cout << kInfo
               << " --total-events is redundant with --config; using per-job total summary and skipping extra scan.\n";
@@ -1678,15 +1883,20 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
   }
 
   const bool total_events = !has_config && (opt.total_events || !opt.dataset.empty());
-  const bool allow_resubmit = opt.resubmit;
-  if (opt.request_memory_mb > 0 && !opt.resubmit) {
-    std::cout << kWarnRed << " --request-memory-mb is set but --resubmit is not enabled. No .jdl will be modified.\n";
+  const bool allow_resubmit = opt.resubmit || opt.dry_run;
+  if (opt.dry_run && !opt.resubmit) {
+    std::cout << kInfo << " --dry-run enabled: would preview request_memory changes and condor_submit commands.\n";
+  }
+  if (opt.request_memory_mb > 0 && !allow_resubmit) {
+    std::cout << kWarnRed
+              << " --request-memory-mb is set but neither --resubmit nor --dry-run is enabled. No .jdl will be modified.\n";
   }
 
   const std::vector<fs::path> jdl_files = get_jdl_files(cjobs_dir);
   std::cout << kInfo << " cjobs directory : " << cjobs_dir << "\n";
   std::cout << kInfo << " eos directory   : " << eos_dir << "\n";
   std::cout << kInfo << " .jdl count      : " << jdl_files.size() << "\n";
+  std::cout << kInfo << " goodMuon mode   : " << (opt.good_muon ? "yes" : "no") << "\n";
   std::cout << kInfo << " job range       : start="
             << (opt.job_start ? std::to_string(*opt.job_start) : "begin")
             << " end=" << (opt.job_end ? std::to_string(*opt.job_end) : "end") << "\n";
@@ -1931,9 +2141,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
 
   if (allow_resubmit) {
     if (opt.request_memory_mb > 0) {
-      update_missing_jdls_request_memory(problematic_vec, opt.request_memory_mb);
+      update_missing_jdls_request_memory(problematic_vec, opt.request_memory_mb, opt.dry_run);
     }
-    resubmit_missing(cjobs_dir, problematic_vec);
+    resubmit_missing(cjobs_dir, problematic_vec, opt.dry_run);
   }
 
   return 0;

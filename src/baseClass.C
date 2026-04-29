@@ -1243,10 +1243,28 @@ bool baseClass::writeReducedSkimTree()
 
   TParameter<Long64_t> expected_events_param("expectedEvents", nEntRoottuple);
   TParameter<Long64_t> actual_events_param("actualEvents", nReducedEntries);
+  const int apply_goodmuon_selection_analysis =
+      (int(getSkimPreCutValue("applyGoodMuonSelection_analysis")) == 1) ? 1 : 0;
+  const int store_all_events_with_goodmuon_flag_analysis =
+      (apply_goodmuon_selection_analysis == 1 &&
+       int(getSkimPreCutValue("storeAllEventsWithGoodMuonFlag_analysis")) == 1)
+          ? 1
+          : 0;
+  const int reduced_skim_is_filtered =
+      (apply_goodmuon_selection_analysis == 1 && store_all_events_with_goodmuon_flag_analysis == 0) ? 1 : 0;
+  TParameter<int> apply_goodmuon_selection_analysis_param(
+      "applyGoodMuonSelection_analysis", apply_goodmuon_selection_analysis);
+  TParameter<int> store_all_events_with_goodmuon_flag_analysis_param(
+      "storeAllEventsWithGoodMuonFlag_analysis", store_all_events_with_goodmuon_flag_analysis);
+  TParameter<int> reduced_skim_is_filtered_param("reducedSkimIsFiltered", reduced_skim_is_filtered);
   expected_events_param.Write();
   actual_events_param.Write();
+  apply_goodmuon_selection_analysis_param.Write();
+  store_all_events_with_goodmuon_flag_analysis_param.Write();
+  reduced_skim_is_filtered_param.Write();
 
-  if (nReducedEntries != nEntRoottuple) {
+  const bool allowReducedSkimCountMismatch = (int(getSkimPreCutValue("applyGoodMuonSelection_analysis")) == 1);
+  if (nReducedEntries != nEntRoottuple && !allowReducedSkimCountMismatch) {
     const std::string reduced_file_name = (*outputFileName_) + "_reduced_skim.root";
     std::cerr << "[baseClass] ERROR: reduced skim event-count mismatch for output file '"
               << reduced_file_name << "'. expected=" << nEntRoottuple
