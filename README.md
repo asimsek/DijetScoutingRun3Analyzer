@@ -179,7 +179,7 @@ scramv1 b clean; scramv1 b -j$(nproc --ignore=2)
 > **Run the following commands inside the main directory:** `cd $CMSSW_BASE/src/DijetScoutingRun3Analyzer`<br>
 
 
-> [!INFO]
+> [!TIP]
 > For the muon-cleaned-jet trigger-efficiency control sample, use `applyGoodMuonSelection_analysis` in `config/cutFile_mainDijetPFScoutingSelection_Run3.txt`.<br>
 > `applyGoodMuonSelection_analysis = 0`: keep the nominal nTuple behavior.<br>
 > `applyGoodMuonSelection_analysis = 1` and `storeAllEventsWithGoodMuonFlag_analysis = 0`: store only events passing `passGoodMuonBaseSelection`, with muon-cleaned jet branches.<br>
