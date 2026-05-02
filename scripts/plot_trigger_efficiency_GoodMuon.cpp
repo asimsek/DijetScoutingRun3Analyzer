@@ -2,13 +2,18 @@
 
 #include <TBranch.h>
 #include <TCanvas.h>
+#include <TError.h>
 #include <TEfficiency.h>
 #include <TFile.h>
 #include <TGraphAsymmErrors.h>
+#include <TH1.h>
 #include <TH1D.h>
+#include <TH1F.h>
 #include <TLatex.h>
 #include <TLegend.h>
+#include <TLine.h>
 #include <TObjArray.h>
+#include <TPaveText.h>
 #include <TROOT.h>
 #include <TStyle.h>
 #include <TTree.h>
@@ -58,12 +63,16 @@ constexpr double kDeltaEtaCut = 1.3;
 constexpr double kMinPtJ1 = 30.0;
 constexpr double kMinPtJ2 = 30.0;
 constexpr double kMinJetCount = 1.0;
+constexpr double kMinNVtx = 0.0;
+constexpr double kMaxNVtx = std::numeric_limits<double>::infinity();
 constexpr bool kUseGoodMuonBaseSelectionFlagIfAvailable = true;
 constexpr const char* kGoodMuonBaseSelectionFlagBranch = "passGoodMuonBaseSelection";
 constexpr double kEfficiencyYMin = 0.0;
 constexpr double kEfficiencyYMax = 1.30;
 constexpr double kHtHistogramMaxGeV = 1500.0;
 constexpr double kEvenHistogramMaxGeV = 14000.0;
+constexpr double kCountsYMin = 0.5;
+constexpr int kTurnOnConsecutivePoints = 3;
 
 const std::array<std::string, 2> kJetHtBranchCandidates = {
     "passHLT_PFScoutingHT",
@@ -114,7 +123,9 @@ struct Options {
 };
 
 struct PlotSpec {
-  std::string tag;
+  std::string observable_folder;
+  std::string binning_folder;
+  std::string source_tag;
   std::string branch_name;
   std::string jet_label;
   std::string axis_title;
@@ -122,8 +133,16 @@ struct PlotSpec {
   SelectionKind selection_kind = SelectionKind::kWideJet;
   BinningKind binning_kind = BinningKind::kVariable;
   double x_scale = 1000.0;
-  double plot_x_min = 0.0;
-  double plot_x_max = 0.0;
+  double full_min_gev = 0.0;
+  double full_max_gev = 0.0;
+  double zoom_min_gev = 0.0;
+  double zoom_max_gev = 0.0;
+  double counts_min_gev = 0.0;
+  double counts_max_gev = 0.0;
+  bool draw_99_efficiency_line = true;
+  bool draw_full_efficiency_line = true;
+  bool write_zoom_plot = true;
+  bool write_counts_plot = true;
   std::vector<double> variable_edges;
   double uniform_min = 0.0;
   double uniform_max = 0.0;
@@ -131,8 +150,8 @@ struct PlotSpec {
 };
 
 struct CaseSpec {
-  std::string tag;
-  std::string title;
+  std::string folder_tag;
+  std::string source_tag;
 };
 
 struct PlotCounts {
@@ -157,11 +176,26 @@ struct SummaryRow {
   double all_count = 0.0;
   double denominator_count = 0.0;
   double numerator_count = 0.0;
+  double inv_sqrt_n = std::numeric_limits<double>::quiet_NaN();
+  double diff_inv_sqrt_n_minus_inefficiency = std::numeric_limits<double>::quiet_NaN();
+  double legacy_mjj_all_count = std::numeric_limits<double>::quiet_NaN();
+  double legacy_mjj_inv_sqrt_n = std::numeric_limits<double>::quiet_NaN();
+  double legacy_mjj_diff_inv_sqrt_n_minus_inefficiency = std::numeric_limits<double>::quiet_NaN();
+};
+
+struct OutputPaths {
+  fs::path directory;
+  fs::path root_file;
+  fs::path summary_csv;
+  fs::path eff_pdf;
+  fs::path eff_zoom_pdf;
+  fs::path counts_pdf;
+  std::string stem;
 };
 
 const std::array<CaseSpec, 2> kCases = {{
-    {"goodMuon", "GoodMuon"},
-    {"goodMuonL1", "GoodMuonL1"},
+    {"GoodMuon", "goodMuon"},
+    {"MuonAndL1", "goodMuonL1"},
 }};
 
 [[noreturn]] void die(const std::string& message) {
@@ -441,6 +475,81 @@ TTree* get_input_tree(TFile& file, const Options& opts, const std::string& file_
       "' in file: " + file_name);
 }
 
+std::unique_ptr<TH1D> clone_hist_as_double(const TH1& source, const std::string& name) {
+  const TAxis* xaxis = source.GetXaxis();
+  std::vector<double> edges;
+  edges.reserve(source.GetNbinsX() + 1);
+  for (int bin = 1; bin <= source.GetNbinsX(); ++bin) {
+    edges.push_back(xaxis->GetBinLowEdge(bin));
+  }
+  edges.push_back(xaxis->GetBinUpEdge(source.GetNbinsX()));
+
+  auto hist = std::make_unique<TH1D>(name.c_str(), "", static_cast<int>(edges.size()) - 1, edges.data());
+  hist->SetDirectory(nullptr);
+  hist->Sumw2();
+  for (int bin = 0; bin <= source.GetNbinsX() + 1; ++bin) {
+    hist->SetBinContent(bin, source.GetBinContent(bin));
+    hist->SetBinError(bin, source.GetBinError(bin));
+  }
+  hist->SetEntries(source.GetEntries());
+  return hist;
+}
+
+std::unique_ptr<TH1D> rebin_histogram_even_gev(const TH1D& source,
+                                               int target_bin_width_gev,
+                                               const std::string& name) {
+  const TAxis* xaxis = source.GetXaxis();
+  if (source.GetNbinsX() <= 0) {
+    return clone_hist_as_double(source, name);
+  }
+
+  const double source_bin_width = xaxis->GetBinWidth(1);
+  if (source_bin_width <= 0.0) {
+    die("Encountered a histogram with non-positive bin width while rebinnning: " + std::string(source.GetName()));
+  }
+
+  const double raw_factor = static_cast<double>(target_bin_width_gev) / source_bin_width;
+  const int rebin_factor = static_cast<int>(std::llround(raw_factor));
+  if (std::fabs(raw_factor - static_cast<double>(rebin_factor)) > 1e-9 || rebin_factor <= 0) {
+    die("Requested even bin width is incompatible with histogram binning for " + std::string(source.GetName()));
+  }
+  if (rebin_factor == 1) {
+    return clone_hist_as_double(source, name);
+  }
+  if (source.GetNbinsX() % rebin_factor != 0) {
+    die("Requested even bin width does not divide the histogram binning for " + std::string(source.GetName()));
+  }
+
+  auto clone = clone_hist_as_double(source, name + "_tmp");
+  auto* rebinned_raw = clone->Rebin(rebin_factor, name.c_str());
+  TH1D* rebinned = dynamic_cast<TH1D*>(rebinned_raw);
+  if (!rebinned) {
+    die("Failed to rebin histogram " + std::string(source.GetName()));
+  }
+  rebinned->SetDirectory(nullptr);
+  return std::unique_ptr<TH1D>(rebinned);
+}
+
+bool merge_histogram(TFile& file,
+                     const std::string& primary_name,
+                     const std::string& merged_name,
+                     std::unique_ptr<TH1D>& merged_hist) {
+  TH1* input_hist = dynamic_cast<TH1*>(file.Get(primary_name.c_str()));
+  if (!input_hist) {
+    return false;
+  }
+  if (!merged_hist) {
+    merged_hist = clone_hist_as_double(*input_hist, merged_name);
+  } else {
+    merged_hist->Add(input_hist);
+  }
+  return true;
+}
+
+std::string trigger_hist_name(const PlotSpec& plot, const CaseSpec& study_case, const char* trig_name) {
+  return "h_" + plot.source_tag + "_HLTpass_" + study_case.source_tag + "_" + trig_name;
+}
+
 std::string find_branch_name_in_file(const std::string& file_name,
                                      const Options& opts,
                                      const std::array<std::string, 2>& candidates,
@@ -518,7 +627,9 @@ std::vector<PlotSpec> make_plot_specs(const Options& opts) {
   plots.reserve(5);
 
   PlotSpec wide_binned;
-  wide_binned.tag = "wideJet_dijetBinned";
+  wide_binned.observable_folder = "wideJet";
+  wide_binned.binning_folder = "dijetBinned";
+  wide_binned.source_tag = "wideDijet";
   wide_binned.branch_name = "mjj";
   wide_binned.jet_label = "Wide PF-jets";
   wide_binned.axis_title = "Wide-jet dijet mass [TeV]";
@@ -526,24 +637,29 @@ std::vector<PlotSpec> make_plot_specs(const Options& opts) {
   wide_binned.selection_kind = SelectionKind::kWideJet;
   wide_binned.binning_kind = BinningKind::kVariable;
   wide_binned.x_scale = 1000.0;
-  wide_binned.plot_x_min = 100.0;
-  wide_binned.plot_x_max = 2000.0;
+  wide_binned.full_min_gev = 100.0;
+  wide_binned.full_max_gev = 2000.0;
+  wide_binned.zoom_min_gev = 100.0;
+  wide_binned.zoom_max_gev = 900.0;
+  wide_binned.counts_min_gev = 0.0;
+  wide_binned.counts_max_gev = 6000.0;
   wide_binned.variable_edges = kMassBins;
   plots.push_back(wide_binned);
 
   PlotSpec wide_even = wide_binned;
-  wide_even.tag = "wideJet_even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+  wide_even.binning_folder = "even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+  wide_even.source_tag = "wideDijetEven1GeV";
   wide_even.binning_kind = BinningKind::kUniform;
   wide_even.uniform_min = 0.0;
   wide_even.uniform_max = kEvenHistogramMaxGeV;
   wide_even.uniform_bin_width = opts.even_bin_width_gev;
-  wide_even.plot_x_min = 100.0;
-  wide_even.plot_x_max = 2000.0;
   wide_even.variable_edges.clear();
   plots.push_back(wide_even);
 
   PlotSpec ak4_binned;
-  ak4_binned.tag = "AK4PFJet_dijetBinned";
+  ak4_binned.observable_folder = "AK4PFJet";
+  ak4_binned.binning_folder = "dijetBinned";
+  ak4_binned.source_tag = "AK4Jets";
   ak4_binned.branch_name = "Dijet_MassAK4PF";
   ak4_binned.jet_label = "AK4 PF-jets";
   ak4_binned.axis_title = "AK4 PF dijet mass [TeV]";
@@ -551,24 +667,29 @@ std::vector<PlotSpec> make_plot_specs(const Options& opts) {
   ak4_binned.selection_kind = SelectionKind::kAk4;
   ak4_binned.binning_kind = BinningKind::kVariable;
   ak4_binned.x_scale = 1000.0;
-  ak4_binned.plot_x_min = 100.0;
-  ak4_binned.plot_x_max = 2000.0;
+  ak4_binned.full_min_gev = 100.0;
+  ak4_binned.full_max_gev = 2000.0;
+  ak4_binned.zoom_min_gev = 100.0;
+  ak4_binned.zoom_max_gev = 900.0;
+  ak4_binned.counts_min_gev = 0.0;
+  ak4_binned.counts_max_gev = 6000.0;
   ak4_binned.variable_edges = kMassBins;
   plots.push_back(ak4_binned);
 
   PlotSpec ak4_even = ak4_binned;
-  ak4_even.tag = "AK4PFJet_even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+  ak4_even.binning_folder = "even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+  ak4_even.source_tag = "AK4JetsEven1GeV";
   ak4_even.binning_kind = BinningKind::kUniform;
   ak4_even.uniform_min = 0.0;
   ak4_even.uniform_max = kEvenHistogramMaxGeV;
   ak4_even.uniform_bin_width = opts.even_bin_width_gev;
-  ak4_even.plot_x_min = 100.0;
-  ak4_even.plot_x_max = 2000.0;
   ak4_even.variable_edges.clear();
   plots.push_back(ak4_even);
 
   PlotSpec ht_even;
-  ht_even.tag = "HTAK4PF_even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+  ht_even.observable_folder = "HTAK4PF";
+  ht_even.binning_folder = "even" + std::to_string(opts.even_bin_width_gev) + "GeV";
+  ht_even.source_tag = "HTAK4PF";
   ht_even.branch_name = "HTAK4PF";
   ht_even.jet_label = "AK4 PF H_{T}";
   ht_even.axis_title = "AK4 PF H_{T} [TeV]";
@@ -576,8 +697,12 @@ std::vector<PlotSpec> make_plot_specs(const Options& opts) {
   ht_even.selection_kind = SelectionKind::kHtAk4;
   ht_even.binning_kind = BinningKind::kUniform;
   ht_even.x_scale = 1000.0;
-  ht_even.plot_x_min = 100.0;
-  ht_even.plot_x_max = 1600.0;
+  ht_even.full_min_gev = 100.0;
+  ht_even.full_max_gev = 1600.0;
+  ht_even.zoom_min_gev = 100.0;
+  ht_even.zoom_max_gev = 900.0;
+  ht_even.counts_min_gev = 0.0;
+  ht_even.counts_max_gev = 6000.0;
   ht_even.uniform_min = 0.0;
   ht_even.uniform_max = kHtHistogramMaxGeV;
   ht_even.uniform_bin_width = opts.even_bin_width_gev;
@@ -612,6 +737,10 @@ TaskCounts make_empty_task_counts(const std::vector<PlotSpec>& plots) {
   return counts;
 }
 
+std::string plot_tag(const PlotSpec& plot) {
+  return plot.observable_folder + "_" + plot.binning_folder;
+}
+
 int find_bin(const PlotSpec& plot, double value) {
   if (plot.binning_kind == BinningKind::kVariable) {
     if (value >= plot.variable_edges.back()) {
@@ -631,6 +760,7 @@ int find_bin(const PlotSpec& plot, double value) {
 }
 
 bool passes_widejet_selection(double pass_json,
+                              double n_vtx,
                               double n_jet,
                               double id_tight_j1,
                               double id_tight_j2,
@@ -639,12 +769,14 @@ bool passes_widejet_selection(double pass_json,
                               double eta_j1,
                               double eta_j2,
                               double delta_eta_jj) {
-  return pass_json > 0.5 && n_jet > kMinJetCount && id_tight_j1 > 0.5 &&
+  return pass_json > 0.5 && n_vtx >= kMinNVtx && n_vtx <= kMaxNVtx &&
+         n_jet > kMinJetCount && id_tight_j1 > 0.5 &&
          id_tight_j2 > 0.5 && pt_j1 > kMinPtJ1 && pt_j2 > kMinPtJ2 && std::abs(eta_j1) < kEtaCut &&
          std::abs(eta_j2) < kEtaCut && std::abs(delta_eta_jj) < kDeltaEtaCut;
 }
 
 bool passes_ak4_selection(double pass_json,
+                          double n_vtx,
                           double n_ak4,
                           double id_tight_j1,
                           double id_tight_j2,
@@ -653,13 +785,14 @@ bool passes_ak4_selection(double pass_json,
                           double eta_j1,
                           double eta_j2,
                           double delta_eta_jj) {
-  return pass_json > 0.5 && n_ak4 > kMinJetCount && id_tight_j1 > 0.5 &&
+  return pass_json > 0.5 && n_vtx >= kMinNVtx && n_vtx <= kMaxNVtx &&
+         n_ak4 > kMinJetCount && id_tight_j1 > 0.5 &&
          id_tight_j2 > 0.5 && pt_j1 > kMinPtJ1 && pt_j2 > kMinPtJ2 && std::abs(eta_j1) < kEtaCut &&
          std::abs(eta_j2) < kEtaCut && std::abs(delta_eta_jj) < kDeltaEtaCut;
 }
 
-bool passes_ht_selection(double pass_json) {
-  return pass_json > 0.5;
+bool passes_ht_selection(double pass_json, double n_vtx) {
+  return pass_json > 0.5 && n_vtx >= kMinNVtx && n_vtx <= kMaxNVtx;
 }
 
 TaskCounts process_file(const std::string& file_name,
@@ -683,6 +816,7 @@ TaskCounts process_file(const std::string& file_name,
 
   std::set<std::string> enabled_branches = {
       "PassJSON",
+      "nVtx",
       "nJet",
       "NAK4PF",
       "IdTight_j1",
@@ -711,6 +845,7 @@ TaskCounts process_file(const std::string& file_name,
 
   TTreeReader reader(tree);
   TTreeReaderValue<double> pass_json(reader, "PassJSON");
+  TTreeReaderValue<double> n_vtx(reader, "nVtx");
   TTreeReaderValue<double> n_jet(reader, "nJet");
   TTreeReaderValue<double> n_ak4(reader, "NAK4PF");
   TTreeReaderValue<double> id_tight_j1(reader, "IdTight_j1");
@@ -738,11 +873,8 @@ TaskCounts process_file(const std::string& file_name,
   }
 
   while (reader.Next()) {
-    if (pass_goodmuon_base_selection && (**pass_goodmuon_base_selection <= 0.5)) {
-      continue;
-    }
-
     const bool wide_selected = passes_widejet_selection(*pass_json,
+                                                        *n_vtx,
                                                         *n_jet,
                                                         *id_tight_j1,
                                                         *id_tight_j2,
@@ -752,6 +884,7 @@ TaskCounts process_file(const std::string& file_name,
                                                         *eta_wj2,
                                                         *delta_eta_wj);
     const bool ak4_selected = passes_ak4_selection(*pass_json,
+                                                   *n_vtx,
                                                    *n_ak4,
                                                    *id_tight_j1,
                                                    *id_tight_j2,
@@ -760,11 +893,13 @@ TaskCounts process_file(const std::string& file_name,
                                                    *eta_ak4_j1,
                                                    *eta_ak4_j2,
                                                    *delta_eta_ak4);
-    const bool ht_selected = passes_ht_selection(*pass_json);
+    const bool ht_selected = passes_ht_selection(*pass_json, *n_vtx);
 
     const bool trigger_singlemuon = (*pass_singlemuon > 0.5);
     const bool trigger_jetht = (*pass_jetht > 0.5);
     const bool trigger_l1 = (*pass_l1 > 0.5);
+    const bool pass_goodmuon_selection =
+        !pass_goodmuon_base_selection || (**pass_goodmuon_base_selection > 0.5);
 
     for (size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
       const auto& plot = plots[plot_index];
@@ -797,6 +932,9 @@ TaskCounts process_file(const std::string& file_name,
 
       auto& plot_counts = counts.plots[plot_index];
       plot_counts.all[bin_index] += 1.0;
+      if (!pass_goodmuon_selection) {
+        continue;
+      }
       if (trigger_singlemuon) {
         plot_counts.denominator[bin_index] += 1.0;
         if (trigger_jetht) {
@@ -960,10 +1098,70 @@ std::unique_ptr<TH1D> hist_scale_x(const TH1D& source, const std::string& name, 
   return hist;
 }
 
+std::unique_ptr<TGraphAsymmErrors> graph_scale_x(const TGraphAsymmErrors& source,
+                                                 const std::string& name,
+                                                 double scale) {
+  auto graph = std::make_unique<TGraphAsymmErrors>(source);
+  graph->SetName(name.c_str());
+  if (scale == 0.0) {
+    die("Encountered zero x-scale while preparing a plot graph.");
+  }
+  for (int i = 0; i < graph->GetN(); ++i) {
+    graph->GetX()[i] /= scale;
+    graph->GetEXlow()[i] /= scale;
+    graph->GetEXhigh()[i] /= scale;
+  }
+  return graph;
+}
+
+std::unique_ptr<TH1D> merge_saved_no_trig_histograms(const std::vector<std::string>& files,
+                                                     const PlotSpec& plot,
+                                                     const CaseSpec& study_case) {
+  std::unique_ptr<TH1D> merged;
+  const std::string hist_name = trigger_hist_name(plot, study_case, "noTrig");
+  const std::string merged_name = plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_all";
+  for (const auto& file_name : files) {
+    auto file = open_input_file(file_name);
+    merge_histogram(*file, hist_name, merged_name, merged);
+  }
+
+  if (!merged) {
+    die("Could not find noTrig histogram '" + hist_name + "' in the input ROOT files.");
+  }
+  if (plot.binning_kind == BinningKind::kUniform) {
+    return rebin_histogram_even_gev(*merged,
+                                    plot.uniform_bin_width,
+                                    merged_name + "_rebinned");
+  }
+  return merged;
+}
+
+std::unique_ptr<TH1D> merge_legacy_mjj_histograms(const std::vector<std::string>& files, const PlotSpec& plot) {
+  std::unique_ptr<TH1D> merged;
+  const std::string hist_name =
+      (plot.binning_kind == BinningKind::kUniform) ? "h_mjj_noTrig_1GeVbin" : "h_mjj_HLTpass_noTrig";
+  const std::string merged_name = plot.observable_folder + "_" + plot.binning_folder + "_legacy_mjj_all";
+  for (const auto& file_name : files) {
+    auto file = open_input_file(file_name);
+    merge_histogram(*file, hist_name, merged_name, merged);
+  }
+
+  if (!merged) {
+    die("Could not find legacy noTrig histogram '" + hist_name + "' in the input ROOT files.");
+  }
+  if (plot.binning_kind == BinningKind::kUniform) {
+    return rebin_histogram_even_gev(*merged,
+                                    plot.uniform_bin_width,
+                                    merged_name + "_rebinned");
+  }
+  return merged;
+}
+
 std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency,
                                            const TH1D& denominator_hist,
                                            const TH1D& numerator_hist,
-                                           const TH1D& all_hist) {
+                                           const TH1D& all_hist,
+                                           const TH1D* legacy_mjj_all_hist) {
   std::vector<SummaryRow> rows;
   rows.reserve(denominator_hist.GetNbinsX());
   const TAxis* xaxis = denominator_hist.GetXaxis();
@@ -973,6 +1171,9 @@ std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency,
     row.bin_high = xaxis->GetBinUpEdge(bin_idx);
     row.bin_range = format_bin_edge(row.bin_low) + "-" + format_bin_edge(row.bin_high);
     row.all_count = all_hist.GetBinContent(bin_idx);
+    if (legacy_mjj_all_hist) {
+      row.legacy_mjj_all_count = legacy_mjj_all_hist->GetBinContent(bin_idx);
+    }
     row.denominator_count = denominator_hist.GetBinContent(bin_idx);
     row.numerator_count = numerator_hist.GetBinContent(bin_idx);
     if (row.denominator_count > 0.0) {
@@ -980,6 +1181,18 @@ std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency,
       row.inefficiency = 1.0 - row.efficiency;
       row.eff_err_low = efficiency.GetEfficiencyErrorLow(bin_idx);
       row.eff_err_up = efficiency.GetEfficiencyErrorUp(bin_idx);
+    }
+    if (row.all_count > 0.0) {
+      row.inv_sqrt_n = 1.0 / std::sqrt(row.all_count);
+    }
+    if (!std::isnan(row.inv_sqrt_n) && !std::isnan(row.inefficiency)) {
+      row.diff_inv_sqrt_n_minus_inefficiency = row.inv_sqrt_n - row.inefficiency;
+    }
+    if (row.legacy_mjj_all_count > 0.0) {
+      row.legacy_mjj_inv_sqrt_n = 1.0 / std::sqrt(row.legacy_mjj_all_count);
+    }
+    if (!std::isnan(row.legacy_mjj_inv_sqrt_n) && !std::isnan(row.inefficiency)) {
+      row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency = row.legacy_mjj_inv_sqrt_n - row.inefficiency;
     }
     rows.push_back(row);
   }
@@ -992,7 +1205,7 @@ void write_summary_csv(const fs::path& path, const std::vector<SummaryRow>& rows
     die("Could not write summary CSV: " + path.string());
   }
 
-  out << "bin_range,bin_low,bin_high,efficiency,inefficiency,eff_err_low,eff_err_up,all_count,denominator_count,numerator_count\n";
+  out << "bin_range,bin_low,bin_high,efficiency,inefficiency,eff_err_low,eff_err_up,all_count,denominator_count,numerator_count,inv_sqrt_n,diff_inv_sqrt_n_minus_inefficiency,legacy_mjj_all_count,legacy_mjj_inv_sqrt_n,legacy_mjj_diff_inv_sqrt_n_minus_inefficiency\n";
   for (const auto& row : rows) {
     out << row.bin_range << ','
         << format_bin_edge(row.bin_low) << ','
@@ -1003,11 +1216,50 @@ void write_summary_csv(const fs::path& path, const std::vector<SummaryRow>& rows
         << format_table_value(row.eff_err_up) << ','
         << format_count_value(row.all_count) << ','
         << format_count_value(row.denominator_count) << ','
-        << format_count_value(row.numerator_count) << '\n';
+        << format_count_value(row.numerator_count) << ','
+        << format_table_value(row.inv_sqrt_n) << ','
+        << format_table_value(row.diff_inv_sqrt_n_minus_inefficiency) << ','
+        << format_count_value(row.legacy_mjj_all_count) << ','
+        << format_table_value(row.legacy_mjj_inv_sqrt_n) << ','
+        << format_table_value(row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency) << '\n';
   }
 }
 
-void draw_labels(double lumi_pb, const std::string& jet_label, const std::string& selection_label) {
+double find_turnon_x_gev(const TGraphAsymmErrors& graph, double threshold) {
+  const int n_points = graph.GetN();
+  if (n_points <= 0) {
+    return std::numeric_limits<double>::quiet_NaN();
+  }
+  const int required_points = std::min(kTurnOnConsecutivePoints, n_points);
+  for (int i = 0; i < n_points; ++i) {
+    bool sustained = true;
+    for (int j = 0; j < required_points; ++j) {
+      const int idx = i + j;
+      if (idx >= n_points || graph.GetY()[idx] < threshold) {
+        sustained = false;
+        break;
+      }
+    }
+    if (sustained) {
+      return graph.GetX()[i];
+    }
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+double find_first_positive_diff_edge_gev_after_turnon(const std::vector<SummaryRow>& rows, double turnon_x_gev) {
+  for (const auto& row : rows) {
+    if (!std::isnan(turnon_x_gev) &&
+        row.bin_low > turnon_x_gev &&
+        !std::isnan(row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency) &&
+        row.legacy_mjj_diff_inv_sqrt_n_minus_inefficiency > 0.0) {
+      return row.bin_low;
+    }
+  }
+  return std::numeric_limits<double>::quiet_NaN();
+}
+
+void draw_labels_right(const std::string& right_label) {
   TLatex latex;
   latex.SetNDC(true);
   latex.SetTextAlign(13);
@@ -1020,86 +1272,199 @@ void draw_labels(double lumi_pb, const std::string& jet_label, const std::string
   latex.SetTextFont(42);
   latex.SetTextAlign(31);
   latex.SetTextSize(0.040);
-  latex.DrawLatex(0.95, 0.94, format_lumi_label(lumi_pb).c_str());
-  latex.SetTextAlign(31);
-  latex.SetTextSize(0.038);
-  latex.DrawLatex(0.93, 0.18, jet_label.c_str());
-  if (!selection_label.empty()) {
-    latex.DrawLatex(0.93, 0.12, selection_label.c_str());
-  }
+  latex.DrawLatex(0.95, 0.94, right_label.c_str());
 }
 
-void style_efficiency(TEfficiency& efficiency, int color) {
-  efficiency.SetStatisticOption(TEfficiency::kFCP);
-  efficiency.SetMarkerStyle(20);
-  efficiency.SetMarkerSize(1.0);
-  efficiency.SetMarkerColor(color);
-  efficiency.SetLineColor(color);
-}
-
-void draw_efficiency_plot(const PlotSpec& plot,
-                          const CaseSpec& study_case,
-                          const Options& opts,
-                          const std::unique_ptr<TH1D>& denominator_hist,
-                          const std::unique_ptr<TH1D>& numerator_hist,
-                          const fs::path& pdf_path,
-                          const std::string& legend_label) {
-  auto denom_plot = hist_scale_x(*denominator_hist, denominator_hist->GetName() + std::string("_plot"), plot.x_scale);
-  auto numer_plot = hist_scale_x(*numerator_hist, numerator_hist->GetName() + std::string("_plot"), plot.x_scale);
-  if (!TEfficiency::CheckConsistency(*numer_plot, *denom_plot)) {
-    die("TEfficiency consistency check failed for plot '" + plot.tag + "' and case '" + study_case.tag + "'.");
-  }
-
-  TEfficiency efficiency(*numer_plot, *denom_plot);
-  style_efficiency(efficiency, kBlue + 1);
-
-  TCanvas canvas(("c_" + plot.tag + "_" + study_case.tag).c_str(), "", 800, 800);
+void draw_efficiency_plot(TGraphAsymmErrors& graph,
+                          const fs::path& output_pdf,
+                          TFile& root_out,
+                          double lumi_pb,
+                          const std::string& year,
+                          const PlotSpec& plot,
+                          const std::string& plot_tag,
+                          double x_min_gev,
+                          double x_max_gev,
+                          double first_positive_diff_gev,
+                          int marker_style = 20,
+                          int marker_color = kBlue + 1,
+                          bool draw_99_efficiency_line = false,
+                          bool draw_full_efficiency_line = false) {
+  TCanvas canvas(("c_trigger_efficiency_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag).c_str(),
+                 "",
+                 800,
+                 800);
   canvas.cd();
   gPad->SetTopMargin(0.08);
   gPad->SetRightMargin(0.05);
   gPad->SetLeftMargin(0.16);
   gPad->SetBottomMargin(0.13);
 
-  efficiency.Draw("AP");
-  gPad->Update();
+  auto graph_plot =
+      graph_scale_x(graph,
+                    "g_pfscouting_jetht_efficiency_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + plot_tag,
+                    plot.x_scale);
+  graph_plot->SetTitle("");
+  graph_plot->GetXaxis()->SetTitle(plot.axis_title.c_str());
+  graph_plot->GetYaxis()->SetTitle("Trigger efficiency");
+  graph_plot->GetXaxis()->SetLimits(x_min_gev / plot.x_scale, x_max_gev / plot.x_scale);
+  graph_plot->GetXaxis()->SetTitleSize(0.05);
+  graph_plot->GetYaxis()->SetTitleSize(0.05);
+  graph_plot->GetXaxis()->SetLabelSize(0.045);
+  graph_plot->GetYaxis()->SetLabelSize(0.045);
+  graph_plot->GetYaxis()->SetTitleOffset(1.35);
+  graph_plot->SetMarkerStyle(marker_style);
+  graph_plot->SetMarkerSize(1.0);
+  graph_plot->SetMarkerColor(marker_color);
+  graph_plot->SetLineColor(marker_color);
+  graph_plot->SetMinimum(kEfficiencyYMin);
+  graph_plot->SetMaximum(kEfficiencyYMax);
+  graph_plot->Draw("AP");
 
-  auto* graph = efficiency.GetPaintedGraph();
-  if (!graph) {
-    die("Failed to retrieve painted graph for plot '" + plot.tag + "'.");
+  std::vector<std::unique_ptr<TLine>> turnon_lines;
+  if (draw_99_efficiency_line || draw_full_efficiency_line) {
+    if (draw_99_efficiency_line) {
+      const double x99 = find_turnon_x_gev(*graph_plot, 0.99);
+      if (!std::isnan(x99)) {
+        auto line99 = std::make_unique<TLine>(x99, kEfficiencyYMin, x99, kEfficiencyYMax);
+        line99->SetLineColor(kCyan + 1);
+        line99->SetLineStyle(2);
+        line99->SetLineWidth(2);
+        line99->Draw();
+        turnon_lines.push_back(std::move(line99));
+      }
+    }
+    if (draw_full_efficiency_line && !std::isnan(first_positive_diff_gev)) {
+      const double x_full = first_positive_diff_gev / plot.x_scale;
+      auto line_full = std::make_unique<TLine>(x_full, kEfficiencyYMin, x_full, kEfficiencyYMax);
+      line_full->SetLineColor(kRed + 1);
+      line_full->SetLineStyle(2);
+      line_full->SetLineWidth(2);
+      line_full->Draw();
+      turnon_lines.push_back(std::move(line_full));
+    }
   }
-  auto* axis_hist = graph->GetHistogram();
-  if (!axis_hist) {
-    die("Failed to retrieve axis histogram for plot '" + plot.tag + "'.");
-  }
 
-  axis_hist->GetXaxis()->SetTitle(plot.axis_title.c_str());
-  axis_hist->GetYaxis()->SetTitle("Trigger efficiency");
-  axis_hist->GetXaxis()->SetLimits(plot.plot_x_min / plot.x_scale, plot.plot_x_max / plot.x_scale);
-  axis_hist->SetMinimum(kEfficiencyYMin);
-  axis_hist->SetMaximum(kEfficiencyYMax);
-  axis_hist->GetXaxis()->SetTitleSize(0.05);
-  axis_hist->GetYaxis()->SetTitleSize(0.05);
-  axis_hist->GetXaxis()->SetLabelSize(0.045);
-  axis_hist->GetYaxis()->SetLabelSize(0.045);
-  axis_hist->GetYaxis()->SetTitleOffset(1.35);
-
-  TLegend legend(0.58, 0.76, 0.90, 0.86);
+  TLegend legend(0.62, 0.80, 0.94, 0.90);
   legend.SetFillStyle(0);
   legend.SetBorderSize(0);
   legend.SetTextFont(42);
-  legend.SetTextSize(0.038);
-  legend.AddEntry(graph, legend_label.c_str(), "lep");
+  legend.SetTextSize(0.034);
+  legend.AddEntry(graph_plot.get(), ("Data [" + year + "]").c_str(), "pe");
   legend.Draw();
 
-  draw_labels(opts.lumi_pb, plot.jet_label, plot.selection_label);
+  TPaveText cut_box(0.62, 0.18, 0.95, 0.27, "NDC");
+  cut_box.SetBorderSize(0);
+  cut_box.SetFillStyle(0);
+  cut_box.SetTextAlign(23);
+  cut_box.SetTextSize(0.032);
+  cut_box.SetTextFont(42);
+  cut_box.AddText(plot.jet_label.c_str());
+  cut_box.AddText(plot.selection_label.c_str());
+  cut_box.Draw();
 
-  canvas.SaveAs(pdf_path.string().c_str());
+  draw_labels_right(format_lumi_label(lumi_pb));
+  gPad->RedrawAxis();
+
+  root_out.cd();
+  graph_plot->Write();
+  canvas.Write();
+  canvas.SaveAs(output_pdf.string().c_str());
 }
 
-std::string make_legend_label(const Options& opts, const CaseSpec& study_case) {
-  std::ostringstream os;
-  os << "Data [" << opts.dataset_label << "] " << study_case.title;
-  return os.str();
+void draw_count_overlay_plot(const TH1D& denom_hist,
+                             const TH1D& numer_hist,
+                             const fs::path& output_pdf,
+                             TFile& root_out,
+                             const std::string& year,
+                             const PlotSpec& plot,
+                             const std::string& case_label) {
+  TCanvas canvas(("c_trigger_event_counts_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label).c_str(),
+                 "",
+                 800,
+                 800);
+  canvas.cd();
+  gPad->SetTopMargin(0.08);
+  gPad->SetRightMargin(0.05);
+  gPad->SetLeftMargin(0.16);
+  gPad->SetBottomMargin(0.13);
+  gPad->SetLogy();
+
+  auto denom_plot =
+      hist_scale_x(denom_hist, "h_denom_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label,
+                   plot.x_scale);
+  auto numer_plot =
+      hist_scale_x(numer_hist, "h_numer_counts_plot_" + plot.observable_folder + "_" + plot.binning_folder + "_" + case_label,
+                   plot.x_scale);
+
+  const double y_max = std::max(denom_plot->GetMaximum(), numer_plot->GetMaximum());
+  TH1F* frame = gPad->DrawFrame(plot.counts_min_gev / plot.x_scale,
+                                kCountsYMin,
+                                plot.counts_max_gev / plot.x_scale,
+                                std::max(10.0, y_max * 5.0));
+  frame->SetTitle("");
+  frame->GetXaxis()->SetTitle(plot.axis_title.c_str());
+  frame->GetYaxis()->SetTitle("Events / bin");
+  frame->GetXaxis()->SetTitleSize(0.05);
+  frame->GetYaxis()->SetTitleSize(0.05);
+  frame->GetXaxis()->SetLabelSize(0.045);
+  frame->GetYaxis()->SetLabelSize(0.045);
+  frame->GetYaxis()->SetTitleOffset(1.35);
+
+  denom_plot->SetLineColor(kBlack);
+  denom_plot->SetLineWidth(2);
+  numer_plot->SetLineColor(kRed + 1);
+  numer_plot->SetLineWidth(2);
+  denom_plot->Draw("HIST SAME");
+  numer_plot->Draw("HIST SAME");
+
+  TLegend legend(0.58, 0.76, 0.94, 0.90);
+  legend.SetBorderSize(0);
+  legend.SetFillStyle(0);
+  legend.SetTextSize(0.032);
+  legend.AddEntry(denom_plot.get(), "Denominator", "l");
+  legend.AddEntry(numer_plot.get(), "Numerator", "l");
+  legend.Draw();
+
+  TPaveText cut_box(0.62, 0.18, 0.95, 0.27, "NDC");
+  cut_box.SetBorderSize(0);
+  cut_box.SetFillStyle(0);
+  cut_box.SetTextAlign(23);
+  cut_box.SetTextSize(0.032);
+  cut_box.SetTextFont(42);
+  cut_box.AddText(plot.jet_label.c_str());
+  cut_box.AddText(plot.selection_label.c_str());
+  cut_box.Draw();
+
+  draw_labels_right(year + " (" + kDefaultSqrtS + ")");
+  gPad->RedrawAxis();
+
+  root_out.cd();
+  denom_plot->Write();
+  numer_plot->Write();
+  canvas.Write();
+  canvas.SaveAs(output_pdf.string().c_str());
+}
+
+OutputPaths make_output_paths(const fs::path& base_output_dir,
+                              const std::string& output_prefix,
+                              const PlotSpec& plot,
+                              const CaseSpec& study_case) {
+  OutputPaths paths;
+  paths.directory = base_output_dir / plot.observable_folder / plot.binning_folder / study_case.folder_tag;
+  fs::create_directories(paths.directory);
+  paths.stem = output_prefix + "_" + plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag;
+  paths.root_file = paths.directory / (paths.stem + ".root");
+  paths.summary_csv = paths.directory / (paths.stem + "_summary.csv");
+  paths.eff_pdf = paths.directory / (paths.stem + "_efficiency.pdf");
+  paths.eff_zoom_pdf = paths.directory / (paths.stem + "_efficiency_zoom.pdf");
+  paths.counts_pdf = paths.directory / (paths.stem + "_counts.pdf");
+  return paths;
+}
+
+void print_case_output_info(const OutputPaths& paths, const PlotSpec& plot, const CaseSpec& study_case) {
+  (void)paths;
+  std::cout << info_tag() << ' ' << plot.observable_folder << " | " << plot.binning_folder << " | "
+            << study_case.folder_tag << std::endl;
 }
 
 void ensure_directory(const fs::path& dir) {
@@ -1114,6 +1479,8 @@ void ensure_directory(const fs::path& dir) {
 
 int main(int argc, char** argv) {
   try {
+    TH1::AddDirectory(kFALSE);
+    gErrorIgnoreLevel = kWarning;
     const Options opts = parse_args(argc, argv);
     configure_root_style();
 
@@ -1126,7 +1493,7 @@ int main(int argc, char** argv) {
         find_branch_name_in_file(files.front(), opts, kSingleMuonBranchCandidates, "SingleMuon");
     const std::string l1_branch = find_branch_name_in_file(files.front(), opts, kL1BranchCandidates, "L1");
 
-    std::cout << info_tag() << " Input files: " << files.size() << std::endl;
+    std::cout << info_tag() << " Reading " << files.size() << " ROOT file(s)" << std::endl;
     std::cout << info_tag() << " JetHT branch: " << jetht_branch << std::endl;
     std::cout << info_tag() << " SingleMuon branch: " << singlemuon_branch << std::endl;
     std::cout << info_tag() << " L1 branch: " << l1_branch << std::endl;
@@ -1134,72 +1501,165 @@ int main(int argc, char** argv) {
     const TaskCounts all_counts =
         process_all_files(files, opts, plots, jetht_branch, singlemuon_branch, l1_branch);
 
-    const fs::path root_path = fs::path(opts.output_dir) / (opts.output_prefix + ".root");
-    TFile root_out(root_path.string().c_str(), "RECREATE");
-    if (root_out.IsZombie()) {
-      die("Could not create output ROOT file: " + root_path.string());
-    }
-
     for (size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
       const auto& plot = plots[plot_index];
       const auto& counts = all_counts.plots[plot_index];
-      const fs::path plot_dir = fs::path(opts.output_dir) / plot.tag;
-      ensure_directory(plot_dir);
+      const std::string base_tag = plot_tag(plot);
 
-      auto h_all = make_hist_from_counts(plot, "h_all_" + plot.tag, counts.all);
-      auto h_den = make_hist_from_counts(plot, "h_denominator_" + plot.tag, counts.denominator);
-      auto h_num_goodmuon = make_hist_from_counts(plot, "h_numerator_" + plot.tag + "_goodMuon",
+      auto h_den = make_hist_from_counts(plot, "h_denominator_" + base_tag, counts.denominator);
+      auto h_num_goodmuon = make_hist_from_counts(plot, "h_numerator_" + base_tag + "_goodMuon",
                                                   counts.numerator_goodmuon);
-      auto h_num_goodmuon_l1 = make_hist_from_counts(plot, "h_numerator_" + plot.tag + "_goodMuonL1",
+      auto h_num_goodmuon_l1 = make_hist_from_counts(plot, "h_numerator_" + base_tag + "_goodMuonL1",
                                                      counts.numerator_goodmuon_l1);
+      auto h_legacy_mjj_all = merge_legacy_mjj_histograms(files, plot);
 
       if (!TEfficiency::CheckConsistency(*h_num_goodmuon, *h_den)) {
-        die("GoodMuon numerator/denominator are not TEfficiency-consistent for plot '" + plot.tag + "'.");
+        die("GoodMuon numerator/denominator are not TEfficiency-consistent for plot '" + base_tag + "'.");
       }
       if (!TEfficiency::CheckConsistency(*h_num_goodmuon_l1, *h_den)) {
-        die("GoodMuonL1 numerator/denominator are not TEfficiency-consistent for plot '" + plot.tag + "'.");
+        die("GoodMuonL1 numerator/denominator are not TEfficiency-consistent for plot '" + base_tag + "'.");
       }
 
       TEfficiency eff_goodmuon(*h_num_goodmuon, *h_den);
       TEfficiency eff_goodmuon_l1(*h_num_goodmuon_l1, *h_den);
-      eff_goodmuon.SetName(("eff_" + plot.tag + "_goodMuon").c_str());
-      eff_goodmuon_l1.SetName(("eff_" + plot.tag + "_goodMuonL1").c_str());
+      eff_goodmuon.SetName(("eff_" + base_tag + "_goodMuon").c_str());
+      eff_goodmuon_l1.SetName(("eff_" + base_tag + "_goodMuonL1").c_str());
       eff_goodmuon.SetStatisticOption(TEfficiency::kFCP);
       eff_goodmuon_l1.SetStatisticOption(TEfficiency::kFCP);
 
-      root_out.cd();
-      h_all->Write();
-      h_den->Write();
-      h_num_goodmuon->Write();
-      h_num_goodmuon_l1->Write();
-      eff_goodmuon.Write();
-      eff_goodmuon_l1.Write();
+      {
+        const auto& study_case = kCases[0];
+        const OutputPaths paths = make_output_paths(fs::absolute(opts.output_dir), opts.output_prefix, plot, study_case);
+        print_case_output_info(paths, plot, study_case);
+        auto h_all = merge_saved_no_trig_histograms(files, plot, study_case);
+        const auto goodmuon_rows =
+            build_summary_rows(eff_goodmuon, *h_den, *h_num_goodmuon, *h_all, h_legacy_mjj_all.get());
+        TFile root_out(paths.root_file.string().c_str(), "RECREATE");
+        if (root_out.IsZombie()) {
+          die("Could not create output ROOT file: " + paths.root_file.string());
+        }
+        root_out.cd();
+        h_all->Write();
+        h_den->Write();
+        h_num_goodmuon->Write();
+        if (h_legacy_mjj_all) {
+          h_legacy_mjj_all->Write();
+        }
+        eff_goodmuon.Write();
+        auto graph = std::unique_ptr<TGraphAsymmErrors>(eff_goodmuon.CreateGraph());
+        graph->SetName(("g_efficiency_" + base_tag + "_" + study_case.folder_tag).c_str());
+        graph->Write();
+        write_summary_csv(paths.summary_csv, goodmuon_rows);
+        const double x99_gev = find_turnon_x_gev(*graph, 0.99);
+        const double first_positive_diff_gev = find_first_positive_diff_edge_gev_after_turnon(goodmuon_rows, x99_gev);
+        draw_efficiency_plot(*graph,
+                             paths.eff_pdf,
+                             root_out,
+                             opts.lumi_pb,
+                             opts.dataset_label,
+                             plot,
+                             study_case.folder_tag + "_full",
+                             plot.full_min_gev,
+                             plot.full_max_gev,
+                             first_positive_diff_gev,
+                             20,
+                             kBlue + 1,
+                             plot.draw_99_efficiency_line,
+                             plot.draw_full_efficiency_line);
+        if (plot.write_zoom_plot) {
+          draw_efficiency_plot(*graph,
+                               paths.eff_zoom_pdf,
+                               root_out,
+                               opts.lumi_pb,
+                               opts.dataset_label,
+                               plot,
+                               study_case.folder_tag + "_zoom",
+                               plot.zoom_min_gev,
+                               plot.zoom_max_gev,
+                               first_positive_diff_gev,
+                               20,
+                               kBlue + 1,
+                               plot.draw_99_efficiency_line,
+                               plot.draw_full_efficiency_line);
+        }
+        if (plot.write_counts_plot) {
+          draw_count_overlay_plot(*h_den,
+                                  *h_num_goodmuon,
+                                  paths.counts_pdf,
+                                  root_out,
+                                  opts.dataset_label,
+                                  plot,
+                                  study_case.folder_tag);
+        }
+      }
 
-      const auto goodmuon_rows = build_summary_rows(eff_goodmuon, *h_den, *h_num_goodmuon, *h_all);
-      const auto goodmuon_l1_rows = build_summary_rows(eff_goodmuon_l1, *h_den, *h_num_goodmuon_l1, *h_all);
-
-      write_summary_csv(plot_dir / (opts.output_prefix + "_" + plot.tag + "_goodMuon_summary.csv"), goodmuon_rows);
-      write_summary_csv(plot_dir / (opts.output_prefix + "_" + plot.tag + "_goodMuonL1_summary.csv"),
-                        goodmuon_l1_rows);
-
-      draw_efficiency_plot(plot,
-                           kCases[0],
-                           opts,
-                           h_den,
-                           h_num_goodmuon,
-                           plot_dir / (opts.output_prefix + "_" + plot.tag + "_goodMuon_efficiency.pdf"),
-                           make_legend_label(opts, kCases[0]));
-      draw_efficiency_plot(plot,
-                           kCases[1],
-                           opts,
-                           h_den,
-                           h_num_goodmuon_l1,
-                           plot_dir / (opts.output_prefix + "_" + plot.tag + "_goodMuonL1_efficiency.pdf"),
-                           make_legend_label(opts, kCases[1]));
+      {
+        const auto& study_case = kCases[1];
+        const OutputPaths paths = make_output_paths(fs::absolute(opts.output_dir), opts.output_prefix, plot, study_case);
+        print_case_output_info(paths, plot, study_case);
+        auto h_all = merge_saved_no_trig_histograms(files, plot, study_case);
+        const auto goodmuon_l1_rows =
+            build_summary_rows(eff_goodmuon_l1, *h_den, *h_num_goodmuon_l1, *h_all, h_legacy_mjj_all.get());
+        TFile root_out(paths.root_file.string().c_str(), "RECREATE");
+        if (root_out.IsZombie()) {
+          die("Could not create output ROOT file: " + paths.root_file.string());
+        }
+        root_out.cd();
+        h_all->Write();
+        h_den->Write();
+        h_num_goodmuon_l1->Write();
+        if (h_legacy_mjj_all) {
+          h_legacy_mjj_all->Write();
+        }
+        eff_goodmuon_l1.Write();
+        auto graph = std::unique_ptr<TGraphAsymmErrors>(eff_goodmuon_l1.CreateGraph());
+        graph->SetName(("g_efficiency_" + base_tag + "_" + study_case.folder_tag).c_str());
+        graph->Write();
+        write_summary_csv(paths.summary_csv, goodmuon_l1_rows);
+        const double x99_gev = find_turnon_x_gev(*graph, 0.99);
+        const double first_positive_diff_gev = find_first_positive_diff_edge_gev_after_turnon(goodmuon_l1_rows, x99_gev);
+        draw_efficiency_plot(*graph,
+                             paths.eff_pdf,
+                             root_out,
+                             opts.lumi_pb,
+                             opts.dataset_label,
+                             plot,
+                             study_case.folder_tag + "_full",
+                             plot.full_min_gev,
+                             plot.full_max_gev,
+                             first_positive_diff_gev,
+                             20,
+                             kBlue + 1,
+                             plot.draw_99_efficiency_line,
+                             plot.draw_full_efficiency_line);
+        if (plot.write_zoom_plot) {
+          draw_efficiency_plot(*graph,
+                               paths.eff_zoom_pdf,
+                               root_out,
+                               opts.lumi_pb,
+                               opts.dataset_label,
+                               plot,
+                               study_case.folder_tag + "_zoom",
+                               plot.zoom_min_gev,
+                               plot.zoom_max_gev,
+                               first_positive_diff_gev,
+                               20,
+                               kBlue + 1,
+                               plot.draw_99_efficiency_line,
+                               plot.draw_full_efficiency_line);
+        }
+        if (plot.write_counts_plot) {
+          draw_count_overlay_plot(*h_den,
+                                  *h_num_goodmuon_l1,
+                                  paths.counts_pdf,
+                                  root_out,
+                                  opts.dataset_label,
+                                  plot,
+                                  study_case.folder_tag);
+        }
+      }
     }
-
-    root_out.Close();
-    std::cout << info_tag() << " Wrote outputs to " << fs::absolute(opts.output_dir) << std::endl;
+    std::cout << info_tag() << " Done." << std::endl;
     return 0;
   } catch (const std::exception& ex) {
     std::cerr << warn_tag() << ' ' << ex.what() << std::endl;
