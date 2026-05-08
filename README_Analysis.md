@@ -55,6 +55,63 @@ g++ -std=c++20 plot_trigger_efficiency_hist.cpp $(root-config --cflags --libs) -
 ```
 
 
+## If you fail to perform hadd for more than 10,000 files 
+
+```bash
+# 1) Create an input list with all nTuple root paths
+find /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024G_ScoutNano_v1 -maxdepth 1 -type f -name 'ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_n*_reduced_skim.root' | sort > Run2024G_inputs.txt
+
+mkdir -p Run2024G_chunks Run2024G_merged_chunks
+
+# 2) Split the list into pieces (1000 root per file)
+split -l 1000 -d --additional-suffix=.txt Run2024G_inputs.txt Run2024G_chunks/Run2024G_chunk_
+
+# 3) Perform hadd for each list, separately.
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_00.root @Run2024G_chunks/Run2024G_chunk_00.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_01.root @Run2024G_chunks/Run2024G_chunk_01.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_02.root @Run2024G_chunks/Run2024G_chunk_02.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_03.root @Run2024G_chunks/Run2024G_chunk_03.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_04.root @Run2024G_chunks/Run2024G_chunk_04.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_05.root @Run2024G_chunks/Run2024G_chunk_05.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_06.root @Run2024G_chunks/Run2024G_chunk_06.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_07.root @Run2024G_chunks/Run2024G_chunk_07.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_08.root @Run2024G_chunks/Run2024G_chunk_08.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_09.root @Run2024G_chunks/Run2024G_chunk_09.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_10.root @Run2024G_chunks/Run202G_chunk_10.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_11.root @Run2024G_chunks/Run2024G_chunk_11.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_12.root @Run2024G_chunks/Run2024G_chunk_12.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_13.root @Run2024G_chunks/Run2024G_chunk_13.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_14.root @Run2024G_chunks/Run2024G_chunk_14.txt
+hadd -T -f Run2024G_merged_chunks/Run2024G_chunk_15.root @Run2024G_chunks/Run2024G_chunk_15.txt
+
+# 4) Perform a final merge for all those merged root pieces
+hadd -T -f ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_ALLHisto.root Run2024G_merged_chunks/Run2024G_chunk_*.root
+```
+
+## Trigger Efficiency (From Trees - GoodMuon/GoodMuon+L1)
+
+> [IMPORTANT]
+> Create an nTuple list for the reduced nTuples using the recipe given above in the "Create Reduced nTuple Lists" section before starting to debug.
+
+```bash
+# Build only once
+c++ -std=c++17 plot_trigger_efficiency_GoodMuon.cpp -o plot_trigger_efficiency_GoodMuon $(root-config --cflags --libs)
+
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced_Muon.txt --dataset-label 2024I --lumi-pb 11438.070507 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024I
+```
+
+
+## Debug Trigger Inefficiency
+
+> [IMPORTANT]
+> Create an nTuple list for the reduced nTuples using the recipe given above in the "Create Reduced nTuple Lists" section before starting to debug.
+
+```bash
+# Build only once
+c++ -std=c++17 debug_trigger_inefficiencies.cpp -o debug_trigger_inefficiencies $(root-config --cflags --libs)
+
+./debug_trigger_inefficiencies --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced_Muon.txt --observable AK4PFJet --mass-min-gev 420 --threads 8 --cache-mb 256 --output-dir debug_trigger_fromMuonTree_AK4_m420_2024I
+```
 
 
 ## SKIP THIS ONE: Trigger Efficiency (From Trees - Legacy ONLY)
