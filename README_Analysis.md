@@ -90,7 +90,7 @@ hadd -T -f ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_ALLHisto.root Run2024G_m
 
 ## Trigger Efficiency (From Trees - GoodMuon/GoodMuon+L1)
 
-> [IMPORTANT]
+> [!IMPORTANT]
 > Create an nTuple list for the reduced nTuples using the recipe given above in the "Create Reduced nTuple Lists" section before starting to debug.
 
 ```bash
@@ -103,7 +103,7 @@ c++ -std=c++17 plot_trigger_efficiency_GoodMuon.cpp -o plot_trigger_efficiency_G
 
 ## Debug Trigger Inefficiency
 
-> [IMPORTANT]
+> [!IMPORTANT]
 > Create an nTuple list for the reduced nTuples using the recipe given above in the "Create Reduced nTuple Lists" section before starting to debug.
 
 ```bash
