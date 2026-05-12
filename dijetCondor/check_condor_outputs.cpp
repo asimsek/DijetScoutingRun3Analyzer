@@ -378,6 +378,40 @@ bool read_tparameter(TFile& file, const char* object_path, T& value) {
   return true;
 }
 
+template <>
+bool read_tparameter<Long64_t>(TFile& file, const char* object_path, Long64_t& value) {
+  if (TParameter<Long64_t>* param = nullptr; (file.GetObject(object_path, param), param != nullptr)) {
+    value = param->GetVal();
+    return true;
+  }
+  if (TParameter<int>* param = nullptr; (file.GetObject(object_path, param), param != nullptr)) {
+    value = static_cast<Long64_t>(param->GetVal());
+    return true;
+  }
+  if (TParameter<double>* param = nullptr; (file.GetObject(object_path, param), param != nullptr)) {
+    value = static_cast<Long64_t>(param->GetVal());
+    return true;
+  }
+  return false;
+}
+
+template <>
+bool read_tparameter<int>(TFile& file, const char* object_path, int& value) {
+  if (TParameter<int>* param = nullptr; (file.GetObject(object_path, param), param != nullptr)) {
+    value = param->GetVal();
+    return true;
+  }
+  if (TParameter<Long64_t>* param = nullptr; (file.GetObject(object_path, param), param != nullptr)) {
+    value = static_cast<int>(param->GetVal());
+    return true;
+  }
+  if (TParameter<double>* param = nullptr; (file.GetObject(object_path, param), param != nullptr)) {
+    value = static_cast<int>(param->GetVal());
+    return true;
+  }
+  return false;
+}
+
 void print_progress_line(const std::string& label, std::size_t done, std::size_t total) {
   static constexpr std::size_t kBarWidth = 32;
   const double frac = total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total);
@@ -1731,10 +1765,12 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
           row.note = "missing batched output result";
         } else if (row.input_events != out_it->second.expected_events) {
           row.status = "EVENT_MISMATCH";
-          row.note = "input_events != metaData/expectedEvents";
+          row.note = "input_events != metaData/expectedEvents (" + format_with_dots(row.input_events) + " != " +
+                     format_with_dots(out_it->second.expected_events) + ")";
         } else if (row.output_events != out_it->second.actual_events) {
           row.status = "EVENT_MISMATCH";
-          row.note = "output_tree_entries != metaData/actualEvents";
+          row.note = "output_tree_entries != metaData/actualEvents (" + format_with_dots(row.output_events) + " != " +
+                     format_with_dots(out_it->second.actual_events) + ")";
         } else {
           ++summary.ok_jobs;
         }
@@ -1768,7 +1804,11 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
         std::cout << kInfo << " " << line << "\n";
       }
     } else {
-      std::cout << kWarnRed << " " << line << "\n";
+      std::cout << kWarnRed << " " << line;
+      if (!row.note.empty()) {
+        std::cout << " | " << row.note;
+      }
+      std::cout << "\n";
     }
     rows.push_back(std::move(row));
   }
