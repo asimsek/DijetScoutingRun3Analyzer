@@ -32,6 +32,7 @@
 #include <iomanip>
 #include <iostream>
 #include <memory>
+#include <map>
 #include <mutex>
 #include <regex>
 #include <set>
@@ -73,6 +74,19 @@ constexpr double kHtHistogramMaxGeV = 1500.0;
 constexpr double kEvenHistogramMaxGeV = 14000.0;
 constexpr double kCountsYMin = 0.5;
 constexpr int kTurnOnConsecutivePoints = 3;
+
+using LumiRange = std::pair<int, int>;
+using ExcludedRunLumiMap = std::map<int, std::vector<LumiRange>>;
+using RunLumiKey = std::pair<int, int>;
+
+// Define run/lumisection exclusions here. Single lumisections can be written as
+// {ls, ls} (e.g. {106, 106}); ranges can be written as {ls_begin, ls_end}.
+const ExcludedRunLumiMap kExcludedRunLumis = {
+    // Example: {382811, {{83, 83}, {91, 94}}},
+    {386795, {{106, 122}}},
+    {386801, {{98, 110}}},
+    {385387, {{1, 2}}},
+};
 
 const std::array<std::string, 2> kJetHtBranchCandidates = {
     "passHLT_PFScoutingHT",
@@ -163,6 +177,10 @@ struct PlotCounts {
 
 struct TaskCounts {
   std::vector<PlotCounts> plots;
+  std::vector<std::vector<double>> excluded_no_trig_by_plot;
+  std::vector<std::vector<double>> excluded_legacy_no_trig_by_plot;
+  std::map<RunLumiKey, std::vector<double>> excluded_no_trig_totals_by_run_lumi;
+  std::map<RunLumiKey, long long> excluded_tree_entries_by_run_lumi;
 };
 
 struct SummaryRow {
@@ -193,10 +211,21 @@ struct OutputPaths {
   std::string stem;
 };
 
-const std::array<CaseSpec, 2> kCases = {{
+constexpr std::size_t kCaseCount = 2;
+
+const std::array<CaseSpec, kCaseCount> kCases = {{
     {"GoodMuon", "goodMuon"},
     {"MuonAndL1", "goodMuonL1"},
 }};
+
+struct MergedPlotHistograms {
+  std::array<std::unique_ptr<TH1D>, kCaseCount> no_trig_by_case;
+  std::unique_ptr<TH1D> legacy_mjj_all;
+};
+
+struct MergedSavedHistograms {
+  std::vector<MergedPlotHistograms> plots;
+};
 
 [[noreturn]] void die(const std::string& message) {
   throw std::runtime_error(message);
@@ -208,6 +237,47 @@ bool stdout_is_tty() {
 #else
   return ::isatty(fileno(stdout));
 #endif
+}
+
+bool has_run_lumi_exclusions() {
+  return !kExcludedRunLumis.empty();
+}
+
+bool lumi_in_ranges(const std::vector<LumiRange>& ranges, int lumi) {
+  for (const auto& range : ranges) {
+    if (lumi >= range.first && lumi <= range.second) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_excluded_run_lumi(int run, int lumi) {
+  const auto it = kExcludedRunLumis.find(run);
+  return it != kExcludedRunLumis.end() && lumi_in_ranges(it->second, lumi);
+}
+
+std::string format_run_lumi_exclusions() {
+  std::ostringstream os;
+  bool first_run = true;
+  for (const auto& [run, ranges] : kExcludedRunLumis) {
+    if (!first_run) {
+      os << "; ";
+    }
+    first_run = false;
+    os << run << ":";
+    for (std::size_t i = 0; i < ranges.size(); ++i) {
+      if (i != 0) {
+        os << ",";
+      }
+      const auto& range = ranges[i];
+      os << range.first;
+      if (range.second != range.first) {
+        os << "-" << range.second;
+      }
+    }
+  }
+  return os.str();
 }
 
 std::string colored_tag(const std::string& tag, const char* color) {
@@ -530,6 +600,71 @@ std::unique_ptr<TH1D> rebin_histogram_even_gev(const TH1D& source,
   return std::unique_ptr<TH1D>(rebinned);
 }
 
+std::unique_ptr<TH1D> crop_uniform_histogram_to_plot_range(const TH1D& source,
+                                                           const PlotSpec& plot,
+                                                           const std::string& name) {
+  if (plot.binning_kind != BinningKind::kUniform) {
+    return clone_hist_as_double(source, name);
+  }
+
+  const TAxis* xaxis = source.GetXaxis();
+  if (source.GetNbinsX() <= 0) {
+    return clone_hist_as_double(source, name);
+  }
+
+  const double source_min = xaxis->GetBinLowEdge(1);
+  const double source_max = xaxis->GetBinUpEdge(source.GetNbinsX());
+  const int target_nbins =
+      static_cast<int>((plot.uniform_max - plot.uniform_min) / static_cast<double>(plot.uniform_bin_width));
+  const double expected_bin_width = static_cast<double>(plot.uniform_bin_width);
+  const double source_bin_width = xaxis->GetBinWidth(1);
+
+  const bool already_matching =
+      std::fabs(source_min - plot.uniform_min) < 1e-9 &&
+      std::fabs(source_max - plot.uniform_max) < 1e-9 &&
+      source.GetNbinsX() == target_nbins;
+  if (already_matching) {
+    return clone_hist_as_double(source, name);
+  }
+
+  if (std::fabs(source_bin_width - expected_bin_width) > 1e-9) {
+    die("Cannot crop histogram with incompatible bin width for " + name);
+  }
+  if (plot.uniform_min < source_min - 1e-9 || plot.uniform_max > source_max + 1e-9) {
+    die("Requested plot range is outside histogram bounds for " + name);
+  }
+
+  const double raw_offset = (plot.uniform_min - source_min) / source_bin_width;
+  const int first_source_bin = static_cast<int>(std::llround(raw_offset)) + 1;
+  if (std::fabs(raw_offset - static_cast<double>(first_source_bin - 1)) > 1e-9) {
+    die("Requested plot range is misaligned with histogram binning for " + name);
+  }
+
+  const int last_source_bin = first_source_bin + target_nbins - 1;
+  if (first_source_bin < 1 || last_source_bin > source.GetNbinsX()) {
+    die("Requested plot range selects bins outside histogram bounds for " + name);
+  }
+
+  auto cropped = std::make_unique<TH1D>(name.c_str(),
+                                        "",
+                                        target_nbins,
+                                        plot.uniform_min,
+                                        plot.uniform_max);
+  cropped->SetDirectory(nullptr);
+  cropped->Sumw2();
+
+  double entries = 0.0;
+  for (int target_bin = 1; target_bin <= target_nbins; ++target_bin) {
+    const int source_bin = first_source_bin + target_bin - 1;
+    const double content = source.GetBinContent(source_bin);
+    cropped->SetBinContent(target_bin, content);
+    cropped->SetBinError(target_bin, source.GetBinError(source_bin));
+    entries += content;
+  }
+  cropped->SetEntries(entries);
+  return cropped;
+}
+
 bool merge_histogram(TFile& file,
                      const std::string& primary_name,
                      const std::string& merged_name,
@@ -733,6 +868,9 @@ TaskCounts make_empty_task_counts(const std::vector<PlotSpec>& plots) {
   counts.plots.reserve(plots.size());
   for (const auto& plot : plots) {
     counts.plots.push_back(make_empty_plot_counts(plot));
+    counts.excluded_no_trig_by_plot.push_back(std::vector<double>(static_cast<std::size_t>(plot_nbins(plot)), 0.0));
+    counts.excluded_legacy_no_trig_by_plot.push_back(
+        std::vector<double>(static_cast<std::size_t>(plot_nbins(plot)), 0.0));
   }
   return counts;
 }
@@ -813,6 +951,7 @@ TaskCounts process_file(const std::string& file_name,
       kUseGoodMuonBaseSelectionFlagIfAvailable &&
       std::strlen(kGoodMuonBaseSelectionFlagBranch) > 0 &&
       branch_names.count(kGoodMuonBaseSelectionFlagBranch);
+  const bool use_run_lumi_exclusions = has_run_lumi_exclusions();
 
   std::set<std::string> enabled_branches = {
       "PassJSON",
@@ -838,6 +977,10 @@ TaskCounts process_file(const std::string& file_name,
       singlemuon_branch,
       l1_branch,
   };
+  if (use_run_lumi_exclusions) {
+    enabled_branches.insert("run");
+    enabled_branches.insert("lumi");
+  }
   if (has_goodmuon_base_selection_flag) {
     enabled_branches.insert(kGoodMuonBaseSelectionFlagBranch);
   }
@@ -866,6 +1009,12 @@ TaskCounts process_file(const std::string& file_name,
   TTreeReaderValue<double> pass_jetht(reader, jetht_branch.c_str());
   TTreeReaderValue<double> pass_singlemuon(reader, singlemuon_branch.c_str());
   TTreeReaderValue<double> pass_l1(reader, l1_branch.c_str());
+  std::unique_ptr<TTreeReaderValue<double>> run_number;
+  std::unique_ptr<TTreeReaderValue<double>> lumi_section;
+  if (use_run_lumi_exclusions) {
+    run_number = std::make_unique<TTreeReaderValue<double>>(reader, "run");
+    lumi_section = std::make_unique<TTreeReaderValue<double>>(reader, "lumi");
+  }
   std::unique_ptr<TTreeReaderValue<double>> pass_goodmuon_base_selection;
   if (has_goodmuon_base_selection_flag) {
     pass_goodmuon_base_selection =
@@ -900,6 +1049,61 @@ TaskCounts process_file(const std::string& file_name,
     const bool trigger_l1 = (*pass_l1 > 0.5);
     const bool pass_goodmuon_selection =
         !pass_goodmuon_base_selection || (**pass_goodmuon_base_selection > 0.5);
+    const int run_i = use_run_lumi_exclusions ? static_cast<int>(std::llround(**run_number)) : 0;
+    const int lumi_i = use_run_lumi_exclusions ? static_cast<int>(std::llround(**lumi_section)) : 0;
+    const bool exclude_event = use_run_lumi_exclusions && is_excluded_run_lumi(run_i, lumi_i);
+
+    if (exclude_event) {
+      const RunLumiKey key(run_i, lumi_i);
+      ++counts.excluded_tree_entries_by_run_lumi[key];
+      auto [totals_it, inserted] = counts.excluded_no_trig_totals_by_run_lumi.emplace(
+          key,
+          std::vector<double>(plots.size(), 0.0));
+      if (!inserted && totals_it->second.size() != plots.size()) {
+        totals_it->second.assign(plots.size(), 0.0);
+      }
+
+      for (size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
+        const auto& plot = plots[plot_index];
+        bool selected = false;
+        double value = 0.0;
+
+        switch (plot.selection_kind) {
+          case SelectionKind::kWideJet:
+            selected = wide_selected;
+            value = *mjj;
+            break;
+          case SelectionKind::kAk4:
+            selected = ak4_selected;
+            value = *dijet_mass_ak4;
+            break;
+          case SelectionKind::kHtAk4:
+            selected = ht_selected;
+            value = *ht_ak4;
+            break;
+        }
+
+        if (pass_goodmuon_selection && wide_selected) {
+          const int legacy_bin_index = find_bin(plot, *mjj);
+          if (legacy_bin_index >= 0) {
+            counts.excluded_legacy_no_trig_by_plot[plot_index][static_cast<std::size_t>(legacy_bin_index)] += 1.0;
+          }
+        }
+
+        if (!selected || !pass_goodmuon_selection) {
+          continue;
+        }
+
+        const int bin_index = find_bin(plot, value);
+        if (bin_index < 0) {
+          continue;
+        }
+
+        counts.excluded_no_trig_by_plot[plot_index][static_cast<std::size_t>(bin_index)] += 1.0;
+        totals_it->second[plot_index] += 1.0;
+      }
+      continue;
+    }
 
     for (size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
       const auto& plot = plots[plot_index];
@@ -931,10 +1135,10 @@ TaskCounts process_file(const std::string& file_name,
       }
 
       auto& plot_counts = counts.plots[plot_index];
-      plot_counts.all[bin_index] += 1.0;
       if (!pass_goodmuon_selection) {
         continue;
       }
+      plot_counts.all[bin_index] += 1.0;
       if (trigger_singlemuon) {
         plot_counts.denominator[bin_index] += 1.0;
         if (trigger_jetht) {
@@ -988,6 +1192,30 @@ TaskCounts process_all_files(const std::vector<std::string>& files,
         out.denominator[i] += in.denominator[i];
         out.numerator_goodmuon[i] += in.numerator_goodmuon[i];
         out.numerator_goodmuon_l1[i] += in.numerator_goodmuon_l1[i];
+      }
+      auto& excluded_out = merged.excluded_no_trig_by_plot[plot_index];
+      const auto& excluded_in = partial.excluded_no_trig_by_plot[plot_index];
+      for (size_t i = 0; i < excluded_out.size(); ++i) {
+        excluded_out[i] += excluded_in[i];
+      }
+      auto& excluded_legacy_out = merged.excluded_legacy_no_trig_by_plot[plot_index];
+      const auto& excluded_legacy_in = partial.excluded_legacy_no_trig_by_plot[plot_index];
+      for (size_t i = 0; i < excluded_legacy_out.size(); ++i) {
+        excluded_legacy_out[i] += excluded_legacy_in[i];
+      }
+    }
+    for (const auto& [key, tree_entries] : partial.excluded_tree_entries_by_run_lumi) {
+      merged.excluded_tree_entries_by_run_lumi[key] += tree_entries;
+    }
+    for (const auto& [key, totals] : partial.excluded_no_trig_totals_by_run_lumi) {
+      auto [it, inserted] = merged.excluded_no_trig_totals_by_run_lumi.emplace(
+          key,
+          std::vector<double>(plots.size(), 0.0));
+      if (!inserted && it->second.size() != plots.size()) {
+        it->second.assign(plots.size(), 0.0);
+      }
+      for (size_t i = 0; i < totals.size(); ++i) {
+        it->second[i] += totals[i];
       }
     }
   }
@@ -1074,6 +1302,27 @@ std::string format_count_value(double value) {
   return std::to_string(static_cast<long long>(std::llround(value)));
 }
 
+void subtract_histogram_counts(TH1D& hist,
+                               const std::vector<double>& removed_counts,
+                               const std::string& hist_name) {
+  if (removed_counts.size() != static_cast<std::size_t>(hist.GetNbinsX())) {
+    die("Removed-count vector size does not match histogram bins for " + hist_name);
+  }
+
+  double entries = 0.0;
+  for (int bin = 1; bin <= hist.GetNbinsX(); ++bin) {
+    const double updated = hist.GetBinContent(bin) - removed_counts[static_cast<std::size_t>(bin - 1)];
+    if (updated < -1e-6) {
+      die("Encountered negative corrected bin content while subtracting excluded run/lumi events from " + hist_name);
+    }
+    const double clamped = std::max(0.0, updated);
+    hist.SetBinContent(bin, clamped);
+    hist.SetBinError(bin, std::sqrt(clamped));
+    entries += clamped;
+  }
+  hist.SetEntries(entries);
+}
+
 std::unique_ptr<TH1D> hist_scale_x(const TH1D& source, const std::string& name, double scale) {
   if (scale == 0.0) {
     die("Encountered zero x-scale while preparing a plot histogram.");
@@ -1114,47 +1363,110 @@ std::unique_ptr<TGraphAsymmErrors> graph_scale_x(const TGraphAsymmErrors& source
   return graph;
 }
 
-std::unique_ptr<TH1D> merge_saved_no_trig_histograms(const std::vector<std::string>& files,
-                                                     const PlotSpec& plot,
-                                                     const CaseSpec& study_case) {
-  std::unique_ptr<TH1D> merged;
-  const std::string hist_name = trigger_hist_name(plot, study_case, "noTrig");
-  const std::string merged_name = plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_all";
-  for (const auto& file_name : files) {
-    auto file = open_input_file(file_name);
-    merge_histogram(*file, hist_name, merged_name, merged);
-  }
+std::string merged_saved_no_trig_hist_name(const PlotSpec& plot, const CaseSpec& study_case) {
+  return plot.observable_folder + "_" + plot.binning_folder + "_" + study_case.folder_tag + "_all";
+}
 
-  if (!merged) {
-    die("Could not find noTrig histogram '" + hist_name + "' in the input ROOT files.");
+std::string legacy_saved_no_trig_hist_name(const PlotSpec& plot) {
+  return (plot.binning_kind == BinningKind::kUniform) ? "h_mjj_noTrig_1GeVbin" : "h_mjj_HLTpass_noTrig";
+}
+
+std::string merged_legacy_hist_name(const PlotSpec& plot) {
+  return plot.observable_folder + "_" + plot.binning_folder + "_legacy_mjj_all";
+}
+
+void finalize_merged_histogram_for_plot(std::unique_ptr<TH1D>& merged_hist,
+                                        const PlotSpec& plot,
+                                        const std::string& missing_hist_name,
+                                        const std::string& merged_name) {
+  if (!merged_hist) {
+    die("Could not find histogram '" + missing_hist_name + "' in the input ROOT files.");
   }
   if (plot.binning_kind == BinningKind::kUniform) {
-    return rebin_histogram_even_gev(*merged,
-                                    plot.uniform_bin_width,
-                                    merged_name + "_rebinned");
+    merged_hist = rebin_histogram_even_gev(*merged_hist,
+                                           plot.uniform_bin_width,
+                                           merged_name + "_rebinned");
+    merged_hist = crop_uniform_histogram_to_plot_range(*merged_hist,
+                                                       plot,
+                                                       merged_name + "_cropped");
   }
+}
+
+MergedSavedHistograms merge_saved_histograms_single_pass(const std::vector<std::string>& files,
+                                                         const std::vector<PlotSpec>& plots) {
+  MergedSavedHistograms merged;
+  merged.plots.resize(plots.size());
+
+  for (const auto& file_name : files) {
+    auto file = open_input_file(file_name);
+    for (std::size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
+      const auto& plot = plots[plot_index];
+      auto& plot_histograms = merged.plots[plot_index];
+
+      merge_histogram(*file,
+                      legacy_saved_no_trig_hist_name(plot),
+                      merged_legacy_hist_name(plot),
+                      plot_histograms.legacy_mjj_all);
+
+      for (std::size_t case_index = 0; case_index < kCases.size(); ++case_index) {
+        const auto& study_case = kCases[case_index];
+        merge_histogram(*file,
+                        trigger_hist_name(plot, study_case, "noTrig"),
+                        merged_saved_no_trig_hist_name(plot, study_case),
+                        plot_histograms.no_trig_by_case[case_index]);
+      }
+    }
+  }
+
+  for (std::size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
+    const auto& plot = plots[plot_index];
+    auto& plot_histograms = merged.plots[plot_index];
+
+    finalize_merged_histogram_for_plot(plot_histograms.legacy_mjj_all,
+                                       plot,
+                                       legacy_saved_no_trig_hist_name(plot),
+                                       merged_legacy_hist_name(plot));
+
+    for (std::size_t case_index = 0; case_index < kCases.size(); ++case_index) {
+      const auto& study_case = kCases[case_index];
+      finalize_merged_histogram_for_plot(plot_histograms.no_trig_by_case[case_index],
+                                         plot,
+                                         trigger_hist_name(plot, study_case, "noTrig"),
+                                         merged_saved_no_trig_hist_name(plot, study_case));
+    }
+  }
+
   return merged;
 }
 
-std::unique_ptr<TH1D> merge_legacy_mjj_histograms(const std::vector<std::string>& files, const PlotSpec& plot) {
-  std::unique_ptr<TH1D> merged;
-  const std::string hist_name =
-      (plot.binning_kind == BinningKind::kUniform) ? "h_mjj_noTrig_1GeVbin" : "h_mjj_HLTpass_noTrig";
-  const std::string merged_name = plot.observable_folder + "_" + plot.binning_folder + "_legacy_mjj_all";
-  for (const auto& file_name : files) {
-    auto file = open_input_file(file_name);
-    merge_histogram(*file, hist_name, merged_name, merged);
+void apply_excluded_run_lumi_subtractions(MergedSavedHistograms& merged_histograms,
+                                          const TaskCounts& all_counts) {
+  if (!has_run_lumi_exclusions()) {
+    return;
+  }
+  if (merged_histograms.plots.size() != all_counts.excluded_no_trig_by_plot.size()) {
+    die("Merged saved histogram count does not match excluded run/lumi bookkeeping.");
   }
 
-  if (!merged) {
-    die("Could not find legacy noTrig histogram '" + hist_name + "' in the input ROOT files.");
+  for (std::size_t plot_index = 0; plot_index < merged_histograms.plots.size(); ++plot_index) {
+    const auto& removed_counts = all_counts.excluded_no_trig_by_plot[plot_index];
+    const auto& removed_legacy_counts = all_counts.excluded_legacy_no_trig_by_plot[plot_index];
+    auto& plot_histograms = merged_histograms.plots[plot_index];
+
+    if (plot_histograms.legacy_mjj_all) {
+      subtract_histogram_counts(*plot_histograms.legacy_mjj_all,
+                                removed_legacy_counts,
+                                plot_histograms.legacy_mjj_all->GetName());
+    }
+
+    for (auto& no_trig_hist : plot_histograms.no_trig_by_case) {
+      if (no_trig_hist) {
+        subtract_histogram_counts(*no_trig_hist,
+                                  removed_counts,
+                                  no_trig_hist->GetName());
+      }
+    }
   }
-  if (plot.binning_kind == BinningKind::kUniform) {
-    return rebin_histogram_even_gev(*merged,
-                                    plot.uniform_bin_width,
-                                    merged_name + "_rebinned");
-  }
-  return merged;
 }
 
 std::vector<SummaryRow> build_summary_rows(TEfficiency& efficiency,
@@ -1475,6 +1787,34 @@ void ensure_directory(const fs::path& dir) {
   }
 }
 
+void write_excluded_run_lumi_report(const fs::path& path,
+                                    const std::map<RunLumiKey, long long>& tree_entries_by_run_lumi,
+                                    const std::map<RunLumiKey, std::vector<double>>& no_trig_totals_by_run_lumi,
+                                    const std::vector<PlotSpec>& plots) {
+  std::ofstream out(path);
+  if (!out) {
+    die("Could not write excluded run/lumi report: " + path.string());
+  }
+
+  out << "run,lumi,tree_entries";
+  for (const auto& plot : plots) {
+    out << "," << plot.observable_folder << "_" << plot.binning_folder << "_noTrig_removed";
+  }
+  out << "\n";
+
+  for (const auto& [key, tree_entries] : tree_entries_by_run_lumi) {
+    out << key.first << "," << key.second << "," << tree_entries;
+    const auto totals_it = no_trig_totals_by_run_lumi.find(key);
+    for (std::size_t i = 0; i < plots.size(); ++i) {
+      const double value = (totals_it != no_trig_totals_by_run_lumi.end() && i < totals_it->second.size())
+                               ? totals_it->second[i]
+                               : 0.0;
+      out << "," << format_count_value(value);
+    }
+    out << "\n";
+  }
+}
+
 }  // namespace
 
 int main(int argc, char** argv) {
@@ -1497,13 +1837,39 @@ int main(int argc, char** argv) {
     std::cout << info_tag() << " JetHT branch: " << jetht_branch << std::endl;
     std::cout << info_tag() << " SingleMuon branch: " << singlemuon_branch << std::endl;
     std::cout << info_tag() << " L1 branch: " << l1_branch << std::endl;
+    if (has_run_lumi_exclusions()) {
+      std::cout << info_tag() << " Run/LS exclusions: " << format_run_lumi_exclusions() << std::endl;
+    }
 
     const TaskCounts all_counts =
         process_all_files(files, opts, plots, jetht_branch, singlemuon_branch, l1_branch);
 
+    if (has_run_lumi_exclusions()) {
+      long long excluded_tree_entries = 0;
+      for (const auto& [_, tree_entries] : all_counts.excluded_tree_entries_by_run_lumi) {
+        excluded_tree_entries += tree_entries;
+      }
+      std::cout << info_tag() << " Excluded tree entries: " << excluded_tree_entries << std::endl;
+      const fs::path excluded_report =
+          fs::absolute(opts.output_dir) / (opts.output_prefix + "_excluded_run_lumi_summary.csv");
+      write_excluded_run_lumi_report(
+          excluded_report,
+          all_counts.excluded_tree_entries_by_run_lumi,
+          all_counts.excluded_no_trig_totals_by_run_lumi,
+          plots);
+      std::cout << info_tag() << " Excluded run/LS report: " << excluded_report << std::endl;
+    }
+
+    std::cout << info_tag() << " Merging saved histograms from " << files.size()
+              << " ROOT file(s) in a single pass" << std::endl;
+    auto merged_saved_histograms = merge_saved_histograms_single_pass(files, plots);
+    apply_excluded_run_lumi_subtractions(merged_saved_histograms, all_counts);
+    std::cout << info_tag() << " Saved histogram merge complete" << std::endl;
+
     for (size_t plot_index = 0; plot_index < plots.size(); ++plot_index) {
       const auto& plot = plots[plot_index];
       const auto& counts = all_counts.plots[plot_index];
+      auto& plot_histograms = merged_saved_histograms.plots[plot_index];
       const std::string base_tag = plot_tag(plot);
 
       auto h_den = make_hist_from_counts(plot, "h_denominator_" + base_tag, counts.denominator);
@@ -1511,7 +1877,7 @@ int main(int argc, char** argv) {
                                                   counts.numerator_goodmuon);
       auto h_num_goodmuon_l1 = make_hist_from_counts(plot, "h_numerator_" + base_tag + "_goodMuonL1",
                                                      counts.numerator_goodmuon_l1);
-      auto h_legacy_mjj_all = merge_legacy_mjj_histograms(files, plot);
+      TH1D* h_legacy_mjj_all = plot_histograms.legacy_mjj_all.get();
 
       if (!TEfficiency::CheckConsistency(*h_num_goodmuon, *h_den)) {
         die("GoodMuon numerator/denominator are not TEfficiency-consistent for plot '" + base_tag + "'.");
@@ -1531,15 +1897,15 @@ int main(int argc, char** argv) {
         const auto& study_case = kCases[0];
         const OutputPaths paths = make_output_paths(fs::absolute(opts.output_dir), opts.output_prefix, plot, study_case);
         print_case_output_info(paths, plot, study_case);
-        auto h_all = merge_saved_no_trig_histograms(files, plot, study_case);
+        TH1D& h_all = *plot_histograms.no_trig_by_case[0];
         const auto goodmuon_rows =
-            build_summary_rows(eff_goodmuon, *h_den, *h_num_goodmuon, *h_all, h_legacy_mjj_all.get());
+            build_summary_rows(eff_goodmuon, *h_den, *h_num_goodmuon, h_all, h_legacy_mjj_all);
         TFile root_out(paths.root_file.string().c_str(), "RECREATE");
         if (root_out.IsZombie()) {
           die("Could not create output ROOT file: " + paths.root_file.string());
         }
         root_out.cd();
-        h_all->Write();
+        h_all.Write();
         h_den->Write();
         h_num_goodmuon->Write();
         if (h_legacy_mjj_all) {
@@ -1551,7 +1917,9 @@ int main(int argc, char** argv) {
         graph->Write();
         write_summary_csv(paths.summary_csv, goodmuon_rows);
         const double x99_gev = find_turnon_x_gev(*graph, 0.99);
-        const double first_positive_diff_gev = find_first_positive_diff_edge_gev_after_turnon(goodmuon_rows, x99_gev);
+        const double first_positive_diff_gev = find_first_positive_diff_edge_gev_after_turnon(
+            goodmuon_rows,
+            x99_gev);
         draw_efficiency_plot(*graph,
                              paths.eff_pdf,
                              root_out,
@@ -1597,15 +1965,15 @@ int main(int argc, char** argv) {
         const auto& study_case = kCases[1];
         const OutputPaths paths = make_output_paths(fs::absolute(opts.output_dir), opts.output_prefix, plot, study_case);
         print_case_output_info(paths, plot, study_case);
-        auto h_all = merge_saved_no_trig_histograms(files, plot, study_case);
+        TH1D& h_all = *plot_histograms.no_trig_by_case[1];
         const auto goodmuon_l1_rows =
-            build_summary_rows(eff_goodmuon_l1, *h_den, *h_num_goodmuon_l1, *h_all, h_legacy_mjj_all.get());
+            build_summary_rows(eff_goodmuon_l1, *h_den, *h_num_goodmuon_l1, h_all, h_legacy_mjj_all);
         TFile root_out(paths.root_file.string().c_str(), "RECREATE");
         if (root_out.IsZombie()) {
           die("Could not create output ROOT file: " + paths.root_file.string());
         }
         root_out.cd();
-        h_all->Write();
+        h_all.Write();
         h_den->Write();
         h_num_goodmuon_l1->Write();
         if (h_legacy_mjj_all) {
