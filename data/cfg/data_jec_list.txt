@@ -1,58 +1,67 @@
 #---- Year: 2024C:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunCnib1_V5_DATA/Summer24Prompt24_RunCnib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunCnib1_V5_DATA/Summer24Prompt24_RunCnib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunCnib1_V5_DATA/Summer24Prompt24_RunCnib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [ -1:-1:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunCnib1_V5_DATA/Summer24Prompt24_RunCnib1_V5_DATA_L2L3Residual_AK4PFScouting.txt ]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunCnib1_V5_DATA/Summer24Prompt24_RunCnib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
 
 #---- Year: 2024D:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunDnib1_V5_DATA/Summer24Prompt24_RunDnib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunDnib1_V5_DATA/Summer24Prompt24_RunDnib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunDnib1_V5_DATA/Summer24Prompt24_RunDnib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [ -1:-1:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunDnib1_V5_DATA/Summer24Prompt24_RunDnib1_V5_DATA_L2L3Residual_AK4PFScouting.txt ]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunDnib1_V5_DATA/Summer24Prompt24_RunDnib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
 
 #---- Year: 2024E:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunEnib1_V5_DATA/Summer24Prompt24_RunEnib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunEnib1_V5_DATA/Summer24Prompt24_RunEnib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunEnib1_V5_DATA/Summer24Prompt24_RunEnib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [ -1:-1:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunEnib1_V5_DATA/Summer24Prompt24_RunEnib1_V5_DATA_L2L3Residual_AK4PFScouting.txt ]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunEnib1_V5_DATA/Summer24Prompt24_RunEnib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
 
 #---- Year: 2024F:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib1_V5_DATA/Summer24Prompt24_RunFnib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib1_V5_DATA/Summer24Prompt24_RunFnib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib1_V5_DATA/Summer24Prompt24_RunFnib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [
+381944:382297:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib1_V5_DATA/Summer24Prompt24_RunFnib1_V5_DATA_L2L3Residual_AK4PFScouting.txt
+382298:383246:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib2_V5_DATA/Summer24Prompt24_RunFnib2_V5_DATA_L2L3Residual_AK4PFScouting.txt
+383247:383779:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib3_V5_DATA/Summer24Prompt24_RunFnib3_V5_DATA_L2L3Residual_AK4PFScouting.txt
+]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunFnib1_V5_DATA/Summer24Prompt24_RunFnib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
 
 #---- Year: 2024G:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunGnib1_V5_DATA/Summer24Prompt24_RunGnib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunGnib1_V5_DATA/Summer24Prompt24_RunGnib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunGnib1_V5_DATA/Summer24Prompt24_RunGnib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [
+383780:384932:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunGnib1_V5_DATA/Summer24Prompt24_RunGnib1_V5_DATA_L2L3Residual_AK4PFScouting.txt
+384933:385813:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunGnib2_V5_DATA/Summer24Prompt24_RunGnib2_V5_DATA_L2L3Residual_AK4PFScouting.txt
+]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunGnib1_V5_DATA/Summer24Prompt24_RunGnib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
 
 #---- Year: 2024H:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunHnib1_V5_DATA/Summer24Prompt24_RunHnib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunHnib1_V5_DATA/Summer24Prompt24_RunHnib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunHnib1_V5_DATA/Summer24Prompt24_RunHnib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [ -1:-1:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunHnib1_V5_DATA/Summer24Prompt24_RunHnib1_V5_DATA_L2L3Residual_AK4PFScouting.txt ]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunHnib1_V5_DATA/Summer24Prompt24_RunHnib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
 
 #---- Year: 2024I:
-L1FastJet: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L1FastJet_AK4PFHLT.txt
-L2Relative: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2Relative_AK4PFHLT.txt
-L3Absolute: data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L3Absolute_AK4PFHLT.txt
-L2L3Residual: [ -1:-1:data/jec/2024/Winter24HLT_V1_MC/Winter24HLT_V1_MC_L2L3Residual_AK4PFHLT.txt ]
-Unc: 
+L1FastJet: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunInib1_V5_DATA/Summer24Prompt24_RunInib1_V5_DATA_L1FastJet_AK4PFScouting.txt
+L2Relative: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunInib1_V5_DATA/Summer24Prompt24_RunInib1_V5_DATA_L2Relative_AK4PFScouting.txt
+L3Absolute: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunInib1_V5_DATA/Summer24Prompt24_RunInib1_V5_DATA_L3Absolute_AK4PFScouting.txt
+L2L3Residual: [ -1:-1:data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunInib1_V5_DATA/Summer24Prompt24_RunInib1_V5_DATA_L2L3Residual_AK4PFScouting.txt ]
+Unc: data/jec/2024/Summer24Prompt24_Scouting/Summer24Prompt24_RunInib1_V5_DATA/Summer24Prompt24_RunInib1_V5_DATA_Uncertainty_AK4PFScouting.txt
 JetVetoMap:
+
+
 
 
 
