@@ -31,12 +31,12 @@ namespace {
 const std::string era = "2024H";
 
 // New JECs - July 27
-//const std::string dataList = "data/cfg/data_jec_list.txt";
-//const std::string mcList = "data/cfg/mc_jec_list.txt";
+const std::string dataList = "data/cfg/data_jec_list.txt";
+const std::string mcList = "data/cfg/mc_jec_list.txt";
 
 // Old JECs - March 19
-const std::string dataList = "data/cfg/Mar19_data_jec_list.txt";
-const std::string mcList = "data/cfg/Mar19_mc_jec_list.txt";
+// const std::string dataList = "data/cfg/Mar19_data_jec_list.txt";
+// const std::string mcList = "data/cfg/Mar19_mc_jec_list.txt";
 
 // Input branch groups for scouting data, MC, and monitoring samples.
 const std::array<const char*, 30> kNanoInputBranchesData = {
