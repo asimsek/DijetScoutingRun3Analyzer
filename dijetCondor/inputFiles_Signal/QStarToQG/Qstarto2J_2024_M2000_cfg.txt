@@ -1,0 +1,6 @@
+Dataset=/Qstarto2J_M-2000_TuneCP5_13p6TeV_pythia8/Run3Summer22NanoAODv12-130X_mcRun3_2022_realistic_v5-v2/NANOAODSIM
+InputList=lists/nanoAOD/PFScouting/Qstarto2J_M-2000_TuneCP5_13p6TeV_pythia8__Run3Summer22NanoAODv12-130X_mcRun3_2022_realistic_v5-v2__NANOAODSIM.txt
+Interval=100
+analyzerScript=analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD.C
+goldenJSON=data/json/Cert_Collisions2024_378981_386951_Golden.json
+era=2024

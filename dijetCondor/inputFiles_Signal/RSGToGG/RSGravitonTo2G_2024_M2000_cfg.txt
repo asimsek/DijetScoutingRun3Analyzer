@@ -1,0 +1,6 @@
+Dataset=/RSGravitonTo2Glu_Par-kMpl01-M-2000_TuneCP5_13p6TeV_pythia8/RunIII2024Summer24NanoAODv15-150X_mcRun3_2024_realistic_v2-v2/NANOAODSIM
+InputList=lists/nanoAOD/PFScouting/RSGravitonTo2Glu_Par-kMpl01-M-2000_TuneCP5_13p6TeV_pythia8__RunIII2024Summer24NanoAODv15-150X_mcRun3_2024_realistic_v2-v2__NANOAODSIM.txt
+Interval=100
+analyzerScript=analysisClass_mainDijetPFScoutingSelection_Run3_NanoAOD.C
+goldenJSON=data/json/Cert_Collisions2024_378981_386951_Golden.json
+era=2024

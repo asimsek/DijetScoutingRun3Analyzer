@@ -70,7 +70,7 @@ const std::array<const char*, 35> kNanoInputBranchesData = {
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
-const std::array<const char*, 24> kNanoInputBranchesMC = {
+const std::array<const char*, 27> kNanoInputBranchesMC = {
     "run",
     "luminosityBlock",
     "event",
@@ -91,6 +91,9 @@ const std::array<const char*, 24> kNanoInputBranchesMC = {
     "Jet_muEF",
     "Jet_chMultiplicity",
     "Jet_neMultiplicity",
+    "Jet_genJetIdx",
+    "nGenJet",
+    "GenJet_pt",
     "Jet_rawFactor",
     "Jet_hfEmEF",
     "DST_PFScouting_JetHT",
@@ -140,13 +143,9 @@ const std::array<const char*, 11> kScoutingMuonInputBranches = {
 // L1 bits used to build the saved JetHT-side L1 decision flag.
 const std::array<const char*, 4> kRequiredL1DecisionBranches = {
     "L1_HTT280er",
-    "L1_SingleJet180",
-    "L1_DoubleJet30er2p5_Mass_Min250_dEta_Max1p5",
-    "L1_ETT2000"};
+    "L1_SingleJet180"};
 
-const std::array<const char*, 2> kVetoL1DecisionBranches = {
-    "L1_HTT200er",
-    "L1_HTT255er"};
+const std::array<const char*, 2> kVetoL1DecisionBranches = {};
 
 const char* kTriggerJetHTBranch = "DST_PFScouting_JetHT";
 const char* kTriggerSingleMuonBranch = "DST_PFScouting_SingleMuon";
@@ -181,7 +180,9 @@ double deltaRDistance(double eta1, double phi1, double eta2, double phi2) {
   return std::sqrt(deta * deta + dphi * dphi);
 }
 
-// Shared good-muon definition used by the trigger-efficiency control sample.
+// Good-muon definition used by the trigger-efficiency control sample.
+// Muon Reconstruction paper for 13 TeV (Page 8): https://arxiv.org/pdf/1804.04528
+// DP Note for 13.6 TeV (Page 11-14): https://cds.cern.ch/record/2904703/files/DP2024_067.pdf
 bool passesScoutingMuonIDWithOptions(double pt,
                                      double eta,
                                      double trkDxy,
@@ -194,14 +195,21 @@ bool passesScoutingMuonIDWithOptions(double pt,
                                      bool applyPtCut,
                                      bool applyEtaCut) {
   if (applyPtCut && pt <= 30.0) return false;
+
+  // Barrel-only for stability in the control sample
   if (applyEtaCut && std::abs(eta) >= 0.8) return false;
+
+  // CMS-like prompt-muon compatibility cuts
   if (std::abs(trkDxy) >= 0.2) return false;
   if (std::abs(trkDz) >= 0.5) return false;
-  if (normChi2 >= 10.0) return false;
-  if (nValidRecoMuonHits < 1.0) return false;
-  if (nRecoMuonMatchedStations < 2.0) return false;
-  if (nValidPixelHits < 1.0) return false;
-  if (nTrackerLayersWithMeasurement < 6.0) return false;
+
+  // Tight-like tracking / muon quality cuts
+  if (normChi2 >= 10) return false; // Official >= 10
+  if (nValidRecoMuonHits <= 0) return false; // Official <= 0
+  if (nRecoMuonMatchedStations <= 1) return false; // Official <= 1
+  if (nValidPixelHits <= 0) return false; // Official <= 0
+  if (nTrackerLayersWithMeasurement <= 5) return false; // Official <= 5
+
   return true;
 }
 
@@ -481,6 +489,8 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<Float_t>> jetRawFactorMC;
   std::unique_ptr<TTreeReaderArray<UChar_t>> chHadMultMC;
   std::unique_ptr<TTreeReaderArray<UChar_t>> neHadMultMC;
+  std::unique_ptr<TTreeReaderArray<Short_t>> jetGenJetIdxMC;
+  std::unique_ptr<TTreeReaderArray<Float_t>> genJetPtMC;
 
   std::unique_ptr<TTreeReaderValue<Int_t>> nScoutingMuonVtxReader;
   std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonPtReader;
@@ -503,6 +513,11 @@ void analysisClass::Loop() {
     jetMuEFMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_muEF");
     chHadMultMC = std::make_unique<TTreeReaderArray<UChar_t>>(reader, "Jet_chMultiplicity");
     neHadMultMC = std::make_unique<TTreeReaderArray<UChar_t>>(reader, "Jet_neMultiplicity");
+
+    if (useStandardMC) {
+      jetGenJetIdxMC = std::make_unique<TTreeReaderArray<Short_t>>(reader, "Jet_genJetIdx");
+      genJetPtMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "GenJet_pt");
+    }
 
     if (hasBranch(fChain, "Jet_rawFactor")) {
       jetRawFactorMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_rawFactor");
@@ -1318,6 +1333,33 @@ void analysisClass::Loop() {
     fillVariableWithValue("passGoodMuonBaseSelection", passGoodMuonBaseSelection ? 1.0 : 0.0);
     fillVariableWithValue("PassJSON", passJsonValue);
 
+    // Record hard-scatter matching for the leading corrected AK4 jets in MC.
+    if (useStandardMC) {
+      int genIdx1 = -1;
+      int genIdx2 = -1;
+      if (branchSortedIdx.size() >= 2U) {
+        const size_t recoIdx1 = branchSortedIdx[0];
+        const size_t recoIdx2 = branchSortedIdx[1];
+        if (recoIdx1 < jetGenJetIdxMC->GetSize()) {
+          genIdx1 = static_cast<int>((*jetGenJetIdxMC)[recoIdx1]);
+        }
+        if (recoIdx2 < jetGenJetIdxMC->GetSize()) {
+          genIdx2 = static_cast<int>((*jetGenJetIdxMC)[recoIdx2]);
+        }
+      }
+      const bool validGenIdx1 =
+          genIdx1 >= 0 && static_cast<size_t>(genIdx1) < genJetPtMC->GetSize();
+      const bool validGenIdx2 =
+          genIdx2 >= 0 && static_cast<size_t>(genIdx2) < genJetPtMC->GetSize();
+      const bool hardScatterMatched = validGenIdx1 && validGenIdx2 && genIdx1 != genIdx2;
+
+      fillVariableWithValue("Jet_genJetIdx_j1", genIdx1);
+      fillVariableWithValue("Jet_genJetIdx_j2", genIdx2);
+      fillVariableWithValue("GenJet_pt_j1", validGenIdx1 ? (*genJetPtMC)[genIdx1] : -1.0);
+      fillVariableWithValue("GenJet_pt_j2", validGenIdx2 ? (*genJetPtMC)[genIdx2] : -1.0);
+      fillVariableWithValue("leadingJetHardScatterMatched", hardScatterMatched ? 1.0 : 0.0);
+    }
+
     if (analysisSummary.ak4j1.Pt() > 0.0 && branchSortedIdx.size() >= 1U) {
       const auto j0 = branchSortedIdx[0];
       fillVariableWithValue("IdTight_j1", jetID[j0]);
@@ -1638,4 +1680,3 @@ void analysisClass::Loop() {
   }
   std::cout << "[analysisClass] Loop end\n";
 }
-
