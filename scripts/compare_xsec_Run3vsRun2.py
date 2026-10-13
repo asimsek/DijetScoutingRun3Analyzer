@@ -7,6 +7,8 @@ import csv
 import math
 from pathlib import Path
 
+from eos_utils import normalize_path
+
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
@@ -63,7 +65,7 @@ def configure_style(ROOT) -> None:
     ROOT.gStyle.SetEndErrorSize(0)
 
 
-def load_hist(ROOT, root_path: Path, hist_name: str):
+def load_hist(ROOT, root_path: str, hist_name: str):
     root_file = ROOT.TFile.Open(str(root_path))
     if not root_file or root_file.IsZombie():
         raise RuntimeError(f"Could not open ROOT file: {root_path}")
@@ -819,8 +821,8 @@ def main() -> int:
 
     configure_style(ROOT)
 
-    run2_root = Path(args.run2_root).resolve()
-    run3_root = Path(args.run3_root).resolve()
+    run2_root = normalize_path(args.run2_root)
+    run3_root = normalize_path(args.run3_root)
     out_dir = Path(args.output_dir).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 

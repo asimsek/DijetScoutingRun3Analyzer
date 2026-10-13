@@ -1,3 +1,5 @@
+#include "../include/EOSUtils.h"
+
 #include <ROOT/TThreadExecutor.hxx>
 
 #include <TBranch.h>
@@ -416,6 +418,9 @@ std::vector<std::string> expand_glob(const std::string& pattern) {
 std::vector<std::string> expand_source_token(const std::string& token, const fs::path& base_dir) {
   std::vector<std::string> out;
   const std::string normalized = normalize_path_token(token, base_dir);
+  if (eos_utils::parse_xrootd_path(normalized)) {
+    return eos_utils::expand_remote_input(normalized, "*.root");
+  }
   if (normalized.find("://") != std::string::npos) {
     out.push_back(normalized);
     return out;

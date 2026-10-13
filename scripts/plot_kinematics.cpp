@@ -1,3 +1,5 @@
+#include "../include/EOSUtils.h"
+
 #include <ROOT/TThreadExecutor.hxx>
 #include <TCanvas.h>
 #include <TFile.h>
@@ -391,6 +393,9 @@ std::vector<std::string> glob_expand(const std::string& pattern) {
 
 std::vector<std::string> expand_source_token(const std::string& token, const fs::path& base_dir) {
   const std::string normalized = normalize_path_token(token, base_dir);
+  if (eos_utils::parse_xrootd_path(normalized)) {
+    return eos_utils::expand_remote_input(normalized, "*_reduced_skim.root");
+  }
   if (normalized.find("://") != std::string::npos) {
     return {normalized};
   }
@@ -1202,10 +1207,23 @@ Options parse_args(int argc, char** argv) {
       opt.lumi_pb = std::stod(need_value(arg));
     } else if (arg == "--threads") {
       opt.threads = std::stoi(need_value(arg));
+    } else if (arg == "--describe") {
+      // The Condor wrapper reads the executable's own plot names and defaults.
+      std::cout << "{\"delta_eta_cut\":" << kDeltaEtaCut << ",\"min_mjj\":" << kDefaultMinMjj
+                << ",\"output_formats\":[\"pdf\"],\"plots\":[";
+      bool first = true;
+      for (const auto& item : kPlotSpecs) {
+        if (!first) std::cout << ',';
+        std::cout << '\"' << item.first << '\"';
+        first = false;
+      }
+      std::cout << "]}\n";
+      std::exit(0);
     } else if (arg == "-h" || arg == "--help") {
       std::cout
           << "usage: plot_kinematics --plot NAME[,NAME2,...]|all [--data-list FILE] [--mc-list FILE] [--output-dir DIR]\n"
-          << "                       [--output-prefix PREFIX] [--lumi-pb VALUE] [--threads N]\n";
+          << "                       [--output-prefix PREFIX] [--lumi-pb VALUE] [--threads N]\n"
+          << "       plot_kinematics --describe  (plot names and defaults as JSON)\n";
       std::exit(0);
     } else {
       throw std::runtime_error("unknown option: " + arg);

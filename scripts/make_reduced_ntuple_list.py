@@ -7,9 +7,9 @@ import os
 import re
 from pathlib import Path
 
+from eos_utils import discover_files, normalize_path, parse_remote
 
-EOS_PREFIX = "/eos/uscms"
-XROOTD_PREFIX = "root://cmseos.fnal.gov/"
+
 TARGET_SUBDIR = Path("lists/reducedNtuple_lists")
 TARGET_PATTERN = "*_reduced_skim.root"
 
@@ -25,30 +25,17 @@ def resolve_output_dir(repo_root: Path) -> Path:
     return (repo_root / TARGET_SUBDIR).resolve()
 
 
-def discover_root_files(input_path: str) -> list[Path]:
-    expanded = Path(os.path.expandvars(os.path.expanduser(input_path)))
-    if any(char in input_path for char in "*?[]"):
-        matches = [Path(p).resolve() for p in expanded.parent.glob(expanded.name)]
-        return sorted((p for p in matches if p.is_file()), key=lambda p: natural_key(str(p)))
-
-    resolved = expanded.resolve()
-    if resolved.is_file():
-        return [resolved]
-    if resolved.is_dir():
-        files = [path.resolve() for path in resolved.rglob(TARGET_PATTERN) if path.is_file()]
-        return sorted(files, key=lambda p: natural_key(str(p)))
-    raise RuntimeError(f"Input path does not exist: {input_path}")
+def discover_root_files(input_path: str) -> list[str]:
+    return sorted(discover_files(input_path, TARGET_PATTERN), key=natural_key)
 
 
-def to_xrootd_path(path: Path) -> str:
-    path_str = str(path)
-    if path_str.startswith(EOS_PREFIX):
-        return path_str.replace(EOS_PREFIX, XROOTD_PREFIX, 1)
-    return path_str
+def to_xrootd_path(path: str | Path) -> str:
+    return normalize_path(path)
 
 
 def derive_output_name(input_path: str) -> str:
-    expanded = Path(os.path.expandvars(os.path.expanduser(input_path)))
+    remote = parse_remote(input_path)
+    expanded = Path(remote.path if remote else os.path.expandvars(os.path.expanduser(input_path)))
     if any(char in input_path for char in "*?[]"):
         token = expanded.parent.name or expanded.stem or "reduced_ntuple_list"
     else:
@@ -94,7 +81,7 @@ def main() -> int:
     lines = [to_xrootd_path(path) for path in root_files]
     output_path.write_text("\n".join(lines) + "\n")
 
-    print(f"[INFO] Input path   : {Path(os.path.expandvars(os.path.expanduser(args.input_path))).resolve()}")
+    print(f"[INFO] Input path   : {normalize_path(args.input_path)}")
     print(f"[INFO] Files found  : {len(root_files):,}")
     print(f"[INFO] Output list  : {output_path}")
     return 0
