@@ -3,12 +3,18 @@
 import argparse
 import os
 import re
+import shlex
 import shutil
 import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from eos_utils import resolve_condor_proxy
+from condor_submit_jobs import write_batch_submission
 
 
 DEFAULT_CMSSW_VER = "CMSSW_15_0_6"
@@ -437,12 +443,16 @@ def create_job_jdl(
     request_memory_mb: int,
     use_cms_connect: bool,
     cms_connect_requirements: str,
+    proxy_path: str,
 ) -> str:
     cms_connect_block = ""
     if use_cms_connect:
         cms_connect_block = f"{cms_connect_requirements}\n"
+    dataset_label = re.sub(r"_n\d+\.sh$", "", Path(sh_file_name).name)
 
     return f"""universe = vanilla
+batch_name = {dataset_label}
++DijetDataset = "{dataset_label}"
 Executable = {sh_file_name}
 Should_Transfer_Files = YES
 WhenToTransferOutput = ON_EXIT_OR_EVICT
@@ -452,9 +462,8 @@ request_memory = {request_memory_mb}
 Output = cjob_$(Cluster)_$(Process).stdout
 Error = cjob_$(Cluster)_$(Process).stderr
 Log = cjob_$(Cluster)_$(Process).log
-stream_output = True
-stream_error = True
 use_x509userproxy = true
+x509userproxy = {proxy_path}
 {cms_connect_block}+JobFlavour = "nextweek"
 Queue 1
 """
@@ -462,50 +471,13 @@ Queue 1
 
 def create_submit_all(condor_folder: Path, n_jobs: int, name_token: str) -> None:
     submit_path = condor_folder / "submit_all.sh"
+    helper = Path(__file__).resolve().parents[1] / "scripts" / "condor_submit_jobs.py"
+    (condor_folder / "prepared_jobs.txt").write_text("".join(f"{name_token}_n{idx}.jdl\n" for idx in range(n_jobs)))
     submit_path.write_text(
         f"""#!/usr/bin/env bash
-set -u
-shopt -s nullglob
-
-prefix="{name_token}_n"
-submitted=0
-
-mapfile -t jdls < <(printf '%s\n' "${{prefix}}"*.jdl | LC_ALL=C sort -V)
-total=${{#jdls[@]}}
-bar_width=40
-
-draw_progress() {{
-  local current=$1
-  local filled=0
-  if (( total > 0 )); then
-    filled=$(( current * bar_width / total ))
-  fi
-  local empty=$(( bar_width - filled ))
-  printf -v filled_bar '%*s' "${{filled}}" ''
-  printf -v empty_bar '%*s' "${{empty}}" ''
-  filled_bar="${{filled_bar// /#}}"
-  empty_bar="${{empty_bar// /-}}"
-  printf '\\r[SUB] [%s%s] %d/%d' "${{filled_bar}}" "${{empty_bar}}" "${{current}}" "${{total}}"
-}}
-
-if (( total > 0 )); then
-  draw_progress 0
-fi
-
-for jdl in "${{jdls[@]}}"; do
-  submit_output="$(condor_submit "${{jdl}}" 2>&1)"
-  submit_status=$?
-  submitted=$((submitted + 1))
-  draw_progress "${{submitted}}"
-  if (( submit_status != 0 )); then
-    printf '\\n[WARN] condor_submit failed for %s\\n%s\\n' "${{jdl}}" "${{submit_output}}" >&2
-  fi
-done
-
-if (( total > 0 )); then
-  printf '\\n'
-fi
-echo "Submitted ${{submitted}}/${{#jdls[@]}} jobs."
+set -euo pipefail
+job_dir="$(cd -- "$(dirname -- "${{BASH_SOURCE[0]}}")" && pwd)"
+exec python3 {shlex.quote(str(helper))} "$job_dir" --jdl-list prepared_jobs.txt --batch-file prepared_batch.sub "$@"
 """
     )
     submit_path.chmod(0o755)
@@ -525,7 +497,9 @@ def create_condor_job_files(
     request_memory_mb: int,
     use_cms_connect: bool,
     cms_connect_requirements: str,
+    proxy_path: str,
 ) -> None:
+    descriptions = []
     for idx, list_rel in enumerate(list_rel_paths):
         job_name = f"{name_token}_n{idx}"
 
@@ -548,29 +522,34 @@ def create_condor_job_files(
 
         jdl_name = f"{name_token}_n{idx}.jdl"
         jdl_path = condor_folder / jdl_name
-        jdl_path.write_text(
-            create_job_jdl(
-                cmssw_ver=cmssw_ver,
-                sh_file_name=sh_name,
-                request_memory_mb=request_memory_mb,
-                use_cms_connect=use_cms_connect,
-                cms_connect_requirements=cms_connect_requirements,
-            )
+        description = create_job_jdl(
+            cmssw_ver=cmssw_ver,
+            sh_file_name=sh_name,
+            request_memory_mb=request_memory_mb,
+            use_cms_connect=use_cms_connect,
+            cms_connect_requirements=cms_connect_requirements,
+            proxy_path=proxy_path,
         )
+        jdl_path.write_text(description)
+        descriptions.append((jdl_name, description))
+    write_batch_submission(condor_folder, descriptions, proxy_path)
 
 
-def submit_jobs(condor_folder: Path) -> None:
+def submit_jobs(condor_folder: Path, resume: bool = False) -> None:
     log_info("Submitting jobs to Condor...")
     submit_env = os.environ.copy()
     submit_env.pop("PYTHONHOME", None)
     submit_env.pop("PYTHONPATH", None)
-    log_cmd("bash submit_all.sh")
-    subprocess.run(
-        ["bash", "submit_all.sh"],
+    command = ["bash", "submit_all.sh"] + (["--resume"] if resume else [])
+    log_cmd(" ".join(command))
+    result = subprocess.run(
+        command,
         cwd=str(condor_folder),
         env=submit_env,
-        check=True,
     )
+    if result.returncode:
+        log_warn(f"Submission stopped. Prepared jobs remain in {condor_folder}; rerun its submit_all.sh with --resume to continue.")
+        raise SystemExit(result.returncode)
 
 
 def parse_args() -> argparse.Namespace:
@@ -581,6 +560,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--cut-file", default=DEFAULT_CUT_FILE, help=f"Cut file path relative to repo root (default: {DEFAULT_CUT_FILE}).")
     parser.add_argument("--eos-path", default=DEFAULT_EOS_PATH, help=f"EOS output base path (default: {DEFAULT_EOS_PATH}).")
     parser.add_argument("--scram-arch", default=DEFAULT_SCRAM_ARCH, help=f"SCRAM_ARCH value (default: {DEFAULT_SCRAM_ARCH}).")
+    parser.add_argument("--proxy", help="Active proxy file; defaults to X509_USER_PROXY or voms-proxy-info -path. /tmp proxies are automatically staged on shared storage.")
+    parser.add_argument("--shared-dir", help="Shared proxy and credential staging directory; defaults to CONDOR_SHARED_DIR, CERN work/private, or LPC home/private.")
+    parser.add_argument("--resume", action="store_true", help="Opt in to duplicate checks using the queue, history, and local receipts (default: submit all prepared jobs in one call).")
     parser.add_argument(
         "--request-memory-mb",
         type=int,
@@ -617,6 +599,11 @@ def main() -> None:
     cmssw_ver = cmssw_base.name
     if cmssw_ver != DEFAULT_CMSSW_VER:
         log_warn(f"CMSSW version is {cmssw_ver}, expected {DEFAULT_CMSSW_VER}. Proceeding with {cmssw_ver}.")
+
+    if args.shared_dir:
+        os.environ["CONDOR_SHARED_DIR"] = args.shared_dir
+    proxy_path = resolve_condor_proxy(args.proxy)
+    log_info(f"Submission proxy: {proxy_path}")
 
     cfg = parse_config(cfg_path)
     input_list_path, info = ensure_das_input_list(
@@ -659,6 +646,7 @@ def main() -> None:
         request_memory_mb=args.request_memory_mb,
         use_cms_connect=args.cms_connect,
         cms_connect_requirements=cms_connect_requirements,
+        proxy_path=proxy_path,
     )
     create_submit_all(condor_folder, len(chunks), name_token)
 
@@ -669,7 +657,7 @@ def main() -> None:
     if args.no_submit:
         log_info("--dry-run/--no-submit is set. Skipping Condor submission.")
     else:
-        submit_jobs(condor_folder=condor_folder)
+        submit_jobs(condor_folder=condor_folder, resume=args.resume)
 
 
 if __name__ == "__main__":

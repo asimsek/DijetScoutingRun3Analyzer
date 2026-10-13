@@ -1,3 +1,5 @@
+#include "../include/EOSUtils.h"
+
 #include <TChain.h>
 #include <TFile.h>
 #include <TParameter.h>
@@ -142,7 +144,7 @@ struct SelectedJob {
   std::optional<fs::path> jdl;
   std::string job_label;
   std::string expected_root;
-  std::optional<fs::path> output_path;
+  std::optional<std::string> output_path;
 };
 
 struct JobRow {
@@ -367,6 +369,11 @@ std::optional<std::string> eos_xrootd_fallback(const std::string& file_path) {
   return std::nullopt;
 }
 
+using eos_utils::normalize_storage_path;
+using eos_utils::parse_xrootd_path;
+using eos_utils::storage_filename;
+using eos_utils::storage_is_directory;
+
 template <typename T>
 bool read_tparameter(TFile& file, const char* object_path, T& value) {
   TParameter<T>* param = nullptr;
@@ -567,7 +574,11 @@ void print_help(const char* argv0) {
       << "       [--total-events] [--goodMuon] [--dataset DATASET] [--request-memory-mb MB]\n"
       << "       [--threads N] path1 [path2]\n\n"
       << "Mode A: check missing Condor outputs using cjobs_dir + eos_output_dir.\n"
-      << "Mode B: with a single path (directory or .root file), count entries automatically.\n";
+      << "Mode B: with a single path (directory or .root file), count entries automatically.\n\n"
+      << "EOS paths /eos/uscms/store/... and /store/... use root://cmseos.fnal.gov via xrdfs.\n"
+      << "Explicit root://HOST//PATH URLs and local directories are also supported.\n"
+      << "Remote access uses your active VOMS proxy. Resubmission uses the current Condor environment\n"
+      << "and requires the cjobs directory, job scripts, transfer inputs, and config/input list locally.\n";
 }
 
 Options parse_args(int argc, char** argv) {
@@ -864,44 +875,18 @@ std::pair<ExpectedMap, int> filter_expected_map_by_range(
   return {filtered, skipped_unindexed};
 }
 
-std::vector<fs::path> get_existing_root_files(const fs::path& eos_dir, bool recursive) {
-  std::vector<fs::path> out;
-  std::error_code ec;
-  if (recursive) {
-    for (fs::recursive_directory_iterator it(eos_dir, fs::directory_options::skip_permission_denied, ec), end; it != end;
-         it.increment(ec)) {
-      if (ec) {
-        ec.clear();
-        continue;
-      }
-      if (it->is_regular_file(ec) && ends_with(it->path().filename().string(), "_reduced_skim.root")) {
-        out.push_back(absolute_path(it->path()));
-      }
-    }
-  } else {
-    for (fs::directory_iterator it(eos_dir, fs::directory_options::skip_permission_denied, ec), end; it != end;
-         it.increment(ec)) {
-      if (ec) {
-        ec.clear();
-        continue;
-      }
-      if (it->is_regular_file(ec) && ends_with(it->path().filename().string(), "_reduced_skim.root")) {
-        out.push_back(absolute_path(it->path()));
-      }
-    }
-  }
-  std::sort(out.begin(), out.end());
-  return out;
+std::vector<std::string> get_existing_root_files(const std::string& directory, bool recursive) {
+  return eos_utils::list_root_files(directory, recursive, "*_reduced_skim.root");
 }
 
-using ExistingByName = std::unordered_map<std::string, std::vector<fs::path>>;
-using ExistingByIndex = std::unordered_map<int, std::vector<fs::path>>;
+using ExistingByName = std::unordered_map<std::string, std::vector<std::string>>;
+using ExistingByIndex = std::unordered_map<int, std::vector<std::string>>;
 
-std::pair<ExistingByName, ExistingByIndex> build_existing_root_maps(const std::vector<fs::path>& files) {
+std::pair<ExistingByName, ExistingByIndex> build_existing_root_maps(const std::vector<std::string>& files) {
   ExistingByName by_name;
   ExistingByIndex by_index;
-  for (const fs::path& path : files) {
-    const std::string name = path.filename().string();
+  for (const std::string& path : files) {
+    const std::string name = storage_filename(path);
     by_name[name].push_back(path);
     const auto idx = extract_job_index_from_root(name);
     if (idx) {
@@ -1114,6 +1099,7 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
     long long local_entries = 0;
     int local_added = 0;
     std::string local_tree;
+    std::string local_error;
     bool local_mixed = false;
 
     while (true) {
@@ -1122,6 +1108,9 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
         break;
       }
       const FileScanResult file_result = count_file_entries(spec.files[i], trees);
+      if (local_error.empty() && !file_result.error.empty()) {
+        local_error = file_result.error;
+      }
       local_entries += file_result.entries;
       local_added += file_result.added;
       progress.done.fetch_add(1);
@@ -1137,6 +1126,9 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
     std::lock_guard<std::mutex> lock(merge_mutex);
     total.entries += local_entries;
     total.added += local_added;
+    if (total.error.empty() && !local_error.empty()) {
+      total.error = local_error;
+    }
     if (!local_tree.empty()) {
       if (total.tree.empty()) {
         total.tree = local_tree;
@@ -1333,7 +1325,7 @@ long long query_dataset_expected_events(const std::string& dataset) {
   return std::stoll(match[1].str());
 }
 
-int report_total_events(const std::vector<fs::path>& root_files, const std::string& dataset, int threads) {
+int report_total_events(const std::vector<std::string>& root_files, const std::string& dataset, int threads) {
   if (root_files.empty()) {
     std::cout << kWarnRed << " No ROOT files found for event counting.\n";
     return 4;
@@ -1341,13 +1333,14 @@ int report_total_events(const std::vector<fs::path>& root_files, const std::stri
 
   CountSpec spec;
   spec.trees = {"rootTupleTree/tree", "tree"};
-  for (const fs::path& p : root_files) {
-    spec.files.push_back(p.string());
-  }
+  spec.files = root_files;
 
   try {
     const auto t0 = std::chrono::steady_clock::now();
     const CountResult result = count_files_parallel(spec, threads);
+    if (!result.error.empty()) {
+      throw std::runtime_error(result.error);
+    }
     const auto t1 = std::chrono::steady_clock::now();
     const double dt = std::chrono::duration<double>(t1 - t0).count();
     std::cout << kInfo << " event tree      : " << result.tree << "\n";
@@ -1541,11 +1534,12 @@ void update_missing_jdls_request_memory(const std::vector<fs::path>& jdls, int m
             << "     : " << updated << "/" << jdls.size() << "\n";
 }
 
-void resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls, bool dry_run) {
+int resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls, bool dry_run) {
   if (jdls.empty()) {
     std::cout << kInfo << " No missing jobs to " << (dry_run ? "preview" : "resubmit") << ".\n";
-    return;
+    return 0;
   }
+  int failed = 0;
   std::cout << kInfo << " " << (dry_run ? "Previewing" : "Resubmitting")
             << " " << jdls.size() << " missing job(s)...\n";
   for (const fs::path& jdl : jdls) {
@@ -1557,6 +1551,7 @@ void resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jd
           "cd " + shell_quote(cjobs_dir.string()) + " && condor_submit -terse " + shell_quote(jdl.filename().string());
       const CommandResult result = run_command_capture(cmd);
       if (result.exit_code != 0) {
+        ++failed;
         std::cout << kError << " Failed to resubmit " << jdl.filename().string() << "\n";
         const std::string text = trim(result.output);
         if (!text.empty()) {
@@ -1573,6 +1568,7 @@ void resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jd
       }
     }
   }
+  return failed == 0 ? 0 : 3;
 }
 
 std::vector<SelectedJob> select_jobs(
@@ -1660,7 +1656,7 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
     }
     if (job.output_path) {
       batch_specs.push_back({"out:" + std::to_string(job.index),
-                             CountSpec{{job.output_path->string()}, {"rootTupleTree/tree", "tree"}}});
+                             CountSpec{{*job.output_path}, {"rootTupleTree/tree", "tree"}}});
     }
   }
 
@@ -1684,7 +1680,7 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
     row.input_tree = opt.input_tree;
     row.output_tree = "-";
     row.expected_root = job.expected_root.empty() ? "-" : job.expected_root;
-    row.output_root = job.output_path ? job.output_path->string() : "-";
+    row.output_root = job.output_path ? *job.output_path : "-";
     row.jdl = job.jdl ? job.jdl->filename().string() : "-";
 
     const auto das_plan_it = das_input_plans.find(job.index);
@@ -1823,11 +1819,12 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     return 2;
   }
 
-  const fs::path path1 = absolute_path(fs::path(opt.path1));
   const bool single_path_mode = trim(opt.path2).empty();
 
   if (single_path_mode) {
-    if (!fs::exists(path1)) {
+    const std::string path1 = normalize_storage_path(opt.path1);
+    const bool remote = parse_xrootd_path(path1).has_value();
+    if (!remote && !fs::exists(fs::path(path1))) {
       std::cerr << kError << " path not found: " << path1 << "\n";
       return 2;
     }
@@ -1850,14 +1847,15 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
       std::cout << kWarnRed << " --goodMuon is ignored in single-path mode.\n";
     }
 
-    if (fs::is_regular_file(path1)) {
+    const bool is_directory = storage_is_directory(path1);
+    if (!is_directory && (remote || fs::is_regular_file(fs::path(path1)))) {
       std::cout << kInfo << " input mode      : single ROOT file\n";
       std::cout << kInfo << " root file       : " << path1 << "\n";
       return report_total_events({path1}, opt.dataset, opt.threads);
     }
 
     bool recursive_used = opt.check_subdirs;
-    std::vector<fs::path> roots = get_existing_root_files(path1, recursive_used);
+    std::vector<std::string> roots = get_existing_root_files(path1, recursive_used);
     if (roots.empty() && !recursive_used) {
       roots = get_existing_root_files(path1, true);
       recursive_used = true;
@@ -1871,13 +1869,13 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     return report_total_events(roots, opt.dataset, opt.threads);
   }
 
-  const fs::path cjobs_dir = path1;
-  const fs::path eos_dir = absolute_path(fs::path(opt.path2));
+  const fs::path cjobs_dir = absolute_path(fs::path(opt.path1));
+  const std::string eos_dir = normalize_storage_path(opt.path2);
   if (!fs::exists(cjobs_dir) || !fs::is_directory(cjobs_dir)) {
     std::cerr << kError << " cjobs directory not found: " << cjobs_dir << "\n";
     return 2;
   }
-  if (!fs::exists(eos_dir) || !fs::is_directory(eos_dir)) {
+  if (!storage_is_directory(eos_dir)) {
     std::cerr << kError << " eos output directory not found: " << eos_dir << "\n";
     return 2;
   }
@@ -1902,7 +1900,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
       std::cout << kWarnRed << " --goodMuon is ignored with --noPerFile.\n";
     }
 
-    const std::vector<fs::path> roots = get_existing_root_files(eos_dir, opt.check_subdirs);
+    const std::vector<std::string> roots = get_existing_root_files(eos_dir, opt.check_subdirs);
     std::cout << kInfo << " cjobs directory : " << cjobs_dir << "\n";
     std::cout << kInfo << " eos directory   : " << eos_dir << "\n";
     std::cout << kInfo << " noPerFile mode  : yes\n";
@@ -1970,12 +1968,12 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
               << "\n";
   }
 
-  const std::vector<fs::path> existing_root_files = get_existing_root_files(eos_dir, opt.check_subdirs);
+  const std::vector<std::string> existing_root_files = get_existing_root_files(eos_dir, opt.check_subdirs);
   std::cout << kInfo << " check subdirs   : " << (opt.check_subdirs ? "yes" : "no") << "\n";
   std::vector<std::string> existing_root_names;
   existing_root_names.reserve(existing_root_files.size());
-  for (const fs::path& p : existing_root_files) {
-    existing_root_names.push_back(p.filename().string());
+  for (const std::string& p : existing_root_files) {
+    existing_root_names.push_back(storage_filename(p));
   }
   std::sort(existing_root_names.begin(), existing_root_names.end());
   existing_root_names.erase(std::unique(existing_root_names.begin(), existing_root_names.end()), existing_root_names.end());
@@ -2134,6 +2132,12 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     std::cout << kInfo << " total difference: "
               << format_with_dots(summary.total_input_events - summary.total_output_events) << "\n";
 
+    if (parse_xrootd_path(eos_dir) && summary.error_jobs > 0 && allow_resubmit) {
+      std::cerr << kError << " Remote event checks failed. No jobs were resubmitted or JDLs changed.\n"
+                << "Check your VOMS proxy and ROOT read access; see per_job_event_check.tsv for details.\n";
+      return 3;
+    }
+
     std::set<int> extra_output_indices;
     for (const auto& item : existing_by_index) {
       if (item.first >= static_cast<int>(loaded.chunks.size())) {
@@ -2183,7 +2187,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     if (opt.request_memory_mb > 0) {
       update_missing_jdls_request_memory(problematic_vec, opt.request_memory_mb, opt.dry_run);
     }
-    resubmit_missing(cjobs_dir, problematic_vec, opt.dry_run);
+    return resubmit_missing(cjobs_dir, problematic_vec, opt.dry_run);
   }
 
   return 0;
