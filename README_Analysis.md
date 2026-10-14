@@ -290,3 +290,41 @@ python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 11451.7830
 ---
 ---
 
+
+## MISC:
+
+### JEC Comparison between two nTuples:
+
+**Compile the reducer script:**
+
+```bash
+c++ -O3 -march=native -DNDEBUG $(root-config --cflags)   reduce_jec_comparison.cpp -o reduce_jec_comparison   $(root-config --libs)
+```
+
+
+
+```bash
+## nTuples with old JECs:
+./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples_oldJECs/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec old --dataset 2024H --threads 16 --output summaries/2024H_old_selected.json
+
+## nTuples with new JECs:
+./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16  --output summaries/2024H_new_selected.json
+
+python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --datasets 2024H --lumi_pb 5487.977984 --output-dir summaries/plots/jec
+```
+
+> [!TIP]
+> Use `--preset all_stored` to compare all stored events without applying any cuts.
+
+```bash
+## nTuples with old JECs (no cut):
+./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples_oldJECs/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec old --dataset 2024H --threads 16 --output summaries/2024H_old_all_stored.json --preset all_stored
+
+## nTuples with new JECs (no cut):
+./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16 --output summaries/2024H_new_all_stored.json --preset all_stored
+```
+
+
+
+---
+---
