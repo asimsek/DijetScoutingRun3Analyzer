@@ -40,6 +40,28 @@ def natural_key(path: Path) -> list:
     return [int(part) if part.isdigit() else part for part in re.split(r"(\d+)", path.name)]
 
 
+def is_lpc_status_line(line: str) -> bool:
+    """Known informational messages printed by LPC's command wrappers."""
+    return (line == "Querying the CMS LPC pool and trying to find an available schedd..."
+            or re.fullmatch(r"Attempting to submit jobs to [A-Za-z0-9_.:-]+", line) is not None)
+
+
+def parse_submit_output(output: str, expected_count: int) -> str:
+    """Validate one terse job range, allowing LPC messages before or after it."""
+    records = [line.strip() for line in output.splitlines()
+               if line.strip() and not is_lpc_status_line(line.strip())]
+    match = (re.fullmatch(r"(\d+)\.(\d+)(?:\s*-\s*(\d+)\.(\d+))?", records[0])
+             if len(records) == 1 else None)
+    if match:
+        cluster, first = int(match[1]), int(match[2])
+        last_cluster = int(match[3]) if match[3] is not None else cluster
+        last = int(match[4]) if match[4] is not None else first
+        if expected_count > 0 and cluster == last_cluster and last >= first and last - first + 1 == expected_count:
+            return f"{cluster}.{first}" + (f" - {cluster}.{last}" if match[3] is not None else "")
+    raise RuntimeError(f"Unexpected condor_submit response for {expected_count} jobs: {output.strip()!r}. "
+                       "Jobs may have been accepted; use --record-only to reconcile without submitting again.")
+
+
 def query_accepted(workdir: Path, options: list[str], env: dict) -> set[str]:
     """Include history so completed jobs are not repeated after an interrupted submission."""
     constraint = f"Owner == {json.dumps(getpass.getuser())} && Iwd == {json.dumps(str(workdir))}"
@@ -66,11 +88,15 @@ def parse_accepted_output(output: str, tool: str) -> set[str]:
     reported = None
     records = 0
     for line in output.splitlines():
-        if not line.strip() or line.lstrip().startswith("-- Schedd:"):
+        if (not line.strip() or line.lstrip().startswith("-- Schedd:")
+                or is_lpc_status_line(line.strip())):
             continue
         summary = re.match(r"\s*Total for query:\s*(\d+)\s+jobs\b", line)
         if summary:
-            reported = int(summary.group(1))
+            # LPC queries can return separate results for several schedulers.
+            reported = (reported or 0) + int(summary.group(1))
+            continue
+        if re.match(r"\s*Total for [^:]+:\s*\d+\s+jobs\b", line):
             continue
         fields = line.split("\t")
         if (len(fields) != 4 or fields[0] != "DIJET_JOB" or not fields[1].isdigit()
@@ -201,12 +227,7 @@ def submit_batch(workdir: Path, jdls: list[Path], batch: Path, proxy: str,
     if result.returncode:
         print(f"[ERROR] Batch submission failed:\n{result.stderr or result.stdout}", file=sys.stderr)
         return 1
-    job_ids = result.stdout.strip()
-    match = re.fullmatch(r"(\d+)\.(\d+)(?:\s*-\s*(\d+)\.(\d+))?", job_ids)
-    count = (int(match.group(4)) - int(match.group(2)) + 1) if match and match.group(4) else 1
-    if not match or (match.group(3) and match.group(1) != match.group(3)) or count != len(jdls):
-        raise RuntimeError(f"Unexpected batch submission response: {job_ids!r}. "
-                           "Jobs may have been accepted; use --resume before retrying.")
+    job_ids = parse_submit_output(result.stdout, len(jdls))
     # One receipt and one fsync per dataset, not one per job.
     with (workdir / "submitted_jobs.jsonl").open("a") as journal:
         journal.write(json.dumps({"jdls": [jdl.name for jdl in jdls], "job_ids": job_ids}) + "\n")
@@ -216,10 +237,12 @@ def submit_batch(workdir: Path, jdls: list[Path], batch: Path, proxy: str,
     return 0
 
 
-def submit_prepared(workdir: Path, *, resume: bool = False, proxy: str | None = None,
+def submit_prepared(workdir: Path, *, resume: bool = False, record_only: bool = False,
+                    proxy: str | None = None,
                     shared_dir: str | None = None, schedd: str | None = None,
                     pool: str | None = None, jdl_list: Path | None = None,
                     batch_file: Path | None = None, individual: bool = False) -> int:
+    resume = resume or record_only
     workdir = workdir.expanduser().resolve()
     if not workdir.is_dir():
         raise RuntimeError(f"Job directory does not exist: {workdir}")
@@ -269,6 +292,10 @@ def submit_prepared(workdir: Path, *, resume: bool = False, proxy: str | None = 
                 journal.write("".join(json.dumps({"jdl": jdl.name, "source": "queue/history"}) + "\n" for jdl in known))
                 journal.flush()
                 os.fsync(journal.fileno())
+        if record_only:
+            print(f"[INFO] Recorded {len(known)} accepted jobs; {len(pending)} prepared jobs remain unaccounted for. "
+                  "No jobs submitted (--record-only).")
+            return 0
         if not pending:
             return 0
         if not individual:
@@ -300,10 +327,7 @@ def submit_prepared(workdir: Path, *, resume: bool = False, proxy: str | None = 
                     print(f"[INFO] Newly submitted: {submitted}; skipped: {skipped}; still pending: {len(pending) - submitted}.", file=sys.stderr)
                     print("[INFO] Stopped at the first failure. Fix the reported issue, then rerun with --resume.", file=sys.stderr)
                     return 1
-                job_ids = result.stdout.strip()
-                if not re.fullmatch(r"\d+\.\d+(?:\s*-\s*\d+\.\d+)?", job_ids):
-                    raise RuntimeError(f"Unexpected condor_submit response for {jdl.name}: {job_ids}. "
-                                       "The job may have been accepted; use --resume to query Condor before retrying.")
+                job_ids = parse_submit_output(result.stdout, 1)
                 journal.write(json.dumps({"jdl": jdl.name, "job_ids": job_ids}) + "\n")
                 journal.flush()
                 os.fsync(journal.fileno())
@@ -317,6 +341,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("job_directory", type=Path, help="Existing folder containing prepared .jdl files")
     parser.add_argument("--resume", action="store_true", help="Skip accepted jobs found in the queue, history, and submission journal")
+    parser.add_argument("--record-only", action="store_true", help="Record jobs already in the queue/history without submitting any jobs (implies --resume)")
     parser.add_argument("--proxy", help="Active proxy; /tmp proxies are staged automatically")
     parser.add_argument("--shared-dir", help="Credential staging directory (default: CERN work/private or LPC home/private)")
     parser.add_argument("--schedd", help="Scheduler name, if different from your default")
@@ -326,7 +351,8 @@ def main() -> int:
     parser.add_argument("--individual", action="store_true", help="Use a separate condor_submit call per JDL (compatibility mode)")
     args = parser.parse_args()
     try:
-        return submit_prepared(args.job_directory, resume=args.resume, proxy=args.proxy,
+        return submit_prepared(args.job_directory, resume=args.resume, record_only=args.record_only,
+                               proxy=args.proxy,
                                shared_dir=args.shared_dir, schedd=args.schedd, pool=args.pool, jdl_list=args.jdl_list,
                                batch_file=args.batch_file, individual=args.individual)
     except subprocess.CalledProcessError as exc:
