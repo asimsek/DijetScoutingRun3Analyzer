@@ -300,11 +300,11 @@ analysisClass::analysisClass(std::string* inputList,
                              std::string* outputFileName,
                              std::string* cutEfficFile)
     : baseClass(inputList, cutFile, treeName, outputFileName, cutEfficFile) {
-  std::cout << "[analysisClass] Constructor (ctor) begin\n";
+  std::cout << "[analysisClass] Constructor (ctor) begin" << std::endl;
 
   // Build the JEC tools once up front so the event loop can switch between raw and corrected jets cheaply.
   if (int(getPreCutValue1("useJECs")) == 1) {
-    std::cout << "[analysisClass] Reapplying JECs via JECTool...\n";
+    std::cout << "[analysisClass] Reapplying JECs via JECTool..." << std::endl;
 
     auto Rmc = JECTool::resolveList(mcList, era);
     auto Rdata = JECTool::resolveList(dataList, era);
@@ -324,13 +324,13 @@ analysisClass::analysisClass(std::string* inputList,
     }
   }
 
-  std::cout << "[analysisClass] Constructor (ctor) end\n";
+  std::cout << "[analysisClass] Constructor (ctor) end" << std::endl;
 }
 
 analysisClass::~analysisClass() { std::cout << "[analysisClass] Destructor (dtor)\n"; }
 
 void analysisClass::Loop() {
-  std::cout << "[analysisClass] Loop begin\n";
+  std::cout << "[analysisClass] Loop begin" << std::endl;
   if (fChain == nullptr) return;
 
   // Infer which branch family to read from the file content instead of hard-coding the sample type.
@@ -733,11 +733,11 @@ void analysisClass::Loop() {
   const Long64_t nentriesToProcess =
       (maxEventsCfg > 0 && maxEventsCfg < nentries) ? maxEventsCfg : nentries;
   std::cout << "[analysisClass] entries = " << formatWithCommas(nentries)
-            << " || processing = " << formatWithCommas(nentriesToProcess) << "\n";
+            << " || processing = " << formatWithCommas(nentriesToProcess) << std::endl;
 
   for (Long64_t jentry = 0; jentry < nentriesToProcess && reader.Next(); ++jentry) {
     if (jentry < 10 || jentry % 100000 == 0) {
-      std::cout << "[analysisClass] jentry " << formatWithCommas(jentry) << "\n";
+      std::cout << "[analysisClass] jentry " << formatWithCommas(jentry) << std::endl;
     }
 
     const bool isDataEvt = isDataSample;
