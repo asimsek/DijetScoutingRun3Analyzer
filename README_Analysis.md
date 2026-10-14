@@ -322,6 +322,8 @@ python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --data
 
 ## nTuples with new JECs (no cut):
 ./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16 --output summaries/2024H_new_all_stored.json --preset all_stored
+
+python3 ./plot_jec_comparison.py --inputs 'summaries/2024H_*_all_stored.json' --datasets 2024H --lumi_pb 5487.977984 --output-dir summaries/plots/jec_all
 ```
 
 
