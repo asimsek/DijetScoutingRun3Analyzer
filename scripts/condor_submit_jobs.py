@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import errno
 import fcntl
 import getpass
 import json
@@ -15,6 +16,24 @@ import sys
 import tempfile
 
 from eos_utils import condor_shared_directory, resolve_condor_proxy
+
+
+def run_condor(command: list[str], *, cwd: Path | None = None, env: dict | None = None,
+               check: bool = False) -> subprocess.CompletedProcess:
+    """Support site shell wrappers as well as native HTCondor executables."""
+    kwargs = dict(cwd=cwd, env=env, check=check, text=True, capture_output=True)
+    try:
+        return subprocess.run(command, **kwargs)
+    except OSError as exc:
+        if exc.errno != errno.ENOEXEC:
+            raise
+        # Some LPC/container wrappers have no shebang. Bash supplies the same
+        # interpreter fallback as an interactive shell. ENOEXEC means the
+        # command never started, so this cannot repeat an accepted submission.
+        # Pass every argument separately: paths, ClassAds, and shell characters
+        # must remain literal. Avoid a login shell that would reset the runtime.
+        print(f"[INFO] {command[0]} needs shell execution; using Bash.", file=sys.stderr)
+        return subprocess.run(["/bin/bash", "-c", '"$@"', "dijet-condor", *command], **kwargs)
 
 
 def natural_key(path: Path) -> list:
@@ -36,7 +55,7 @@ def query_accepted(workdir: Path, options: list[str], env: dict) -> set[str]:
         command += ["-format", "DIJET_JOB\t%d\t", "ClusterId",
                     "-format", "%d\t", "ProcId",
                     "-format", "%s\n", 'ifThenElse(isString(DijetJobScript), DijetJobScript, ifThenElse(isString(Cmd), Cmd, ""))']
-        result = subprocess.run(command, text=True, capture_output=True, env=env, check=True)
+        result = run_condor(command, env=env, check=True)
         accepted.update(parse_accepted_output(result.stdout, tool))
     return accepted
 
@@ -177,9 +196,8 @@ def submit_batch(workdir: Path, jdls: list[Path], batch: Path, proxy: str,
                f"x509userproxy = {proxy}", str(batch)]
     print(f"[INFO] Submitting {len(jdls)} jobs in one Condor transaction.")
     with tempfile.TemporaryDirectory(prefix=".condor_submit_", dir=staging) as temporary:
-        result = subprocess.run(command, cwd=workdir,
-                                env=dict(env, TMPDIR=temporary, TMP=temporary, TEMP=temporary),
-                                text=True, capture_output=True)
+        result = run_condor(command, cwd=workdir,
+                            env=dict(env, TMPDIR=temporary, TMP=temporary, TEMP=temporary))
     if result.returncode:
         print(f"[ERROR] Batch submission failed:\n{result.stderr or result.stdout}", file=sys.stderr)
         return 1
@@ -276,7 +294,7 @@ def submit_prepared(workdir: Path, *, resume: bool = False, proxy: str | None = 
                 # The credential producer inherits TMPDIR; isolate and clean each invocation.
                 with tempfile.TemporaryDirectory(prefix=".condor_submit_", dir=staging) as temporary:
                     submit_env = dict(env, TMPDIR=temporary, TMP=temporary, TEMP=temporary)
-                    result = subprocess.run(command, cwd=workdir, env=submit_env, text=True, capture_output=True)
+                    result = run_condor(command, cwd=workdir, env=submit_env)
                 if result.returncode:
                     print(f"\n[ERROR] Submission failed for {jdl.name}:\n{result.stderr or result.stdout}", file=sys.stderr)
                     print(f"[INFO] Newly submitted: {submitted}; skipped: {skipped}; still pending: {len(pending) - submitted}.", file=sys.stderr)
