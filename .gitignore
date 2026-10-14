@@ -55,6 +55,8 @@ scripts/plot_trigger_efficiency_hist
 scripts/debug_trigger*/
 debug_trigger_inefficiencies
 scripts/plot_trigger_efficiency_GoodMuon
+scripts/reduce_jec_comparison
+scripts/summaries
 
 !Makefile
 !.gitignore
