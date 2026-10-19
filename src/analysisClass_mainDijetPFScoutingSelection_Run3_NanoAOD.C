@@ -6,6 +6,7 @@
 #include <array>
 #include <cassert>
 #include <cmath>
+#include <cstdlib>
 #include <map>
 #include <memory>
 #include <numeric>
@@ -735,7 +736,8 @@ void analysisClass::Loop() {
   std::cout << "[analysisClass] entries = " << formatWithCommas(nentries)
             << " || processing = " << formatWithCommas(nentriesToProcess) << std::endl;
 
-  for (Long64_t jentry = 0; jentry < nentriesToProcess && reader.Next(); ++jentry) {
+  Long64_t jentry = 0;
+  for (; jentry < nentriesToProcess && reader.Next(); ++jentry) {
     if (jentry < 10 || jentry % 100000 == 0) {
       std::cout << "[analysisClass] jentry " << formatWithCommas(jentry) << std::endl;
     }
@@ -1620,6 +1622,13 @@ void analysisClass::Loop() {
     if (!applyGoodMuonSelection_analysis || storeAllEventsWithGoodMuonFlag_analysis || passGoodMuonBaseSelection) {
       fillReducedSkimTree();
     }
+  }
+
+  recordProcessedEvents(jentry);
+  if (jentry != nentriesToProcess) {
+    std::cerr << "[analysisClass] ERROR: input reading stopped early. expected=" << nentriesToProcess
+              << ", processed=" << jentry << ", reader status=" << reader.GetEntryStatus() << std::endl;
+    std::exit(2);
   }
 
   // Write the trigger-study histograms into the active reduced-skim output when available.

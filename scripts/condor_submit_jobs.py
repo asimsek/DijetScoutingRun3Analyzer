@@ -62,11 +62,11 @@ def parse_submit_output(output: str, expected_count: int) -> str:
                        "Jobs may have been accepted; use --record-only to reconcile without submitting again.")
 
 
-def query_accepted(workdir: Path, options: list[str], env: dict) -> set[str]:
+def query_accepted(workdir: Path, options: list[str], env: dict, *, active_only: bool = False) -> set[str]:
     """Include history so completed jobs are not repeated after an interrupted submission."""
     constraint = f"Owner == {json.dumps(getpass.getuser())} && Iwd == {json.dumps(str(workdir))}"
     accepted = set()
-    for tool in ("condor_q", "condor_history"):
+    for tool in (("condor_q",) if active_only else ("condor_q", "condor_history")):
         # Empty successful queries do not always produce a JSON array. Use an
         # explicit record format for both tools, independent of site defaults.
         command = [tool] + options + ["-constraint", constraint]
@@ -241,8 +241,11 @@ def submit_prepared(workdir: Path, *, resume: bool = False, record_only: bool = 
                     proxy: str | None = None,
                     shared_dir: str | None = None, schedd: str | None = None,
                     pool: str | None = None, jdl_list: Path | None = None,
-                    batch_file: Path | None = None, individual: bool = False) -> int:
+                    batch_file: Path | None = None, individual: bool = False,
+                    retry_failed: bool = False) -> int:
     resume = resume or record_only
+    if retry_failed and resume:
+        raise RuntimeError("--retry-failed cannot be combined with --resume or --record-only")
     workdir = workdir.expanduser().resolve()
     if not workdir.is_dir():
         raise RuntimeError(f"Job directory does not exist: {workdir}")
@@ -252,7 +255,7 @@ def submit_prepared(workdir: Path, *, resume: bool = False, record_only: bool = 
         if any(Path(name).name != name or not name.endswith(".jdl") for name in names):
             raise RuntimeError(f"Expected JDL filenames in {list_path}.")
         jdls = [workdir / name for name in names]
-        if (resume or individual or batch_file is None) and any(not path.is_file() for path in jdls):
+        if (resume or retry_failed or individual or batch_file is None) and any(not path.is_file() for path in jdls):
             raise RuntimeError(f"A prepared JDL is missing from {workdir}.")
     else:
         jdls = sorted((path for path in workdir.glob("*.jdl") if path.name != "submit_all.jdl"), key=natural_key)
@@ -274,20 +277,22 @@ def submit_prepared(workdir: Path, *, resume: bool = False, record_only: bool = 
         except BlockingIOError as exc:
             raise RuntimeError(f"Another submission is already using {workdir}.") from exc
         recorded = read_journal(journal_path) if resume else set()
-        accepted = query_accepted(workdir, options, env) if resume else set()
+        accepted = query_accepted(workdir, options, env, active_only=retry_failed) if resume or retry_failed else set()
         unrecorded = [jdl for jdl in jdls if jdl.name not in recorded]
-        known = [jdl for jdl in unrecorded if executable_name(jdl) in accepted] if resume else []
+        known = [jdl for jdl in unrecorded if executable_name(jdl) in accepted] if resume or retry_failed else []
         known_names = {jdl.name for jdl in known}
         pending = [jdl for jdl in unrecorded if jdl.name not in known_names]
         skipped = len(jdls) - len(pending)
-        if resume:
+        if retry_failed:
+            print(f"[INFO] Retry candidates: {len(jdls)}; still in queue: {skipped}; ready to retry: {len(pending)}")
+        elif resume:
             print(f"[INFO] Prepared: {len(jdls)}; already accepted: {skipped}; remaining: {len(pending)}")
         else:
             print(f"[INFO] Duplicate checks disabled; submitting all {len(pending)} prepared jobs.")
         if not pending and not known:
             return 0
         submitted = 0
-        if known:
+        if known and not retry_failed:
             with journal_path.open("a") as journal:
                 journal.write("".join(json.dumps({"jdl": jdl.name, "source": "queue/history"}) + "\n" for jdl in known))
                 journal.flush()
@@ -299,7 +304,7 @@ def submit_prepared(workdir: Path, *, resume: bool = False, record_only: bool = 
         if not pending:
             return 0
         if not individual:
-            if batch_file is not None and not resume:
+            if batch_file is not None and not resume and not retry_failed:
                 batch = batch_file if batch_file.is_absolute() else workdir / batch_file
                 if not batch.is_file():
                     raise RuntimeError(f"Prepared batch submit file is missing: {batch}")
@@ -342,6 +347,7 @@ def main() -> int:
     parser.add_argument("job_directory", type=Path, help="Existing folder containing prepared .jdl files")
     parser.add_argument("--resume", action="store_true", help="Skip accepted jobs found in the queue, history, and submission journal")
     parser.add_argument("--record-only", action="store_true", help="Record jobs already in the queue/history without submitting any jobs (implies --resume)")
+    parser.add_argument("--retry-failed", action="store_true", help="Retry selected bad outputs, skipping jobs still in the queue; ignore completed-job history and old receipts")
     parser.add_argument("--proxy", help="Active proxy; /tmp proxies are staged automatically")
     parser.add_argument("--shared-dir", help="Credential staging directory (default: CERN work/private or LPC home/private)")
     parser.add_argument("--schedd", help="Scheduler name, if different from your default")
@@ -354,7 +360,7 @@ def main() -> int:
         return submit_prepared(args.job_directory, resume=args.resume, record_only=args.record_only,
                                proxy=args.proxy,
                                shared_dir=args.shared_dir, schedd=args.schedd, pool=args.pool, jdl_list=args.jdl_list,
-                               batch_file=args.batch_file, individual=args.individual)
+                               batch_file=args.batch_file, individual=args.individual, retry_failed=args.retry_failed)
     except subprocess.CalledProcessError as exc:
         print(f"[ERROR] {' '.join(exc.cmd)} failed: {(exc.stderr or exc.stdout or '').strip()}", file=sys.stderr)
         return 1

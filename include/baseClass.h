@@ -201,12 +201,15 @@ class baseClass : public rootNtupleClass {
   void fillReducedSkimTree();
   TFile* getHistogramOutputFile() const { return reduced_skim_file_ ? reduced_skim_file_ : output_root_; }
   const std::string& getOutputFileNameStem() const { return *outputFileName_; }
+  void recordProcessedEvents(Long64_t count) { processedEvents_ = count; }
 
   PileupReweighter pileupReweighter_;
 
   TFile * output_root_;
 
   private :
+  Long64_t validatedInputEvents_ = 0;
+  Long64_t processedEvents_ = -1;
   void getHltMap(char*);
 
   int nOptimizerCuts_;

@@ -307,12 +307,19 @@ def update_json_path(repo_root: Path, cut_file: str, golden_json: str) -> None:
     cut_path.write_text("\n".join(out) + "\n")
 
 
+def input_lines(text: str) -> List[str]:
+    return [line.strip() for line in text.splitlines()
+            if line.strip() and not line.lstrip().startswith("#")]
+
+
 def read_input_files(input_list_path: Path) -> List[str]:
     if not input_list_path.exists():
         raise RuntimeError(f"Input list does not exist: {input_list_path}")
-    files = [line.strip() for line in input_list_path.read_text().splitlines() if line.strip()]
+    files = input_lines(input_list_path.read_text())
     if not files:
         raise RuntimeError(f"Input list is empty: {input_list_path}")
+    if len(set(files)) != len(files):
+        raise RuntimeError(f"Input list contains duplicate files: {input_list_path}")
     return files
 
 
@@ -343,9 +350,9 @@ def split_into_chunks(items: List[str], chunk_size: int) -> List[List[str]]:
 
 
 def create_condor_folder(script_dir: Path, name_token: str) -> Tuple[Path, str]:
-    date_time = datetime.now().strftime("%d%B%Y_%H")
+    date_time = datetime.now().strftime("%d%B%Y_%H%M")
     condor_folder = script_dir / f"cjobs_{name_token}_{date_time}"
-    condor_folder.mkdir(parents=True, exist_ok=True)
+    condor_folder.mkdir(parents=True, exist_ok=False)
     return condor_folder, date_time
 
 
@@ -357,7 +364,7 @@ def write_chunk_lists(
     date_time: str,
 ) -> List[str]:
     list_dir = repo_root / "lists" / info.dataset_type / f"{name_token}_{date_time}"
-    list_dir.mkdir(parents=True, exist_ok=True)
+    list_dir.mkdir(parents=True, exist_ok=False)
 
     rel_paths: List[str] = []
     for idx, chunk in enumerate(chunks):
@@ -413,27 +420,50 @@ def create_job_shell(
     eos_dir = f"{eos_path}/{info.year_number}/{info.dataset_type}/{info.dataset_type}_{info.year}"
     eos_file = f"{eos_dir}/{job_name}_reduced_skim.root"
 
+    q = shlex.quote
     return f"""#!/usr/bin/env bash
 set -eo pipefail
 
 export VO_CMS_SW_DIR="${{VO_CMS_SW_DIR:-/cvmfs/cms.cern.ch}}"
 source "${{VO_CMS_SW_DIR}}/cmsset_default.sh"
-export SCRAM_ARCH={scram_arch}
+export SCRAM_ARCH={q(scram_arch)}
 
-tar -xzf {cmssw_ver}.tar.gz
-rm -f {cmssw_ver}.tar.gz
+tar -xzf {q(cmssw_ver + '.tar.gz')}
+rm -f {q(cmssw_ver + '.tar.gz')}
 
-cd {cmssw_ver}/src
+cd {q(cmssw_ver + '/src')}
 scramv1 b ProjectRename
 eval "$(scramv1 runtime -sh)"
 
 cd DijetScoutingRun3Analyzer
-ln -sf {analyzer_script} src/analysisClass.C
+ln -sf {q(analyzer_script)} src/analysisClass.C
 
-./main {list_rel_path} {cut_file} {tree_name} {job_name} {job_name}
+./main {q(list_rel_path)} {q(cut_file)} {q(tree_name)} {q(job_name)} {q(job_name)}
 
-xrdfs root://cmseos.fnal.gov mkdir -p {eos_dir}
-xrdcp -f {job_name}_reduced_skim.root root://cmseos.fnal.gov/{eos_file}
+endpoint=root://cmseos.fnal.gov
+destination={q(eos_file)}
+upload_path="${{destination}}.upload.${{HOSTNAME:-worker}}.$$.$RANDOM.$RANDOM"
+cleanup_upload() {{
+  status=$?
+  trap - EXIT
+  xrdfs "$endpoint" rm "$upload_path" >/dev/null 2>&1 || true
+  exit "$status"
+}}
+trap cleanup_upload EXIT
+xrdfs "$endpoint" mkdir -p {q(eos_dir)}
+copied=0
+for attempt in 1 2 3; do
+  if xrdcp --cksum adler32 --posc -f {q(job_name + '_reduced_skim.root')} "$endpoint/$upload_path"; then
+    copied=1
+    break
+  fi
+  echo "[WARN] EOS upload attempt $attempt failed" >&2
+  if [[ "$attempt" -lt 3 ]]; then sleep 5; fi
+done
+[[ "$copied" -eq 1 ]] || exit 3
+xrdfs "$endpoint" mv "$upload_path" "$destination"
+trap - EXIT
+echo "[INFO] Output published: $endpoint/$destination"
 """
 
 
@@ -455,7 +485,8 @@ batch_name = {dataset_label}
 +DijetDataset = "{dataset_label}"
 Executable = {sh_file_name}
 Should_Transfer_Files = YES
-WhenToTransferOutput = ON_EXIT_OR_EVICT
+WhenToTransferOutput = ON_EXIT
+transfer_output_files =
 Transfer_Input_Files = {cmssw_ver}.tar.gz, {sh_file_name}
 request_cpus = 1
 request_memory = {request_memory_mb}
@@ -624,6 +655,12 @@ def main() -> None:
 
     update_analyzer_era(repo_root, cfg.analyzer_script, cfg.era)
     update_json_path(repo_root, args.cut_file, cfg.golden_json)
+
+    cut_path = repo_root / args.cut_file
+    for line in input_lines(cut_path.read_text()):
+        fields = line.split()
+        if fields[0] == "maxEvents" and float(fields[1]) > 0:
+            raise RuntimeError("Condor production requires maxEvents=0; a positive limit would create incomplete ntuples")
 
     prepare_framework(repo_root, sample_file=input_files[0], tree_name=args.tree_name)
     chunks = split_into_chunks(input_files, cfg.interval)

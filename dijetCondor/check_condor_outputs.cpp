@@ -2,6 +2,8 @@
 
 #include <TChain.h>
 #include <TFile.h>
+#include <TFileCacheRead.h>
+#include <TKey.h>
 #include <TParameter.h>
 #include <TROOT.h>
 #include <TTree.h>
@@ -12,10 +14,12 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <filesystem>
 #include <fstream>
 #include <functional>
 #include <iostream>
+#include <iomanip>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -57,6 +61,7 @@ struct Options {
   std::string dataset;
   int request_memory_mb = 0;
   int threads = 0;
+  bool root_input_counts = false;
 };
 
 struct CommandResult {
@@ -75,6 +80,8 @@ struct CountResult {
   std::string tree;
   bool has_expected_events = false;
   long long expected_events = 0;
+  bool has_processed_events = false;
+  long long processed_events = 0;
   bool has_actual_events = false;
   long long actual_events = 0;
   bool has_apply_goodmuon_selection_analysis = false;
@@ -92,6 +99,8 @@ struct FileScanResult {
   std::string tree;
   bool has_expected_events = false;
   long long expected_events = 0;
+  bool has_processed_events = false;
+  long long processed_events = 0;
   bool has_actual_events = false;
   long long actual_events = 0;
   bool has_apply_goodmuon_selection_analysis = false;
@@ -116,6 +125,8 @@ struct GroupAccumulator {
   bool mixed_tree = false;
   bool has_expected_events = false;
   long long expected_events = 0;
+  bool has_processed_events = false;
+  long long processed_events = 0;
   bool has_actual_events = false;
   long long actual_events = 0;
   bool has_apply_goodmuon_selection_analysis = false;
@@ -136,7 +147,51 @@ struct DasInputPlan {
 struct ProgressState {
   std::atomic<std::size_t> done{0};
   std::atomic<bool> stop{false};
+  std::chrono::steady_clock::time_point started = std::chrono::steady_clock::now();
 };
+
+enum class MetadataRead { None, Counts, Selection };
+
+struct ScanIoTotals {
+  std::atomic<long long> files{0}, open_ns{0}, scan_ns{0}, close_ns{0}, read_calls{0}, bytes{0};
+  void reset() { files = 0; open_ns = 0; scan_ns = 0; close_ns = 0; read_calls = 0; bytes = 0; }
+} scan_io;
+
+struct FileScanTiming {
+  using Clock = std::chrono::steady_clock;
+  std::unique_ptr<TFile>& file;
+  Clock::time_point start = Clock::now(), opened = start;
+  ~FileScanTiming() {
+    const auto scanned = Clock::now();
+    if (file) {
+      scan_io.read_calls += file->GetReadCalls();
+      scan_io.bytes += file->GetBytesRead();
+      file.reset();
+    }
+    const auto closed = Clock::now();
+    const auto ns = [](auto duration) { return std::chrono::duration_cast<std::chrono::nanoseconds>(duration).count(); };
+    ++scan_io.files;
+    scan_io.open_ns += ns(opened - start);
+    scan_io.scan_ns += ns(scanned - opened);
+    scan_io.close_ns += ns(closed - scanned);
+  }
+};
+
+void report_scan_io(double seconds, int threads, bool verbose) {
+  const auto files = scan_io.files.load();
+  std::ostringstream text;
+  text << std::fixed << std::setprecision(2);
+  text << kInfo << " ROOT scan       : " << seconds << "s, "
+       << (seconds > 0 ? files / seconds : 0) << " files/s, " << threads << " workers\n";
+  if (verbose && files) {
+    text << kInfo << " I/O per file    : open=" << scan_io.open_ns.load() / (1.e6 * files)
+         << "ms, headers=" << scan_io.scan_ns.load() / (1.e6 * files)
+         << "ms, close=" << scan_io.close_ns.load() / (1.e6 * files)
+         << "ms, reads=" << double(scan_io.read_calls.load()) / files
+         << ", KiB=" << scan_io.bytes.load() / (1024. * files) << "\n";
+  }
+  std::cout << text.str();
+}
 
 struct SelectedJob {
   int index = 0;
@@ -419,7 +474,7 @@ bool read_tparameter<int>(TFile& file, const char* object_path, int& value) {
   return false;
 }
 
-void print_progress_line(const std::string& label, std::size_t done, std::size_t total) {
+void print_progress_line(const std::string& label, std::size_t done, std::size_t total, double seconds) {
   static constexpr std::size_t kBarWidth = 32;
   const double frac = total == 0 ? 1.0 : static_cast<double>(done) / static_cast<double>(total);
   std::size_t filled = static_cast<std::size_t>(frac * static_cast<double>(kBarWidth));
@@ -436,16 +491,20 @@ void print_progress_line(const std::string& label, std::size_t done, std::size_t
   if (total > 0) {
     bar << " (" << static_cast<int>(frac * 100.0) << "%)";
   }
+  if (seconds > 0 && done) {
+    bar << std::fixed << std::setprecision(1) << "  " << done / seconds << " files/s";
+  }
   std::cout << bar.str() << std::flush;
 }
 
 void run_progress_monitor(const std::string& label, std::size_t total, ProgressState& state) {
   using namespace std::chrono_literals;
+  const auto elapsed = [&]() { return std::chrono::duration<double>(std::chrono::steady_clock::now() - state.started).count(); };
   while (!state.stop.load()) {
-    print_progress_line(label, state.done.load(), total);
+    print_progress_line(label, state.done.load(), total, elapsed());
     std::this_thread::sleep_for(250ms);
   }
-  print_progress_line(label, state.done.load(), total);
+  print_progress_line(label, state.done.load(), total, elapsed());
   std::cout << '\n';
 }
 
@@ -577,8 +636,14 @@ void print_help(const char* argv0) {
       << "Mode B: with a single path (directory or .root file), count entries automatically.\n\n"
       << "EOS paths /eos/uscms/store/... and /store/... use root://cmseos.fnal.gov via xrdfs.\n"
       << "Explicit root://HOST//PATH URLs and local directories are also supported.\n"
+      << "--config enables per-job event checks using each job script's existing split list.\n"
+      << "--resubmit retries problematic jobs after one active-queue query; active jobs are skipped.\n"
+      << "--root-input-counts bypasses DAS/cache only when explicitly requested (use with a small job range).\n"
+      << "Remote scans use at least 32 workers automatically; --threads overrides this.\n"
+      << "--verbose also reports mean file-open/header-read/close times and ROOT read counters.\n"
+      << "Exit 4 means missing/mismatched outputs; exit 2/3 indicates a reference/read/submit error.\n"
       << "Remote access uses your active VOMS proxy. Resubmission uses the current Condor environment\n"
-      << "and requires the cjobs directory, job scripts, transfer inputs, and config/input list locally.\n";
+      << "and requires the cjobs directory, job scripts, original split lists, and submission helper locally.\n";
 }
 
 Options parse_args(int argc, char** argv) {
@@ -625,6 +690,8 @@ Options parse_args(int argc, char** argv) {
       opt.request_memory_mb = std::stoi(need_value(arg));
     } else if (arg == "--threads") {
       opt.threads = std::stoi(need_value(arg));
+    } else if (arg == "--root-input-counts") {
+      opt.root_input_counts = true;
     } else if (starts_with(arg, "--")) {
       throw std::runtime_error("unknown option: " + arg);
     } else {
@@ -668,106 +735,97 @@ bool in_job_range(int idx, const std::optional<int>& start, const std::optional<
   return true;
 }
 
-std::map<std::string, std::string> parse_key_value_file(const fs::path& path) {
-  std::map<std::string, std::string> kv;
-  for (const std::string& raw : read_lines(path)) {
-    const std::string line = trim(raw);
-    if (line.empty() || line[0] == '#') {
-      continue;
-    }
-    const std::size_t eq = line.find('=');
-    if (eq == std::string::npos) {
-      continue;
-    }
-    kv[trim(line.substr(0, eq))] = trim(line.substr(eq + 1));
-  }
-  return kv;
-}
-
-fs::path resolve_input_list_path(
-    const std::string& raw,
-    const fs::path& config_path,
-    const fs::path& repo_root,
-    const std::optional<fs::path>& cmssw_base) {
-  fs::path expanded = raw;
-  if (expanded.is_absolute()) {
-    return expanded;
-  }
-
-  std::vector<fs::path> candidates = {
-      fs::path(raw),
-      config_path.parent_path() / raw,
-      repo_root / raw,
-  };
-  if (cmssw_base) {
-    candidates.push_back(*cmssw_base / "src" / raw);
-  }
-
-  for (const fs::path& cand : candidates) {
-    if (fs::exists(cand)) {
-      return absolute_path(cand);
-    }
-  }
-  return absolute_path(config_path.parent_path() / raw);
-}
-
-std::vector<std::string> read_input_files(const fs::path& input_list) {
-  std::vector<std::string> files;
-  for (const std::string& raw : read_lines(input_list)) {
-    const std::string line = trim(raw);
-    if (!line.empty()) {
-      files.push_back(line);
-    }
-  }
-  if (files.empty()) {
-    throw std::runtime_error("Input list is empty: " + input_list.string());
-  }
-  return files;
-}
-
-std::vector<std::vector<std::string>> split_into_chunks(const std::vector<std::string>& items, int chunk_size) {
-  if (chunk_size <= 0) {
-    throw std::runtime_error("Interval must be > 0.");
-  }
-  std::vector<std::vector<std::string>> chunks;
-  for (std::size_t i = 0; i < items.size(); i += static_cast<std::size_t>(chunk_size)) {
-    const std::size_t end = std::min(items.size(), i + static_cast<std::size_t>(chunk_size));
-    chunks.emplace_back(items.begin() + static_cast<long>(i), items.begin() + static_cast<long>(end));
-  }
-  return chunks;
-}
-
 struct LoadedChunks {
   std::vector<std::vector<std::string>> chunks;
   int interval = 0;
   std::string dataset;
   fs::path input_list_path;
+  std::string tree;
 };
 
-LoadedChunks load_job_chunks_from_config(const fs::path& config_path, const fs::path& repo_root) {
-  const auto kv = parse_key_value_file(config_path);
-  auto input_it = kv.find("InputList");
-  auto interval_it = kv.find("Interval");
-  if (input_it == kv.end() || interval_it == kv.end()) {
-    throw std::runtime_error("Missing required config key(s): InputList, Interval");
+std::vector<std::string> shell_words(const std::string& line) {
+  std::vector<std::string> words;
+  std::string word;
+  char quote = 0;
+  bool started = false;
+  for (std::size_t i = 0; i < line.size(); ++i) {
+    const char c = line[i];
+    if (c == '\\' && quote != '\'') {
+      if (++i == line.size()) throw std::runtime_error("Unterminated shell escape");
+      word += line[i];
+      started = true;
+    } else if (quote && c == quote) {
+      quote = 0;
+    } else if (!quote && (c == '\'' || c == '"')) {
+      quote = c;
+      started = true;
+    } else if (!quote && std::isspace(static_cast<unsigned char>(c))) {
+      if (started) words.push_back(word);
+      word.clear();
+      started = false;
+    } else if (!quote && c == '#' && !started) {
+      break;
+    } else {
+      if (quote != '\'' && (c == '$' || c == '`' || (!quote && std::string(";|&<>").find(c) != std::string::npos))) {
+        throw std::runtime_error("Expected literal ./main arguments in job script");
+      }
+      word += c;
+      started = true;
+    }
   }
+  if (quote) throw std::runtime_error("Unterminated shell quote");
+  if (started) words.push_back(word);
+  return words;
+}
 
-  const int interval = std::stoi(interval_it->second);
-  std::optional<fs::path> cmssw_base;
-  const char* cmssw_env = std::getenv("CMSSW_BASE");
-  if (cmssw_env && *cmssw_env) {
-    cmssw_base = absolute_path(fs::path(cmssw_env));
-  }
-  const fs::path input_list_path = resolve_input_list_path(input_it->second, config_path, repo_root, cmssw_base);
-  if (!fs::exists(input_list_path)) {
-    throw std::runtime_error("Input list does not exist: " + input_list_path.string());
-  }
-
+LoadedChunks load_production_chunks(const fs::path& config_path, const fs::path& repo_root,
+                                   const std::map<fs::path, std::string>& job_scripts) {
   LoadedChunks out;
-  out.interval = interval;
-  out.dataset = kv.count("Dataset") ? kv.at("Dataset") : "";
-  out.input_list_path = input_list_path;
-  out.chunks = split_into_chunks(read_input_files(input_list_path), interval);
+  for (const auto& raw : read_lines(config_path)) {
+    const auto line = trim(raw);
+    const auto eq = line.find('=');
+    if (eq != std::string::npos && trim(line.substr(0, eq)) == "Dataset") {
+      out.dataset = trim(line.substr(eq + 1));
+    }
+  }
+  out.chunks.resize(job_scripts.size());
+  std::set<int> seen;
+  static const std::regex index_re("_n(\\d+)\\.jdl$");
+  for (const auto& [jdl, script] : job_scripts) {
+    std::smatch match;
+    const auto name = jdl.filename().string();
+    if (!std::regex_search(name, match, index_re)) throw std::runtime_error("Missing job index: " + name);
+    const int index = std::stoi(match[1]);
+    if (index >= static_cast<int>(out.chunks.size()) || !seen.insert(index).second) {
+      throw std::runtime_error("Job indices must be unique and contiguous starting at zero");
+    }
+    std::istringstream lines(script);
+    std::vector<std::string> arguments;
+    std::string line;
+    while (std::getline(lines, line)) {
+      line = trim(line);
+      if (!starts_with(line, "./main ") && !starts_with(line, "./main\t")) continue;
+      if (!arguments.empty()) throw std::runtime_error("Multiple ./main commands in " + name);
+      arguments = shell_words(line);
+    }
+    if (arguments.size() != 6) throw std::runtime_error("Cannot identify ./main input list in " + name);
+    const fs::path list = absolute_path(repo_root / arguments[1]);
+    if (!fs::is_regular_file(list)) {
+      throw std::runtime_error("Job split list is missing: " + list.string() +
+          ". Restore the lists directory used by this production; the current master InputList is not a substitute.");
+    }
+    auto& inputs = out.chunks[index];
+    for (const auto& raw : read_lines(list)) {
+      const auto input = trim(raw);
+      if (!input.empty() && input.front() != '#') inputs.push_back(input);
+    }
+    if (inputs.empty()) throw std::runtime_error("Empty job split list: " + list.string());
+    out.interval = std::max(out.interval, static_cast<int>(inputs.size()));
+    if (out.input_list_path.empty()) out.input_list_path = list.parent_path();
+    if (!out.tree.empty() && out.tree != arguments[3]) throw std::runtime_error("Mixed production input trees");
+    out.tree = arguments[3];
+  }
+  if (out.chunks.empty()) throw std::runtime_error("Production has no job input lists");
   return out;
 }
 
@@ -791,22 +849,23 @@ std::vector<fs::path> get_jdl_files(const fs::path& cjobs_dir) {
 std::optional<std::string> read_executable_from_jdl(const fs::path& jdl_path) {
   for (const std::string& raw : read_lines(jdl_path)) {
     const std::string line = trim(raw);
-    if (starts_with(line, "Executable")) {
+    static const std::regex executable_re("^executable\\s*=", std::regex::icase);
+    if (std::regex_search(line, executable_re)) {
       const std::size_t eq = line.find('=');
       if (eq != std::string::npos) {
-        return trim(line.substr(eq + 1));
+        std::string executable = trim(line.substr(eq + 1));
+        if (executable.size() >= 2 && executable.front() == '"' && executable.back() == '"') {
+          executable = executable.substr(1, executable.size() - 2);
+        }
+        return executable;
       }
     }
   }
   return std::nullopt;
 }
 
-std::optional<std::string> expected_root_from_sh(const fs::path& sh_path) {
-  if (!fs::exists(sh_path)) {
-    return std::nullopt;
-  }
+std::optional<std::string> expected_root_from_script(const std::string& text) {
   static const std::regex re("([A-Za-z0-9._-]+_reduced_skim\\.root)");
-  const std::string text = read_text(sh_path);
   std::smatch match;
   if (!std::regex_search(text, match, re)) {
     return std::nullopt;
@@ -816,7 +875,9 @@ std::optional<std::string> expected_root_from_sh(const fs::path& sh_path) {
 
 using ExpectedMap = std::map<std::string, fs::path>;
 
-std::pair<ExpectedMap, std::vector<fs::path>> build_expected_map(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls) {
+std::pair<ExpectedMap, std::vector<fs::path>> build_expected_map(
+    const fs::path& cjobs_dir, const std::vector<fs::path>& jdls,
+    std::map<fs::path, std::string>& job_scripts) {
   ExpectedMap expected;
   std::vector<fs::path> unresolved;
   for (const fs::path& jdl : jdls) {
@@ -825,12 +886,20 @@ std::pair<ExpectedMap, std::vector<fs::path>> build_expected_map(const fs::path&
       unresolved.push_back(jdl);
       continue;
     }
-    const auto root_name = expected_root_from_sh(cjobs_dir / *sh_name);
+    const fs::path script = cjobs_dir / *sh_name;
+    if (!fs::is_regular_file(script)) {
+      unresolved.push_back(jdl);
+      continue;
+    }
+    auto [script_it, inserted] = job_scripts.emplace(jdl, read_text(script));
+    const auto root_name = expected_root_from_script(script_it->second);
     if (!root_name) {
       unresolved.push_back(jdl);
       continue;
     }
-    expected[*root_name] = jdl;
+    if (!expected.emplace(*root_name, jdl).second) {
+      throw std::runtime_error("Multiple JDLs write the same output: " + *root_name);
+    }
   }
   return {expected, unresolved};
 }
@@ -896,7 +965,7 @@ std::pair<ExistingByName, ExistingByIndex> build_existing_root_maps(const std::v
   return {by_name, by_index};
 }
 
-std::pair<std::vector<std::string>, std::map<std::string, std::string>> resolve_missing_with_fallback(
+std::vector<std::string> find_missing_outputs(
     const std::vector<std::string>& expected_roots,
     const std::vector<std::string>& existing_root_names) {
   std::set<std::string> existing(existing_root_names.begin(), existing_root_names.end());
@@ -907,52 +976,10 @@ std::pair<std::vector<std::string>, std::map<std::string, std::string>> resolve_
     }
   }
 
-  std::set<std::string> used_existing;
-  for (const std::string& name : expected_roots) {
-    if (existing.count(name)) {
-      used_existing.insert(name);
-    }
-  }
-
-  std::vector<std::string> pool;
-  for (const std::string& name : existing_root_names) {
-    if (ends_with(name, "_reduced_skim.root") && !used_existing.count(name)) {
-      pool.push_back(name);
-    }
-  }
-
-  std::map<std::string, std::string> fallback_matches;
-  for (const std::string& expected_name : missing_exact) {
-    std::optional<std::size_t> candidate_index;
-    const auto idx = extract_job_index_from_root(expected_name);
-    if (idx) {
-      const std::string suffix = "_n" + std::to_string(*idx) + "_reduced_skim.root";
-      for (std::size_t i = 0; i < pool.size(); ++i) {
-        if (ends_with(pool[i], suffix)) {
-          candidate_index = i;
-          break;
-        }
-      }
-    }
-    if (!candidate_index && !pool.empty()) {
-      candidate_index = 0;
-    }
-    if (candidate_index) {
-      fallback_matches[expected_name] = pool[*candidate_index];
-      pool.erase(pool.begin() + static_cast<long>(*candidate_index));
-    }
-  }
-
-  std::vector<std::string> missing_final;
-  for (const std::string& name : missing_exact) {
-    if (!fallback_matches.count(name)) {
-      missing_final.push_back(name);
-    }
-  }
-  return {missing_final, fallback_matches};
+  return missing_exact;
 }
 
-int effective_threads(int requested, std::size_t max_tasks) {
+int effective_threads(int requested, std::size_t max_tasks, bool remote = false) {
   unsigned n = 1;
   if (requested > 0) {
     n = static_cast<unsigned>(requested);
@@ -961,6 +988,7 @@ int effective_threads(int requested, std::size_t max_tasks) {
     if (n == 0) {
       n = 1;
     }
+    if (remote) n = std::max(n, 32u);
   }
   if (max_tasks > 0 && n > max_tasks) {
     n = static_cast<unsigned>(max_tasks);
@@ -999,7 +1027,129 @@ CountResult count_group_chain(const CountSpec& spec) {
   return result;
 }
 
-FileScanResult count_file_entries(const std::string& file_path, const std::vector<std::string>& trees) {
+struct CountCacheDeleter {
+  TFile* file;
+  void operator()(TFileCacheRead* cache) const {
+    if (file->GetCacheRead() == cache) file->SetCacheRead(nullptr);
+    delete cache;
+  }
+};
+using CountReadCache = std::unique_ptr<TFileCacheRead, CountCacheDeleter>;
+
+class DirectoryReadCache : public TFileCacheRead {
+  std::vector<Long64_t> positions_;
+  std::vector<Int_t> lengths_;
+  std::vector<char> bytes_;
+
+public:
+  DirectoryReadCache(TFile& file, std::vector<Long64_t> positions, std::vector<Int_t> lengths,
+                     std::vector<char> bytes)
+      : TFileCacheRead(&file, 0), positions_(std::move(positions)),
+        lengths_(std::move(lengths)), bytes_(std::move(bytes)) {
+    SetEnablePrefetching(false);
+  }
+
+  Int_t ReadBuffer(char* buffer, Long64_t position, Int_t length) override {
+    std::size_t offset = 0;
+    for (std::size_t i = 0; i < positions_.size(); ++i) {
+      if (position >= positions_[i] && length >= 0) {
+        const auto relative = position - positions_[i];
+        if (relative <= lengths_[i] && length <= lengths_[i] - relative) {
+          std::memcpy(buffer, bytes_.data() + offset + relative, length);
+          return 1;
+        }
+      }
+      offset += lengths_[i];
+    }
+    return TFileCacheRead::ReadBuffer(buffer, position, length);
+  }
+};
+
+CountReadCache prefetch_count_keys(TFile& file, const std::vector<std::string>& trees,
+                                  MetadataRead metadata) {
+  CountReadCache cache(nullptr, CountCacheDeleter{&file});
+  if (file.GetCacheRead()) return cache;
+
+  std::set<std::string> directories;
+  if (metadata != MetadataRead::None) directories.insert("metaData");
+  for (const auto& tree : trees) {
+    const auto slash = tree.find('/');
+    if (slash != std::string::npos) directories.insert(tree.substr(0, slash));
+  }
+  const auto index = file.GetSeekKeys();
+  if (!directories.empty() && index > 0 && index < file.GetEND()) {
+    const auto start = std::max(0LL, index - 32768);
+    const auto end = std::min(file.GetEND(), start + 65536);
+    std::vector<std::pair<Long64_t, Long64_t>> ranges{{start, end}};
+    for (const auto& name : directories) {
+      auto* key = file.GetKey(name.c_str());
+      if (key && key->GetSeekKey() > 0 && key->GetNbytes() > 0 && key->GetNbytes() < 1024 * 1024 &&
+          key->GetSeekKey() < file.GetEND() && key->GetNbytes() <= file.GetEND() - key->GetSeekKey() &&
+          (std::string(key->GetClassName()) == "TDirectoryFile" || std::string(key->GetClassName()) == "TDirectory")) {
+        ranges.emplace_back(key->GetSeekKey(), key->GetSeekKey() + key->GetNbytes());
+      }
+    }
+    std::sort(ranges.begin(), ranges.end());
+    std::vector<Long64_t> positions;
+    std::vector<Int_t> lengths;
+    for (const auto& range : ranges) {
+      if (!positions.empty() && range.first <= positions.back() + lengths.back()) {
+        lengths.back() = static_cast<Int_t>(std::max(positions.back() + lengths.back(), range.second) - positions.back());
+      } else {
+        positions.push_back(range.first);
+        lengths.push_back(static_cast<Int_t>(range.second - range.first));
+      }
+    }
+    std::size_t bytes = 0;
+    for (const auto length : lengths) bytes += length;
+    if (bytes <= 8 * 1024 * 1024) {
+      std::vector<char> buffer(bytes);
+      if (file.ReadBuffers(buffer.data(), positions.data(), lengths.data(), static_cast<Int_t>(positions.size()))) return cache;
+      cache.reset(new DirectoryReadCache(file, std::move(positions), std::move(lengths), std::move(buffer)));
+    }
+  }
+
+  std::vector<TKey*> keys;
+  if (metadata != MetadataRead::None) {
+    if (auto* directory = file.GetDirectory("metaData")) {
+      for (const char* name : {"expectedEvents", "processedEvents", "actualEvents",
+                              "applyGoodMuonSelection_analysis", "storeAllEventsWithGoodMuonFlag_analysis",
+                              "reducedSkimIsFiltered"}) {
+        if (metadata == MetadataRead::Counts && std::string(name) != "expectedEvents" &&
+            std::string(name) != "processedEvents") continue;
+        if (auto* key = directory->GetKey(name)) keys.push_back(key);
+      }
+    }
+  }
+  for (const auto& tree : trees) {
+    const auto slash = tree.rfind('/');
+    auto* directory = slash == std::string::npos ? &file : file.GetDirectory(tree.substr(0, slash).c_str());
+    if (!directory) continue;
+    const auto name = slash == std::string::npos ? tree : tree.substr(slash + 1);
+    if (auto* key = directory->GetKey(name.c_str())) {
+      keys.push_back(key);
+      break;
+    }
+  }
+  long long bytes = 0;
+  for (const auto* key : keys) {
+    if (key->GetSeekKey() <= 0 || key->GetNbytes() <= 0 || key->GetNbytes() > 4 * 1024 * 1024) return cache;
+    bytes += key->GetNbytes();
+  }
+  if (keys.size() < 2 || bytes > 8 * 1024 * 1024) return cache;
+  cache.reset();
+  cache.reset(new TFileCacheRead(&file, static_cast<int>(std::max(100000LL, bytes))));
+  cache->SetEnablePrefetching(false);
+  for (const auto* key : keys) cache->Prefetch(key->GetSeekKey(), key->GetNbytes());
+  char probe;
+  if (cache->ReadBuffer(&probe, keys.front()->GetSeekKey(), 1) < 0) {
+    cache.reset();
+  }
+  return cache;
+}
+
+FileScanResult count_file_entries(const std::string& file_path, const std::vector<std::string>& trees,
+                                 MetadataRead metadata = MetadataRead::Selection) {
   FileScanResult result;
   if (file_path.empty()) {
     result.error = "empty file path";
@@ -1019,49 +1169,67 @@ FileScanResult count_file_entries(const std::string& file_path, const std::vecto
   }
 
   std::unique_ptr<TFile> file;
+  FileScanTiming timing{file};
   for (const std::string& candidate : open_candidates) {
     file.reset(TFile::Open(candidate.c_str(), "READ"));
     if (file && !file->IsZombie()) {
       break;
     }
   }
+  timing.opened = FileScanTiming::Clock::now();
   if (!file || file->IsZombie()) {
     result.error = "failed to open ROOT file: " + file_path;
     return result;
   }
 
-  Long64_t expected_events = 0;
-  if (read_tparameter(*file, "metaData/expectedEvents", expected_events)) {
-    result.has_expected_events = true;
-    result.expected_events = static_cast<long long>(expected_events);
+  if (file->TestBit(TFile::kRecovered)) {
+    result.error = "recovered/incomplete ROOT file: " + file_path;
+    return result;
   }
-  Long64_t actual_events = 0;
-  if (read_tparameter(*file, "metaData/actualEvents", actual_events)) {
-    result.has_actual_events = true;
-    result.actual_events = static_cast<long long>(actual_events);
+  const std::vector<std::string> tree_candidates =
+      trees.empty() ? std::vector<std::string>{"rootTupleTree/tree"} : trees;
+  CountReadCache cache(nullptr, CountCacheDeleter{file.get()});
+  if (starts_with(file_path, "root://")) cache = prefetch_count_keys(*file, tree_candidates, metadata);
+
+  if (metadata != MetadataRead::None) {
+    Long64_t expected_events = 0;
+    if (read_tparameter(*file, "metaData/expectedEvents", expected_events)) {
+      result.has_expected_events = true;
+      result.expected_events = static_cast<long long>(expected_events);
+    }
+    Long64_t processed_events = 0;
+    if (read_tparameter(*file, "metaData/processedEvents", processed_events)) {
+      result.has_processed_events = true;
+      result.processed_events = processed_events;
+    }
   }
-  int apply_goodmuon_selection_analysis = 0;
-  if (read_tparameter(*file, "metaData/applyGoodMuonSelection_analysis", apply_goodmuon_selection_analysis)) {
-    result.has_apply_goodmuon_selection_analysis = true;
-    result.apply_goodmuon_selection_analysis = apply_goodmuon_selection_analysis;
-  }
-  int store_all_events_with_goodmuon_flag_analysis = 0;
-  if (read_tparameter(
-          *file,
-          "metaData/storeAllEventsWithGoodMuonFlag_analysis",
-          store_all_events_with_goodmuon_flag_analysis)) {
-    result.has_store_all_events_with_goodmuon_flag_analysis = true;
-    result.store_all_events_with_goodmuon_flag_analysis = store_all_events_with_goodmuon_flag_analysis;
-  }
-  int reduced_skim_is_filtered = 0;
-  if (read_tparameter(*file, "metaData/reducedSkimIsFiltered", reduced_skim_is_filtered)) {
-    result.has_reduced_skim_is_filtered = true;
-    result.reduced_skim_is_filtered = reduced_skim_is_filtered;
+  if (metadata == MetadataRead::Selection) {
+    Long64_t actual_events = 0;
+    if (read_tparameter(*file, "metaData/actualEvents", actual_events)) {
+      result.has_actual_events = true;
+      result.actual_events = static_cast<long long>(actual_events);
+    }
+    int apply_goodmuon_selection_analysis = 0;
+    if (read_tparameter(*file, "metaData/applyGoodMuonSelection_analysis", apply_goodmuon_selection_analysis)) {
+      result.has_apply_goodmuon_selection_analysis = true;
+      result.apply_goodmuon_selection_analysis = apply_goodmuon_selection_analysis;
+    }
+    int store_all_events_with_goodmuon_flag_analysis = 0;
+    if (read_tparameter(
+            *file,
+            "metaData/storeAllEventsWithGoodMuonFlag_analysis",
+            store_all_events_with_goodmuon_flag_analysis)) {
+      result.has_store_all_events_with_goodmuon_flag_analysis = true;
+      result.store_all_events_with_goodmuon_flag_analysis = store_all_events_with_goodmuon_flag_analysis;
+    }
+    int reduced_skim_is_filtered = 0;
+    if (read_tparameter(*file, "metaData/reducedSkimIsFiltered", reduced_skim_is_filtered)) {
+      result.has_reduced_skim_is_filtered = true;
+      result.reduced_skim_is_filtered = reduced_skim_is_filtered;
+    }
   }
 
   result.added = 1;
-  const std::vector<std::string> tree_candidates =
-      trees.empty() ? std::vector<std::string>{"rootTupleTree/tree"} : trees;
   result.tree = tree_candidates.front();
 
   for (std::size_t i = 0; i < tree_candidates.size(); ++i) {
@@ -1072,14 +1240,14 @@ FileScanResult count_file_entries(const std::string& file_path, const std::vecto
     }
     result.entries = static_cast<long long>(tree->GetEntries());
     result.tree = tree_candidates[i];
-    if (result.entries > 0 || i + 1 == tree_candidates.size()) {
-      return result;
-    }
+    return result;
   }
+  result.error = "missing requested tree in ROOT file: " + file_path;
+  result.added = 0;
   return result;
 }
 
-CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
+CountResult count_files_parallel(const CountSpec& spec, int requested_threads, bool verbose = false) {
   CountResult total;
   const std::vector<std::string> trees = spec.trees.empty() ? std::vector<std::string>{"rootTupleTree/tree"} : spec.trees;
   total.tree = trees.front();
@@ -1088,7 +1256,9 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
   }
 
   ROOT::EnableThreadSafety();
-  const int n_threads = effective_threads(requested_threads, spec.files.size());
+  const bool remote = std::any_of(spec.files.begin(), spec.files.end(), [](const auto& path) { return starts_with(path, "root://"); });
+  const int n_threads = effective_threads(requested_threads, spec.files.size(), remote);
+  scan_io.reset();
   std::atomic<std::size_t> next{0};
   std::mutex merge_mutex;
   bool mixed_tree = false;
@@ -1107,7 +1277,7 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
       if (i >= spec.files.size()) {
         break;
       }
-      const FileScanResult file_result = count_file_entries(spec.files[i], trees);
+      const FileScanResult file_result = count_file_entries(spec.files[i], trees, MetadataRead::None);
       if (local_error.empty() && !file_result.error.empty()) {
         local_error = file_result.error;
       }
@@ -1151,6 +1321,7 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
   }
   progress.stop.store(true);
   progress_thread.join();
+  report_scan_io(std::chrono::duration<double>(std::chrono::steady_clock::now() - progress.started).count(), n_threads, verbose);
 
   if (mixed_tree) {
     total.tree = "mixed";
@@ -1163,7 +1334,7 @@ CountResult count_files_parallel(const CountSpec& spec, int requested_threads) {
 
 std::map<std::string, CountResult> count_groups_batch(
     const std::vector<std::pair<std::string, CountSpec>>& groups,
-    int requested_threads) {
+    int requested_threads, bool good_muon = false, bool verbose = false) {
   std::map<std::string, CountResult> out;
   if (groups.empty()) {
     return out;
@@ -1192,7 +1363,9 @@ std::map<std::string, CountResult> count_groups_batch(
     return out;
   }
 
-  const int n_threads = effective_threads(requested_threads, tasks.size());
+  const bool remote = std::any_of(tasks.begin(), tasks.end(), [](const auto& task) { return starts_with(task.file_path, "root://"); });
+  const int n_threads = effective_threads(requested_threads, tasks.size(), remote);
+  scan_io.reset();
   std::atomic<std::size_t> next{0};
   std::mutex out_mutex;
   ProgressState progress;
@@ -1209,12 +1382,18 @@ std::map<std::string, CountResult> count_groups_batch(
       GroupAccumulator& acc = local[task.group_id];
       try {
         const auto& spec = groups[task.group_index].second;
-        const FileScanResult result = count_file_entries(task.file_path, spec.trees);
+        const auto metadata = starts_with(task.group_id, "out:") ?
+            (good_muon ? MetadataRead::Selection : MetadataRead::Counts) : MetadataRead::None;
+        const FileScanResult result = count_file_entries(task.file_path, spec.trees, metadata);
         acc.entries += result.entries;
         acc.added += result.added;
         if (result.has_expected_events) {
           acc.has_expected_events = true;
           acc.expected_events += result.expected_events;
+        }
+        if (result.has_processed_events) {
+          acc.has_processed_events = true;
+          acc.processed_events += result.processed_events;
         }
         if (result.has_actual_events) {
           acc.has_actual_events = true;
@@ -1259,6 +1438,10 @@ std::map<std::string, CountResult> count_groups_batch(
         dest.has_expected_events = true;
         dest.expected_events += item.second.expected_events;
       }
+      if (item.second.has_processed_events) {
+        dest.has_processed_events = true;
+        dest.processed_events += item.second.processed_events;
+      }
       if (item.second.has_actual_events) {
         dest.has_actual_events = true;
         dest.actual_events += item.second.actual_events;
@@ -1299,6 +1482,7 @@ std::map<std::string, CountResult> count_groups_batch(
   }
   progress.stop.store(true);
   progress_thread.join();
+  report_scan_io(std::chrono::duration<double>(std::chrono::steady_clock::now() - progress.started).count(), n_threads, verbose);
 
   for (const auto& [group_id, default_tree] : default_tree_by_group) {
     CountResult& result = out[group_id];
@@ -1325,7 +1509,8 @@ long long query_dataset_expected_events(const std::string& dataset) {
   return std::stoll(match[1].str());
 }
 
-int report_total_events(const std::vector<std::string>& root_files, const std::string& dataset, int threads) {
+int report_total_events(const std::vector<std::string>& root_files, const std::string& dataset, int threads,
+                        bool verbose = false) {
   if (root_files.empty()) {
     std::cout << kWarnRed << " No ROOT files found for event counting.\n";
     return 4;
@@ -1337,7 +1522,7 @@ int report_total_events(const std::vector<std::string>& root_files, const std::s
 
   try {
     const auto t0 = std::chrono::steady_clock::now();
-    const CountResult result = count_files_parallel(spec, threads);
+    const CountResult result = count_files_parallel(spec, threads, verbose);
     if (!result.error.empty()) {
       throw std::runtime_error(result.error);
     }
@@ -1352,6 +1537,7 @@ int report_total_events(const std::vector<std::string>& root_files, const std::s
       std::cout << kInfo << " expected events : " << format_with_dots(expected) << "\n";
       std::cout << kInfo << " counted events  : " << format_with_dots(result.entries) << "\n";
       std::cout << kInfo << " difference      : " << format_with_dots(expected - result.entries) << "\n";
+      if (expected != result.entries) return 4;
     } else {
       std::cout << kInfo << " counted events  : " << format_with_dots(result.entries) << "\n";
     }
@@ -1385,35 +1571,17 @@ fs::path write_problematic_jdl_list(const fs::path& cjobs_dir, const std::vector
   return out_path;
 }
 
-fs::path write_submit_problematic_script(const fs::path& cjobs_dir) {
+fs::path write_submit_problematic_script(const fs::path& cjobs_dir, const fs::path& helper) {
   const fs::path script = cjobs_dir / "submit_problematic_jobs.sh";
   const std::string text =
-      "#!/usr/bin/env bash\n"
-      "set -euo pipefail\n\n"
-      "cd \"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n\n"
-      "if [[ ! -f problematic_jobs.txt ]]; then\n"
-      "  echo \"[ERROR] problematic_jobs.txt not found.\"\n"
-      "  exit 1\n"
-      "fi\n\n"
-      "submitted=0\n"
-      "while IFS= read -r jdl; do\n"
-      "  [[ -z \"${jdl}\" ]] && continue\n"
-      "  if [[ ! -f \"${jdl}\" ]]; then\n"
-      "    echo \"[WARN] Missing JDL file: ${jdl}\"\n"
-      "    continue\n"
-      "  fi\n"
-      "  echo \"\\033[1;92m[SUB]\\033[0m condor_submit -terse ${jdl}\"\n"
-      "  condor_submit -terse \"${jdl}\"\n"
-      "  submitted=$((submitted + 1))\n"
-      "done < problematic_jobs.txt\n\n"
-      "echo \"\\033[1;92m[SUB]\\033[0m submitted jobs: ${submitted}\"\n";
+      "#!/usr/bin/env bash\nset -euo pipefail\n"
+      "job_dir=\"$(cd -- \"$(dirname -- \"${BASH_SOURCE[0]}\")\" && pwd)\"\n"
+      "[[ -s \"$job_dir/problematic_jobs.txt\" ]] || { echo '[INFO] No problematic jobs'; exit 0; }\n"
+      "exec python3 " + shell_quote(helper.string()) +
+      " \"$job_dir\" --jdl-list problematic_jobs.txt --retry-failed \"$@\"\n";
   write_text(script, text);
-  fs::permissions(
-      script,
-      fs::perms::owner_exec | fs::perms::owner_read | fs::perms::owner_write |
-          fs::perms::group_exec | fs::perms::group_read |
-          fs::perms::others_exec | fs::perms::others_read,
-      fs::perm_options::replace);
+  fs::permissions(script, fs::perms::owner_all | fs::perms::group_read | fs::perms::group_exec |
+      fs::perms::others_read | fs::perms::others_exec, fs::perm_options::replace);
   return script;
 }
 
@@ -1534,41 +1702,24 @@ void update_missing_jdls_request_memory(const std::vector<fs::path>& jdls, int m
             << "     : " << updated << "/" << jdls.size() << "\n";
 }
 
-int resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls, bool dry_run) {
+int resubmit_missing(const fs::path& cjobs_dir, const std::vector<fs::path>& jdls, bool dry_run,
+                     const fs::path& helper) {
   if (jdls.empty()) {
-    std::cout << kInfo << " No missing jobs to " << (dry_run ? "preview" : "resubmit") << ".\n";
+    std::cout << kInfo << " No problematic jobs to resubmit.\n";
     return 0;
   }
-  int failed = 0;
-  std::cout << kInfo << " " << (dry_run ? "Previewing" : "Resubmitting")
-            << " " << jdls.size() << " missing job(s)...\n";
-  for (const fs::path& jdl : jdls) {
-    const std::string submit_cmd = "condor_submit -terse " + jdl.filename().string();
-    if (dry_run) {
-      std::cout << kSubGreen << " DRY-RUN " << submit_cmd << "\n";
-    } else {
-      const std::string cmd =
-          "cd " + shell_quote(cjobs_dir.string()) + " && condor_submit -terse " + shell_quote(jdl.filename().string());
-      const CommandResult result = run_command_capture(cmd);
-      if (result.exit_code != 0) {
-        ++failed;
-        std::cout << kError << " Failed to resubmit " << jdl.filename().string() << "\n";
-        const std::string text = trim(result.output);
-        if (!text.empty()) {
-          std::cout << text << "\n";
-        }
-        continue;
-      }
-      const std::string text = trim(result.output);
-      if (!text.empty()) {
-        std::cout << kSubGreen << " " << jdl.filename().string() << " -> "
-                  << text.substr(text.find_last_of('\n') + 1) << "\n";
-      } else {
-        std::cout << kSubGreen << " " << jdl.filename().string() << " submitted\n";
-      }
-    }
+  if (!fs::is_regular_file(helper)) throw std::runtime_error("Missing submission helper: " + helper.string());
+  const std::string cmd = "python3 " + shell_quote(helper.string()) + " " + shell_quote(cjobs_dir.string()) +
+      " --jdl-list problematic_jobs.txt --retry-failed";
+  if (dry_run) {
+    std::cout << kSubGreen << " DRY-RUN " << cmd << "\n";
+    std::cout << kInfo << " The helper will query the active queue once and skip jobs still present.\n";
+    return 0;
   }
-  return failed == 0 ? 0 : 3;
+  write_problematic_jdl_list(cjobs_dir, jdls);
+  const auto result = run_command_capture(cmd);
+  std::cout << result.output;
+  return result.exit_code == 0 ? 0 : 3;
 }
 
 std::vector<SelectedJob> select_jobs(
@@ -1601,13 +1752,10 @@ std::vector<SelectedJob> select_jobs(
       job.expected_root = root_it->second;
       auto existing_name_it = existing_by_name.find(root_it->second);
       if (existing_name_it != existing_by_name.end() && !existing_name_it->second.empty()) {
+        if (existing_name_it->second.size() != 1) {
+          throw std::runtime_error("Ambiguous output basename (multiple paths): " + job.expected_root);
+        }
         job.output_path = existing_name_it->second.front();
-      }
-    }
-    if (!job.output_path) {
-      auto existing_idx_it = existing_by_index.find(idx);
-      if (existing_idx_it != existing_by_index.end() && !existing_idx_it->second.empty()) {
-        job.output_path = existing_idx_it->second.front();
       }
     }
 
@@ -1670,7 +1818,7 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
     std::cout << kInfo << " input source    : ROOT only\n";
   }
 
-  const std::map<std::string, CountResult> batch_results = count_groups_batch(batch_specs, opt.threads);
+  const std::map<std::string, CountResult> batch_results = count_groups_batch(batch_specs, opt.threads, opt.good_muon, opt.verbose);
 
   for (const SelectedJob& job : jobs) {
     JobRow row;
@@ -1754,7 +1902,11 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
     }
 
     if (row.status == "OK") {
-      if (opt.good_muon) {
+      const auto& output = batch_results.at("out:" + std::to_string(job.index));
+      if (output.has_processed_events && output.processed_events != row.input_events) {
+        row.status = "EVENT_MISMATCH";
+        row.note = "processedEvents does not equal the original input count";
+      } else if (opt.good_muon) {
         const auto out_it = batch_results.find("out:" + std::to_string(job.index));
         if (out_it == batch_results.end()) {
           row.status = "COUNT_ERROR";
@@ -1767,6 +1919,28 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
           row.status = "EVENT_MISMATCH";
           row.note = "output_tree_entries != metaData/actualEvents (" + format_with_dots(row.output_events) + " != " +
                      format_with_dots(out_it->second.actual_events) + ")";
+        } else if (!out_it->second.has_reduced_skim_is_filtered ||
+                   !out_it->second.has_apply_goodmuon_selection_analysis ||
+                   !out_it->second.has_store_all_events_with_goodmuon_flag_analysis) {
+          row.status = "COUNT_ERROR";
+          row.note = "missing selection metadata; cannot validate filtered output";
+        } else if (out_it->second.reduced_skim_is_filtered !=
+                   (out_it->second.apply_goodmuon_selection_analysis == 1 &&
+                    out_it->second.store_all_events_with_goodmuon_flag_analysis == 0 ? 1 : 0)) {
+          row.status = "COUNT_ERROR";
+          row.note = "inconsistent selection metadata";
+        } else if (!out_it->second.reduced_skim_is_filtered && row.input_events != row.output_events) {
+          row.status = "EVENT_MISMATCH";
+          row.note = "unfiltered output must contain every input event";
+        } else if (out_it->second.reduced_skim_is_filtered && !out_it->second.has_processed_events) {
+          row.status = "COUNT_ERROR";
+          row.note = "legacy filtered output has no processedEvents metadata; completeness cannot be established";
+        } else if (out_it->second.has_processed_events && out_it->second.processed_events != row.input_events) {
+          row.status = "EVENT_MISMATCH";
+          row.note = "processedEvents does not equal the original input count";
+        } else if (row.output_events > row.input_events) {
+          row.status = "EVENT_MISMATCH";
+          row.note = "output contains more events than the input";
         } else {
           ++summary.ok_jobs;
         }
@@ -1777,6 +1951,13 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
         } else {
           ++summary.ok_jobs;
         }
+      }
+    }
+
+    if (row.status == "EVENT_MISMATCH") {
+      const auto out = batch_results.find("out:" + std::to_string(job.index));
+      if (out != batch_results.end() && out->second.has_expected_events) {
+        row.note += "; worker expectedEvents=" + std::to_string(out->second.expected_events);
       }
     }
 
@@ -1812,7 +1993,7 @@ std::tuple<std::vector<JobRow>, std::set<fs::path>, JobSummary> run_per_job_even
   return {rows, problematic, summary};
 }
 
-int main_impl(const Options& opt, const fs::path& exe_path) {
+int main_impl(Options opt, const fs::path& exe_path) {
   const std::optional<std::string> range_err = validate_job_range(opt);
   if (range_err) {
     std::cerr << kError << " " << *range_err << "\n";
@@ -1851,7 +2032,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     if (!is_directory && (remote || fs::is_regular_file(fs::path(path1)))) {
       std::cout << kInfo << " input mode      : single ROOT file\n";
       std::cout << kInfo << " root file       : " << path1 << "\n";
-      return report_total_events({path1}, opt.dataset, opt.threads);
+      return report_total_events({path1}, opt.dataset, opt.threads, opt.verbose);
     }
 
     bool recursive_used = opt.check_subdirs;
@@ -1866,7 +2047,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     std::cout << kInfo << " input mode      : directory\n";
     std::cout << kInfo << " directory       : " << path1 << "\n";
     std::cout << kInfo << " check subdirs   : " << (recursive_used ? "yes" : "no") << "\n";
-    return report_total_events(roots, opt.dataset, opt.threads);
+    return report_total_events(roots, opt.dataset, opt.threads, opt.verbose);
   }
 
   const fs::path cjobs_dir = absolute_path(fs::path(opt.path1));
@@ -1905,9 +2086,13 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     std::cout << kInfo << " eos directory   : " << eos_dir << "\n";
     std::cout << kInfo << " noPerFile mode  : yes\n";
     std::cout << kInfo << " check subdirs   : " << (opt.check_subdirs ? "yes" : "no") << "\n";
-    return report_total_events(roots, opt.dataset, opt.threads);
+    return report_total_events(roots, opt.dataset, opt.threads, opt.verbose);
   }
 
+  std::error_code executable_ec;
+  const fs::path native_executable = fs::read_symlink("/proc/self/exe", executable_ec);
+  const fs::path repo_root = absolute_path(executable_ec ? exe_path : native_executable).parent_path().parent_path();
+  const fs::path submit_helper = repo_root / "scripts" / "condor_submit_jobs.py";
   const bool has_config = !opt.config.empty();
   if (opt.good_muon && !has_config) {
     std::cout << kWarnRed << " --goodMuon only affects per-job checks with --config.\n";
@@ -1940,7 +2125,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
             << " end=" << (opt.job_end ? std::to_string(*opt.job_end) : "end") << "\n";
   if (!jdl_files.empty()) {
     std::cout << kInfo << " threads         : "
-              << effective_threads(opt.threads, std::max<std::size_t>(1, jdl_files.size())) << "\n";
+              << effective_threads(opt.threads, std::max<std::size_t>(1, jdl_files.size()), parse_xrootd_path(eos_dir).has_value()) << "\n";
   }
 
   if (jdl_files.empty()) {
@@ -1948,7 +2133,8 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     return 0;
   }
 
-  auto [expected_map_raw, unresolved_jdls] = build_expected_map(cjobs_dir, jdl_files);
+  std::map<fs::path, std::string> job_scripts;
+  auto [expected_map_raw, unresolved_jdls] = build_expected_map(cjobs_dir, jdl_files, job_scripts);
   auto [expected_map, skipped_unindexed] =
       filter_expected_map_by_range(expected_map_raw, opt.job_start, opt.job_end);
 
@@ -1962,6 +2148,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     if (unresolved_jdls.size() > limit) {
       std::cout << "  ... and " << (unresolved_jdls.size() - limit) << " more\n";
     }
+    throw std::runtime_error("Cannot safely check jobs with unresolved output names");
   }
   if (skipped_unindexed > 0) {
     std::cout << kWarnRed << " skipped unresolved-index outputs due to job range filtering: " << skipped_unindexed
@@ -1984,10 +2171,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     expected_roots.push_back(item.first);
   }
 
-  auto [missing_roots, fallback_matches] = resolve_missing_with_fallback(expected_roots, existing_root_names);
-  if (!fallback_matches.empty()) {
-    std::cout << kInfo << " fallback match  : " << fallback_matches.size() << "\n";
-  }
+  const auto missing_roots = find_missing_outputs(expected_roots, existing_root_names);
 
   std::vector<fs::path> missing_jdls;
   missing_jdls.reserve(missing_roots.size());
@@ -2009,6 +2193,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
 
   std::set<fs::path> problematic_jdls(missing_jdls.begin(), missing_jdls.end());
   std::string dataset_for_total = opt.dataset;
+  bool check_errors = false;
 
   if (!opt.config.empty()) {
     const fs::path config_path = absolute_path(fs::path(opt.config));
@@ -2017,20 +2202,19 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
       return 2;
     }
 
-    const fs::path script_dir = absolute_path(exe_path).parent_path();
-    const fs::path repo_root = script_dir.parent_path();
     LoadedChunks loaded;
     try {
-      loaded = load_job_chunks_from_config(config_path, repo_root);
+      loaded = load_production_chunks(config_path, repo_root, job_scripts);
+      opt.input_tree = loaded.tree;
     } catch (const std::exception& ex) {
       std::cerr << kError << " failed to load config/job chunks: " << ex.what() << "\n";
       return 2;
     }
 
     std::cout << kInfo << " config file     : " << config_path << "\n";
-    std::cout << kInfo << " input list      : " << loaded.input_list_path << "\n";
+    std::cout << kInfo << " job input lists : " << loaded.input_list_path << "\n";
     std::cout << kInfo << " chunk interval  : " << loaded.interval << "\n";
-    std::cout << kInfo << " jobs from config: " << loaded.chunks.size() << "\n";
+    std::cout << kInfo << " production jobs : " << loaded.chunks.size() << "\n";
     if (opt.job_start || opt.job_end) {
       const int start = opt.job_start ? *opt.job_start : 0;
       const int end = opt.job_end ? *opt.job_end : static_cast<int>(loaded.chunks.size()) - 1;
@@ -2045,7 +2229,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
       }
     }
     std::optional<std::unordered_map<std::string, long long>> das_file_event_map;
-    if (!input_dataset.empty()) {
+    if (opt.root_input_counts) {
+      std::cout << kInfo << " input source    : ROOT headers (--root-input-counts); DAS/cache bypassed\n";
+    } else if (!input_dataset.empty()) {
       bool from_cache = false;
       try {
         auto event_map = get_dataset_file_event_map(cjobs_dir, input_dataset, from_cache);
@@ -2068,7 +2254,9 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     for (const fs::path& jdl : jdl_files) {
       const auto idx = extract_job_index_from_jdl(jdl.filename().string());
       if (idx) {
-        jdl_by_index[*idx] = jdl;
+        if (!jdl_by_index.emplace(*idx, jdl).second) {
+          throw std::runtime_error("Duplicate job index in JDLs: " + std::to_string(*idx));
+        }
       }
     }
 
@@ -2091,6 +2279,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
             opt,
             das_file_event_map);
     problematic_jdls.insert(problematic_from_events.begin(), problematic_from_events.end());
+    check_errors = summary.error_jobs > 0;
 
     write_per_job_report(cjobs_dir, rows);
     std::cout << kInfo << " per-job report  : " << (cjobs_dir / "per_job_event_check.tsv") << "\n";
@@ -2132,8 +2321,8 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     std::cout << kInfo << " total difference: "
               << format_with_dots(summary.total_input_events - summary.total_output_events) << "\n";
 
-    if (parse_xrootd_path(eos_dir) && summary.error_jobs > 0 && allow_resubmit) {
-      std::cerr << kError << " Remote event checks failed. No jobs were resubmitted or JDLs changed.\n"
+    if (summary.error_jobs > 0 && allow_resubmit) {
+      std::cerr << kError << " Event checks failed; incomplete or unreadable references/outputs require inspection. No jobs were resubmitted or JDLs changed.\n"
                 << "Check your VOMS proxy and ROOT read access; see per_job_event_check.tsv for details.\n";
       return 3;
     }
@@ -2157,7 +2346,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
           break;
         }
       }
-      std::cout << kWarnRed << " extra output job indices not present in config chunking: " << shown.str() << "\n";
+      std::cout << kWarnRed << " extra output job indices not present in the production: " << shown.str() << "\n";
       if (extra_output_indices.size() > 10) {
         std::cout << kWarnRed << " ... and " << (extra_output_indices.size() - 10) << " more\n";
       }
@@ -2166,7 +2355,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
 
   std::vector<fs::path> problematic_vec(problematic_jdls.begin(), problematic_jdls.end());
   const fs::path problematic_list = write_problematic_jdl_list(cjobs_dir, problematic_vec);
-  const fs::path submit_script = write_submit_problematic_script(cjobs_dir);
+  const fs::path submit_script = write_submit_problematic_script(cjobs_dir, submit_helper);
   if (!problematic_vec.empty()) {
     std::cout << kWarnRed << " problematic list: " << problematic_list << "\n";
     std::cout << kWarnRed << " problematic jdls: " << problematic_vec.size() << "\n";
@@ -2177,7 +2366,7 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
   std::cout << kInfo << " submit script   : " << submit_script << "\n";
 
   if (total_events) {
-    const int rc = report_total_events(existing_root_files, dataset_for_total, opt.threads);
+    const int rc = report_total_events(existing_root_files, dataset_for_total, opt.threads, opt.verbose);
     if (rc != 0) {
       return rc;
     }
@@ -2187,10 +2376,11 @@ int main_impl(const Options& opt, const fs::path& exe_path) {
     if (opt.request_memory_mb > 0) {
       update_missing_jdls_request_memory(problematic_vec, opt.request_memory_mb, opt.dry_run);
     }
-    return resubmit_missing(cjobs_dir, problematic_vec, opt.dry_run);
+    return resubmit_missing(cjobs_dir, problematic_vec, opt.dry_run, submit_helper);
   }
 
-  return 0;
+  if (check_errors) return 3;
+  return problematic_vec.empty() ? 0 : 4;
 }
 
 }  // namespace

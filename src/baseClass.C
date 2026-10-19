@@ -2,6 +2,9 @@
 #include "baseClass.h"
 #include <cstdlib>
 #include <TParameter.h>
+#include <memory>
+#include <set>
+#include <stdexcept>
 
 //
 // Optional: event-count histograms that indicate the number of events originally processed.
@@ -146,9 +149,10 @@ void baseClass::init()
 
 int baseClass::readInputList()
 {
-  auto* chain = new TChain(treeName_->c_str());
+  auto chain = std::make_unique<TChain>(treeName_->c_str());
 
-  char pName[500];
+  std::string inputPath;
+  std::set<std::string> seenInputs;
   skimWasMade_           = true;
   jsonFileWasUsed_       = false;
   pileupMCFileWasUsed_   = false;
@@ -162,22 +166,35 @@ int baseClass::readInputList()
 
   std::ifstream is(inputList_->c_str());
   if (!is.good()) {
-    STDOUT("baseClass::readInputList: ERROR opening inputList: " << *inputList_);
-    return 0;
+    throw std::runtime_error("Cannot open input list: " + *inputList_);
   }
 
   STDOUT("baseClass::readInputList: Starting reading list: " << *inputList_);
-  while (is.getline(pName, 500, '\n')) {
-    if (pName[0] == '#')   continue;
-    if (pName[0] == '\n')  continue;  // skip blank lines
+  while (std::getline(is, inputPath)) {
+    const auto first = inputPath.find_first_not_of(" \t\r");
+    if (first == std::string::npos || inputPath[first] == '#') continue;
+    inputPath = inputPath.substr(first, inputPath.find_last_not_of(" \t\r") - first + 1);
+    if (!seenInputs.insert(inputPath).second) throw std::runtime_error("Duplicate input: " + inputPath);
+    std::unique_ptr<TFile> input(TFile::Open(inputPath.c_str(), "READ"));
+    if (!input || input->IsZombie() || input->TestBit(TFile::kRecovered)) {
+      throw std::runtime_error("Unreadable/recovered input ROOT file: " + inputPath);
+    }
+    TTree* inputTree = nullptr;
+    input->GetObject(treeName_->c_str(), inputTree);
+    if (!inputTree) throw std::runtime_error("Missing input tree " + *treeName_ + ": " + inputPath);
+    const Long64_t inputEntries = inputTree->GetEntries();
+    if (inputEntries < 0 || chain->AddFile(inputPath.c_str(), inputEntries, treeName_->c_str()) != 1) {
+      throw std::runtime_error("Cannot add input tree to chain: " + inputPath);
+    }
+    validatedInputEvents_ += inputEntries;
+    input->Close();
+    char* pName = &inputPath[0];
 
     ++count_line;
     STDOUT("Adding file: " << pName);
-    chain->Add(pName);
 
     // NanoAOD/NanoAODSIM files do not carry skim counter histograms.
-    // Skip skim histogram lookup entirely to avoid costly remote file opens
-    // during input-list initialization.
+    // Skip separate legacy skim-histogram lookups for these inputs.
     if (count_line == 1) {
       const std::string firstPath(pName);
       if (firstPath.find("/NANOAOD/") != std::string::npos ||
@@ -203,8 +220,10 @@ int baseClass::readInputList()
     if (count_line == 1 && !skipSkimLookup) getHltMap(pName);
   }
 
-  tree_ = chain;
-  const int entries = chain->GetEntries();
+  if (seenInputs.empty() || is.bad()) throw std::runtime_error("Empty/unreadable input list: " + *inputList_);
+  const Long64_t entries = chain->GetEntries();
+  if (entries != validatedInputEvents_) throw std::runtime_error("Input chain count differs from validated input trees");
+  tree_ = chain.release();
   STDOUT("chain entries = " << entries);
   STDOUT("baseClass::readInputList: Finished reading list: " << *inputList_);
 
@@ -1175,7 +1194,10 @@ void baseClass::fillSkimTree()
 void baseClass::fillReducedSkimTree()
 {
   if (!produceReducedSkim_) return;
-  reduced_skim_tree_->Fill();
+  if (reduced_skim_tree_->Fill() < 0) {
+    std::cerr << "[baseClass] ERROR: failed to write a reduced-skim event" << std::endl;
+    std::exit(2);
+  }
   ++NAfterReducedSkim_;
 }
 
@@ -1218,14 +1240,17 @@ bool baseClass::writeReducedSkimTree()
     reduced_root_tuple_dir = reduced_skim_file_->mkdir("rootTupleTree");
   }
   reduced_root_tuple_dir->cd();
-  reduced_skim_tree_->Write("tree", TObject::kOverwrite);
+  if (reduced_skim_tree_->Write("tree", TObject::kOverwrite) <= 0) {
+    std::cerr << "[baseClass] ERROR: failed to write the reduced-skim tree" << std::endl;
+    std::exit(2);
+  }
 
   reduced_skim_file_->cd();
   TDirectory* dir1 = reduced_skim_file_->mkdir("DijetFilter");
   TDirectory* dir2 = dir1->mkdir("EventCount");
   reduced_skim_file_->cd("DijetFilter/EventCount");
 
-  const Long64_t nEntRoottuple = fChain->GetEntriesFast();
+  const Long64_t nEntRoottuple = validatedInputEvents_;
   const Long64_t nEntTot       = (skimWasMade_ ? static_cast<Long64_t>(NBeforeSkim_) : nEntRoottuple);
   const Long64_t nReducedEntries = reduced_skim_tree_->GetEntriesFast();
 
@@ -1259,12 +1284,19 @@ bool baseClass::writeReducedSkimTree()
   TParameter<int> reduced_skim_is_filtered_param("reducedSkimIsFiltered", reduced_skim_is_filtered);
   expected_events_param.Write();
   actual_events_param.Write();
+  if (processedEvents_ >= 0) {
+    TParameter<Long64_t> processed_events_param("processedEvents", processedEvents_);
+    processed_events_param.Write();
+  }
   apply_goodmuon_selection_analysis_param.Write();
   store_all_events_with_goodmuon_flag_analysis_param.Write();
   reduced_skim_is_filtered_param.Write();
 
-  const bool allowReducedSkimCountMismatch = (int(getSkimPreCutValue("applyGoodMuonSelection_analysis")) == 1);
-  if (nReducedEntries != nEntRoottuple && !allowReducedSkimCountMismatch) {
+  const bool allowReducedSkimCountMismatch = reduced_skim_is_filtered == 1;
+  if ((processedEvents_ >= 0 && processedEvents_ != nEntRoottuple) ||
+      nReducedEntries > nEntRoottuple ||
+      (nReducedEntries != nEntRoottuple && !allowReducedSkimCountMismatch) ||
+      reduced_skim_file_->TestBit(TFile::kWriteError)) {
     const std::string reduced_file_name = (*outputFileName_) + "_reduced_skim.root";
     std::cerr << "[baseClass] ERROR: reduced skim event-count mismatch for output file '"
               << reduced_file_name << "'. expected=" << nEntRoottuple
