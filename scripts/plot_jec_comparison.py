@@ -243,7 +243,8 @@ def root_output_main(arguments):
                 graph.SetLineColor(color(line['color']))
                 graph.SetMarkerColor(color(line['color']))
                 marked = line['marker'] not in ('None','none','',' ')
-                graph.SetMarkerStyle((24 if line['open'] else 20) if marked else 0)
+                marker_style = (32 if line['open'] else 23) if line['marker'] == 'v' else (24 if line['open'] else 20)
+                graph.SetMarkerStyle(marker_style if marked else 0)
                 graph.SetMarkerSize(1.0)
                 lined = line['line'] not in ('None','none','',' ')
                 graph.SetLineStyle(2 if line['line']=='--' else 3 if line['line']==':' else 1)
@@ -384,7 +385,7 @@ from matplotlib.patches import StepPatch
 from matplotlib.ticker import AutoMinorLocator, MaxNLocator
 
 
-COLORS = {"old": "#000000", "new": "#cc0000", "qcd": "#497da8"}
+COLORS = {"old": "#404040", "new": "#d99a56", "qcd": "#6d7891"}
 FRACTIONAL_CHANGE_LABEL = "(New - old) / old"
 ETA_ASYMMETRY_LABEL = r"$\frac{N_{(\eta)}-N_{(-\eta)}}{N_{(\eta)}+N_{(-\eta)}}$"
 DEFAULT_NORMTAG = Path("/cvmfs/cms-bril.cern.ch/cms-lumi-pog/Normtags/normtag_PHYSICS.json")
@@ -414,14 +415,27 @@ for index, position in ((1, "Leading"), (2, "Subleading")):
     CORE_LABELS[f"raw_pt_j{index}"] = r"AK4 $p_T / C_{\mathrm{JEC}}$ [GeV]"
 
 
+def mc_scale(value):
+    if value == "k":
+        return value
+    try:
+        factor = float(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("mc-scale must be lowercase k or a positive number") from exc
+    if not math.isfinite(factor) or factor <= 0:
+        raise argparse.ArgumentTypeError("mc-scale must be lowercase k or a finite positive number")
+    return factor
+
+
 def parser():
     p = argparse.ArgumentParser(description="Plot compact C++ JEC summaries; original ntuples are never reread.")
-    p.add_argument("--inputs", nargs="+", required=True, help="Summary JSON files, directories or quoted globs; missing matches are skipped. Each loaded era still needs both JEC summaries.")
-    p.add_argument("--mc-input", help="One reusable QCD summary from reduce_jec_comparison --mc-list; shared by both JECs and every era.")
+    p.add_argument("--inputs", nargs="+", required=True, help="Summary JSON files, directories or quoted globs; selected and all_stored summaries are plotted separately when both are supplied. Missing matches are skipped; each loaded era needs both JECs within each selection.")
+    p.add_argument("--mc-input", nargs="+", help="Reusable QCD summary files or quoted globs, matched to data by selection. Supply selected and all_stored QCD summaries when plotting both; each is shared by both JECs and every era.")
     p.add_argument("--mc-label", default="QCD MC")
-    p.add_argument("--mc-scale", type=float, default=1.0, help="Explicit common multiplicative QCD scale; default 1 uses the supplied cross sections.")
+    p.add_argument("--mc-scale", type=mc_scale, default=1.0, metavar="k",
+                   help="Use lowercase k to match QCD separately to each JEC data yield, or a positive number for a common fixed factor (default: 1).")
     p.add_argument("--datasets", nargs="+", help="Dataset labels to include; default: all supplied datasets.")
-    p.add_argument("--output-dir", default="jec_comparison_plots")
+    p.add_argument("--output-dir", default="jec_comparison_plots", help="Plot destination; selected/ and all_stored/ subdirectories are used when both selections are supplied.")
     p.add_argument("--lumi-csv", action="append", default=[], help="run,lumi_pb or run,ls,lumi_pb CSV; also accepts brilcalc CSV.")
     p.add_argument("--lumi-json", action="append", default=[], help="Recorded run/LS luminosity JSON saved by --brilcalc.")
     p.add_argument("--brilcalc", action="store_true", help="Force a calibrated recorded-luminosity query, including when --lumi_pb supplies an era total; saves reusable recorded_luminosity.json.")
@@ -435,10 +449,10 @@ def parser():
                    help="Recorded luminosity in pb^-1: total, DATASET:TOTAL, or RUN:LUMI values. Era totals normalize mass spectra and do not disable BRIL run queries.")
     p.add_argument("--estimate-run-lumi", action="store_true", help="Estimate run luminosity from total exposure times each run's fraction of distinct stored LS. Assumes equal luminosity per LS.")
     p.add_argument("--no-estimate-run-lumi", action="store_true", help="Disable LS estimates (the default); retained for command compatibility.")
-    p.add_argument("--export-lumisections", metavar="JSON", help="Export the stored run/LS coverage for brilcalc without rereading ntuples.")
+    p.add_argument("--export-lumisections", metavar="JSON", help="Export the stored run/LS coverage for brilcalc without rereading ntuples; dual-selection runs add _selected and _all_stored to the filename.")
     p.add_argument("--cert-json", metavar="JSON", help="Certification for BRIL/exported exposure. Histograms must already use this event coverage; apply masks with the reducer's --cert-json. Certified summaries provide their mask automatically.")
     p.add_argument("--export-only", action="store_true", help="Only export run/LS coverage; do not generate figures or ROOT output.")
-    p.add_argument("--root-file", help="Single ROOT output for all dataset plot sets; default: OUTPUT_DIR/jec_comparison.root.")
+    p.add_argument("--root-file", help="ROOT output for all datasets of one selection; default: OUTPUT_DIR/jec_comparison.root. Dual-selection runs add _selected and _all_stored to an explicit filename.")
     p.add_argument("--root-python", default=sys.executable, help="Python interpreter with PyROOT; default: the plotting interpreter.")
     p.add_argument("--normalization", choices=["yield", "shape", "xsec"], default="yield")
     p.add_argument("--old-label", default="Old JEC")
@@ -663,23 +677,63 @@ def validate_qcd(qcd, d):
                     raise ValueError(f"Invalid QCD {stat} for {name}")
 
 
-def load_datasets(paths, requested, allow_partial, mc_input=None):
-    datasets = {}
-    seen = set()
-    paired_presence = {}
-    qcd = None
-    if mc_input:
-        with Path(mc_input).open() as stream:
-            document = json.load(stream)
-        if document.get("schema_version") != 1 or not document.get("qcd"):
-            raise ValueError("--mc-input must be a reduction summary containing QCD")
-        qcd = document["qcd"]
+def read_summaries(paths):
     for index, path in enumerate(paths, 1):
         progress(f"Loading summary {index}/{len(paths)}: {path}")
         with path.open() as stream:
-            d = json.load(stream)
-        if d.get("schema_version") != 1 or "samples" not in d:
+            document = json.load(stream)
+        if document.get("schema_version") != 1 or "samples" not in document or document.get("config", {}).get("preset") not in ("dijet", "loose", "all", "all_stored"):
             raise ValueError(f"Unsupported reduction summary: {path}")
+        yield path, document
+
+
+def summary_selection(document):
+    return "all_stored" if document["config"]["preset"] == "all_stored" else "selected"
+
+
+def load_plot_selections(paths, requested, allow_partial, mc_inputs=None):
+    groups = {}
+    references = {}
+    for path, document in read_summaries(paths):
+        selection = summary_selection(document)
+        groups.setdefault(selection, []).append((path, document))
+    if mc_inputs:
+        for path, document in read_summaries(expand_inputs(mc_inputs)):
+            if not document.get("qcd"):
+                raise ValueError(f"--mc-input must contain a QCD reduction: {path}")
+            selection = summary_selection(document)
+            references[selection] = shared_qcd(references.get(selection), document["qcd"])
+    selections = {}
+    for selection in ("selected", "all_stored"):
+        documents = groups.get(selection, [])
+        if not any(document["samples"] for path, document in documents):
+            continue
+        qcd = references.get(selection)
+        has_embedded_qcd = any(document.get("qcd") and (not document["samples"] or not requested or document["dataset"] in requested)
+                               for path, document in documents)
+        if mc_inputs and qcd is None and not has_embedded_qcd:
+            raise ValueError(f"No {selection} QCD summary supplied; provide the matching --mc-input for each data selection")
+        selections[selection] = assemble_datasets(documents, requested, allow_partial, qcd)
+    if not selections:
+        raise ValueError("No selected datasets")
+    return selections
+
+
+def load_datasets(paths, requested, allow_partial, mc_input=None):
+    qcd = None
+    if mc_input:
+        for path, document in read_summaries([Path(mc_input)]):
+            if not document.get("qcd"):
+                raise ValueError(f"--mc-input must contain a QCD reduction: {path}")
+            qcd = document["qcd"]
+    return assemble_datasets(read_summaries(paths), requested, allow_partial, qcd)
+
+
+def assemble_datasets(documents, requested, allow_partial, qcd=None):
+    datasets = {}
+    seen = set()
+    paired_presence = {}
+    for path, d in documents:
         if not d["samples"] and d.get("qcd"):
             qcd = shared_qcd(qcd, d["qcd"])
             continue
@@ -1162,6 +1216,16 @@ def poisson_cross_section(counts, luminosity):
     return values, errors
 
 
+def normalized_distribution(values, variance):
+    values, variance = np.asarray(values, float), np.asarray(variance, float)
+    total = values.sum()
+    if total <= 0:
+        return np.full_like(values, np.nan), np.full_like(values, np.nan)
+    fraction = values/total
+    error = np.sqrt(np.maximum(0, variance*(1-2*fraction)+fraction**2*variance.sum()))/total
+    return fraction, error
+
+
 def coverage(d):
     old = {tuple(x[:2]): x for x in d["samples"]["old"]["lumisections"]}
     new = {tuple(x[:2]): x for x in d["samples"]["new"]["lumisections"]}
@@ -1326,6 +1390,8 @@ class Plotter:
             self.labels[role] = label
         self.mock = d.get("mock")
         self.figures = []
+        self.summary_figures = []
+        self.qcd_normalizations = {}
         self.tables = {}
         self.canvases = []
         self.root_part = root_part
@@ -1424,14 +1490,16 @@ class Plotter:
             for line in lines:
                 if line.get_marker() == "o" and to_rgba(line.get_color()) in (to_rgba(COLORS["old"]), to_rgba(COLORS["new"])):
                     line.set_markersize(6.0)
-                    line.set_fillstyle("none" if to_rgba(line.get_color()) == to_rgba(COLORS["new"]) else "full")
+                    line.set_marker("v" if to_rgba(line.get_color()) == to_rgba(COLORS["new"]) else "o")
+                    line.set_fillstyle("none")
         for fmt in dict.fromkeys(self.args.formats):
-            directory = self.output/fmt
+            directory = self.output/"details"/self.plot_category(name)/fmt
             directory.mkdir(parents=True, exist_ok=True)
             fig.savefig(directory/f"{name}.{fmt}", dpi=self.args.dpi)
-            legacy = self.output/f"{name}.{fmt}"
-            if legacy.is_file():
-                legacy.unlink()
+            for folder in (self.output, self.output/fmt):
+                legacy = folder/f"{name}.{fmt}"
+                if legacy.is_file():
+                    legacy.unlink()
         self.figures.append(name)
         self.canvases.append(canvas_payload(fig, name))
         plt.close(fig)
@@ -1440,8 +1508,37 @@ class Plotter:
     def table(self, name, header, rows):
         self.tables[name] = {"columns": header, "rows": [list(row) for row in rows]}
 
+    def plot_category(self, name):
+        return "data_qcd" if name.endswith("_data_qcd") else "data_comparison"
+
+    def prepare_summary(self):
+        choices = [("dijet_mass_cross_section", "spectrum_mjj"), ("spectrum_ak4_mjj",),
+                   ("run_index_cross_section",), ("run_mean_3", "spectrum_jec_j1"),
+                   ("run_mean_4", "spectrum_jec_j2"),
+                   ("dijet_mass_data_qcd", "spectrum_mjj_data_qcd"),
+                   ("spectrum_ak4_mjj_data_qcd",), ("run_index_data_qcd",)]
+        for candidates in choices:
+            for name in candidates:
+                category = self.plot_category(name)
+                for fmt in ("pdf", "png", "svg"):
+                    stale = self.output/"summary"/category/fmt/f"{name}.{fmt}"
+                    if stale.is_file():
+                        stale.unlink()
+            name = next((candidate for candidate in candidates if candidate in self.figures), None)
+            if name is None:
+                continue
+            category = self.plot_category(name)
+            for fmt in dict.fromkeys(self.args.formats):
+                destination = self.output/"summary"/category/fmt
+                destination.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(self.output/"details"/category/fmt/f"{name}.{fmt}", destination/f"{name}.{fmt}")
+            self.summary_figures.append(name)
+
     def remove_saved_plot(self, name):
-        for folder in (self.output, self.output/"pdf", self.output/"png", self.output/"svg"):
+        folders = [self.output]+[self.output/fmt for fmt in ("pdf", "png", "svg")]
+        folders += [self.output/section/self.plot_category(name)/fmt
+                    for section in ("details", "summary") for fmt in ("pdf", "png", "svg")]
+        for folder in folders:
             for fmt in ("pdf", "png", "svg"):
                 path = folder/f"{name}.{fmt}"
                 if path.is_file():
@@ -1647,26 +1744,53 @@ class Plotter:
                 self.qcd_spectrum(name, "spectrum_"+name+"_data_qcd")
         self.table("histogram_flow_counts", ["histogram", "jec", "underflow", "overflow", "nonfinite"], flow_rows)
 
-    def qcd_ratio(self, ax, x, values, errors, reference, uncertainty, counts, minimum, edges=None):
-        reference, uncertainty = np.broadcast_arrays(np.asarray(reference, float), np.asarray(uncertainty, float))
-        valid_mc = np.isfinite(reference) & (reference > 0) & np.isfinite(uncertainty)
-        relative = np.divide(uncertainty, reference, out=np.full_like(reference, np.nan), where=valid_mc)
+    def record_qcd_normalization(self, name, totals, mc_total, luminosity, mode):
+        predicted = mc_total*luminosity if luminosity is not None else None
+        result = {"mode": mode, "luminosity_pb": luminosity, "qcd_cross_section_pb": mc_total}
+        for role in ("old", "new"):
+            if mode == "data_yield":
+                if predicted is None or predicted <= 0:
+                    if totals[role] > 0:
+                        raise ValueError(f"{name}: QCD yield must be positive to normalize to {role} data")
+                    factor = 0.0
+                else:
+                    factor = totals[role]/predicted
+            else:
+                factor = None if mode == "shape" else self.args.mc_scale
+            result[role] = {"k": factor, "data_yield": totals[role], "unscaled_qcd_yield": predicted}
+        self.qcd_normalizations[name] = result
+        if mode == "data_yield":
+            progress(f"{name}: k_old={result['old']['k']:.6g}, k_new={result['new']['k']:.6g}", self.d["dataset"])
+        return {role: result[role]["k"] for role in ("old", "new")}
+
+    def qcd_ratio(self, ax, x, values, errors, references, uncertainties, counts, minimum, edges=None, visible=None):
+        relative = np.full(len(x), np.nan)
+        for role in ("old", "new"):
+            valid = np.isfinite(references[role]) & (references[role] > 0) & np.isfinite(uncertainties[role])
+            candidate = np.divide(uncertainties[role], references[role], out=np.full(len(x), np.nan), where=valid)
+            relative = np.where(np.isfinite(relative), relative, candidate)
+        display = np.ones(len(x), bool) if visible is None else visible
+        band_mask = np.isfinite(relative) & display & ((counts["old"] >= minimum) | (counts["new"] >= minimum))
+        band = np.where(band_mask, relative, np.nan)
         band_edges = np.asarray(edges) if edges is not None else np.r_[x-0.5, x[-1]+0.5]
-        ax.fill_between(np.repeat(band_edges, 2)[1:-1], np.repeat(1-relative, 2), np.repeat(1+relative, 2),
-                        color=COLORS["qcd"], alpha=0.22, label="QCD stat.")
+        if np.any(band[band_mask] > 0):
+            ax.fill_between(np.repeat(band_edges, 2)[1:-1], np.repeat(1-band, 2), np.repeat(1+band, 2),
+                            color=COLORS["qcd"], alpha=0.22, label="QCD stat.")
         ax.axhline(1, color="0.3", ls="--", lw=1)
         result = {}
-        visible = []
+        extents = []
         for role in ("old", "new"):
+            reference = references[role]
+            valid_mc = np.isfinite(reference) & (reference > 0)
             ratios = np.divide(values[role], reference, out=np.full_like(reference, np.nan), where=valid_mc)
             stat = np.divide(errors[role], reference, out=np.full_like(reference, np.nan), where=valid_mc)
             total = np.hypot(stat, ratios*relative)
-            drawn = valid_mc & np.isfinite(ratios) & np.isfinite(stat) & (counts[role] >= minimum)
+            drawn = valid_mc & np.isfinite(ratios) & np.isfinite(stat) & (counts[role] >= minimum) & display
             ax.errorbar(x[drawn], ratios[drawn], yerr=stat[drawn], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
             result[role] = (ratios, stat, total, drawn)
-            visible.extend((ratios[drawn]-stat[drawn], ratios[drawn]+stat[drawn]))
-        visible.extend(((1-relative)[valid_mc], (1+relative)[valid_mc]))
-        finite = np.concatenate(visible)
+            extents.extend((ratios[drawn]-stat[drawn], ratios[drawn]+stat[drawn]))
+        extents.extend(((1-relative)[band_mask], (1+relative)[band_mask]))
+        finite = np.concatenate(extents)
         finite = finite[np.isfinite(finite)]
         low, high = (min(1, finite.min()), max(1, finite.max())) if finite.size else (0.5, 1.5)
         padding = max(0.1, (high-low)*0.15)
@@ -1688,61 +1812,58 @@ class Plotter:
         edges = edges/(1000 if tev else 1)
         centers, widths = (edges[1:]+edges[:-1])/2, np.diff(edges)
         raw = {role: np.asarray(self.d["samples"][role]["histograms"][name]["counts"], float) for role in ("old", "new")}
-        mc = np.asarray(spec["sumw"], float)*self.args.mc_scale
-        variance = np.asarray(spec["sumw2"], float)*self.args.mc_scale**2
-        values, errors = {}, {}
-        if normalization == "shape":
-            def shape(values, variance):
-                total = values.sum()
-                if total <= 0:
-                    return np.full_like(values, np.nan), np.full_like(values, np.nan)
-                fraction = values/total
-                error = np.sqrt(np.maximum(0, variance*(1-2*fraction)+fraction**2*variance.sum()))/total
-                return fraction, error
-            reference, uncertainty = shape(mc, variance)
-            for role in ("old", "new"):
-                values[role], errors[role] = shape(raw[role], raw[role])
-        else:
-            factor = self.total_lumi_pb if normalization == "yield" else 1.0
-            reference, uncertainty = mc*factor, np.sqrt(variance)*factor
-            denominator = 1.0 if normalization == "yield" else self.total_lumi_pb
-            for role in ("old", "new"):
-                values[role], errors[role] = raw[role]/denominator, np.sqrt(raw[role])/denominator
-        reference, uncertainty = reference[1:-1], uncertainty[1:-1]
+        mc, variance = np.asarray(spec["sumw"], float), np.asarray(spec["sumw2"], float)
+        totals = {role: float(raw[role].sum()) for role in ("old", "new")}
+        mode = "shape" if normalization == "shape" else "data_yield" if self.args.mc_scale == "k" else "fixed"
+        scales = self.record_qcd_normalization(output_name, totals, float(mc.sum()), self.total_lumi_pb, mode)
+        values, errors, ratio_errors, references, uncertainties = {}, {}, {}, {}, {}
+        fractions, shape_errors = normalized_distribution(mc, variance)
         for role in ("old", "new"):
-            values[role], errors[role] = values[role][1:-1], errors[role][1:-1]
+            if mode == "shape":
+                values[role], errors[role] = normalized_distribution(raw[role], raw[role])
+                ratio_errors[role] = errors[role]
+                references[role], uncertainties[role] = fractions, shape_errors
+            else:
+                denominator = 1.0 if normalization == "yield" else self.total_lumi_pb
+                values[role], errors[role] = raw[role]/denominator, np.sqrt(raw[role])/denominator
+                if mode == "data_yield":
+                    references[role] = fractions*totals[role]/denominator
+                    uncertainties[role] = shape_errors*totals[role]/denominator
+                    ratio_errors[role] = np.sqrt(np.maximum(0, raw[role]*(1-raw[role]/max(1, totals[role]))))/denominator
+                else:
+                    factor = scales[role]*(self.total_lumi_pb if normalization == "yield" else 1.0)
+                    references[role], uncertainties[role] = mc*factor, np.sqrt(variance)*factor
+                    ratio_errors[role] = errors[role]
+            for collection in (values, errors, ratio_errors, references, uncertainties):
+                collection[role] = collection[role][1:-1]
+                if differential:
+                    collection[role] = collection[role]/widths
             raw[role] = raw[role][1:-1]
-        if differential:
-            reference, uncertainty = reference/widths, uncertainty/widths
-            for role in ("old", "new"):
-                values[role], errors[role] = values[role]/widths, errors[role]/widths
         fig, top, bottom = self.axes()
         self.brand(top)
-        top.stairs(reference, edges, color=COLORS["qcd"], lw=1.8, label=self.args.mc_label)
-        top.fill_between(edges, np.r_[reference-uncertainty, (reference-uncertainty)[-1]],
-                         np.r_[reference+uncertainty, (reference+uncertainty)[-1]], step="post", color=COLORS["qcd"], alpha=0.22)
         for role in ("old", "new"):
             drawn = np.isfinite(values[role]) & (raw[role] > 0)
             top.errorbar(centers[drawn], values[role][drawn], yerr=errors[role][drawn], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
         shown_range = self.mass_range if mass else self.ht_range if ht else None
         visible = (edges[:-1] < shown_range[1]) & (edges[1:] > shown_range[0]) if shown_range else np.ones(len(centers), bool)
-        positive = np.concatenate([v[visible & np.isfinite(v) & (v > 0)] for v in [reference, *values.values()]])
+        positive = np.concatenate([v[visible & np.isfinite(v) & (v > 0)] for v in values.values()])
         top.set_yscale("log")
         top.set_ylim(max(1e-12, positive.min()*0.4), positive.max()*5) if positive.size else top.set_ylim(0.5, 5)
         top.set_ylabel(r"$d\sigma/dm_{jj}$ [pb/TeV]" if differential else
                        {"yield": "Entries / bin", "shape": "Normalized entries / bin", "xsec": "Cross section / bin [pb]"}[normalization])
         top.legend(frameon=False, loc="upper right")
-        ratios = self.qcd_ratio(bottom, centers, values, errors, reference, uncertainty, raw, self.args.ratio_min_count, edges)
+        ratios = self.qcd_ratio(bottom, centers, values, ratio_errors, references, uncertainties, raw, self.args.ratio_min_count, edges, visible)
         label = CORE_LABELS.get(name, spec["label"])
         bottom.set_xlabel(jet_label(label.replace("[GeV]", "[TeV]") if tev else label, name))
         if shown_range:
             bottom.set_xlim(*shown_range)
         self.table(output_name, ["low", "high", "old_count", "new_count", "old_value", "new_value",
-                                 "old_stat_error", "new_stat_error", "qcd_value", "qcd_stat_error",
+                                 "old_stat_error", "new_stat_error", "qcd_old_value", "qcd_new_value",
+                                 "qcd_old_stat_error", "qcd_new_stat_error",
                                  "old_over_qcd", "old_ratio_data_error", "old_ratio_total_error", "old_drawn",
                                  "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn"],
                    zip(edges[:-1], edges[1:], raw["old"], raw["new"], values["old"], values["new"], errors["old"], errors["new"],
-                       reference, uncertainty, *ratios["old"], *ratios["new"]))
+                       references["old"], references["new"], uncertainties["old"], uncertainties["new"], *ratios["old"], *ratios["new"]))
         self.save(fig, output_name)
 
     def qcd_run_plot(self):
@@ -1753,28 +1874,49 @@ class Plotter:
                                    if self.all_stored else self.run_maps[role].get(run, {}).get("selected", 0)
                                    for run in self.runs], float) for role in ("old", "new")}
         hist = self.qcd["histograms"]["mjj"]
-        reference = np.full(len(x), sum(hist["sumw"])*self.args.mc_scale)
-        uncertainty = np.full(len(x), math.sqrt(sum(hist["sumw2"]))*self.args.mc_scale)
+        valid_lumi = np.isfinite(self.lumi) & (self.lumi > 0)
+        exposure = float(self.lumi[valid_lumi].sum())
+        totals = {role: float(counts[role][valid_lumi].sum()) for role in ("old", "new")}
+        mode = "data_yield" if self.args.mc_scale == "k" else "fixed"
+        scales = self.record_qcd_normalization("run_index_data_qcd", totals, sum(hist["sumw"]), exposure, mode)
         fig, top, bottom = self.axes()
+        fig.set_size_inches(max(8.2, min(14.0, 8.2 + len(x)/95)), 7.0)
         self.brand(top)
-        values, errors = {}, {}
-        top.plot([-0.7, max(0.7, len(x)-0.3)], [reference[0]]*2, color=COLORS["qcd"], label=self.args.mc_label)
-        top.fill_between([-0.7, max(0.7, len(x)-0.3)], reference[0]-uncertainty[0], reference[0]+uncertainty[0], color=COLORS["qcd"], alpha=0.22)
+        values, errors, ratio_errors, references, uncertainties = {}, {}, {}, {}, {}
+        extents = []
         for role in ("old", "new"):
             values[role], errors[role] = poisson_cross_section(counts[role], self.lumi)
+            if mode == "data_yield":
+                references[role] = np.full(len(x), totals[role]/exposure if exposure > 0 else np.nan)
+                uncertainties[role] = np.zeros(len(x))
+                fraction = counts[role]/max(1, totals[role])
+                ratio_errors[role] = np.divide(np.sqrt(np.maximum(0, counts[role]*(1-fraction))), self.lumi,
+                                               out=np.full(len(x), np.nan), where=valid_lumi)
+            else:
+                references[role] = np.full(len(x), sum(hist["sumw"])*scales[role])
+                uncertainties[role] = np.full(len(x), math.sqrt(sum(hist["sumw2"]))*scales[role])
+                ratio_errors[role] = errors[role]
             mask = np.isfinite(values[role]) & (counts[role] >= self.args.min_count)
             top.errorbar(x[mask], values[role][mask], yerr=errors[role][mask], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
+            extents.extend((values[role][mask]-errors[role][mask], values[role][mask]+errors[role][mask]))
         top.set_ylabel("Dijet cross section [pb]")
-        top.set_ylim(bottom=0)
+        finite = np.concatenate(extents)
+        finite = finite[np.isfinite(finite)]
+        if finite.size:
+            low, high = finite.min(), finite.max()
+            padding = max(0.2*(high-low), 0.05*high)
+            top.set_ylim(max(0, low-padding), high+padding)
         top.legend(frameon=False, loc="lower right")
-        ratios = self.qcd_ratio(bottom, x, values, errors, reference, uncertainty, counts, self.args.min_count)
+        ratios = self.qcd_ratio(bottom, x, values, ratio_errors, references, uncertainties, counts, self.args.min_count)
         self.run_axis(bottom)
         self.table("run_index_data_qcd", ["run_index", "run", "dataset", "lumi_pb", "old_count", "new_count",
-                                         "old_xsec_pb", "new_xsec_pb", "old_stat_error_pb", "new_stat_error_pb", "qcd_xsec_pb", "qcd_stat_error_pb",
+                                         "old_xsec_pb", "new_xsec_pb", "old_stat_error_pb", "new_stat_error_pb",
+                                         "qcd_old_xsec_pb", "qcd_new_xsec_pb", "qcd_old_stat_error_pb", "qcd_new_stat_error_pb",
                                          "old_over_qcd", "old_ratio_data_error", "old_ratio_total_error", "old_drawn",
                                          "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn"],
                    zip(x, self.runs, self.run_era_labels(), self.lumi, counts["old"], counts["new"], values["old"], values["new"],
-                       errors["old"], errors["new"], reference, uncertainty, *ratios["old"], *ratios["new"]))
+                       errors["old"], errors["new"], references["old"], references["new"], uncertainties["old"], uncertainties["new"],
+                       *ratios["old"], *ratios["new"]))
         self.save(fig, "run_index_data_qcd")
 
     def mass_cross_section_plot(self):
@@ -2113,7 +2255,7 @@ class Plotter:
                           "Mass histograms use all saved bins before setting the display range: 0 to 8 TeV with cuts and 0 to 12 TeV for all/all_stored. Legacy counts are never split or interpolated.",
                           "All run axes use the shared run index; ROOT tables retain the physical run number. Stored-yield and selected-fraction figures are not produced.",
                           "One run_index_cross_section figure is produced. Its ROOT table records which run points are drawn and why others are omitted; the shared run-index mapping is never compressed.",
-                          "Eta-asymmetry upper panels use [-0.7, 0.7] with statistical error bars. Their lower panels show A_new - A_old as black points without error bars and automatically include finite displayed differences with padding and a zero reference. Difference uncertainties remain in ROOT tables. A zero old asymmetry is valid; bins lacking sufficient entries in either sample are omitted.",
+                          "Eta-asymmetry upper panels use [-0.7, 0.7] with statistical error bars. Their lower panels show A_new - A_old as dark-gray open circles without error bars and automatically include finite displayed differences with padding and a zero reference. Difference uncertainties remain in ROOT tables. A zero old asymmetry is valid; bins lacking sufficient entries in either sample are omitted.",
                           "Wide-jet pT, reconstructed raw pT and hemisphere pT histograms use uniform 100 GeV bins from 0 to 7000 GeV. Legacy variable-width bins cannot be split exactly; regenerate both summaries. Their incompatible figures are skipped and obsolete copies are removed.",
                           "Signed-eta asymmetry compares each bin with its reflected bin: [N(eta)-N(-eta)]/[N(eta)+N(-eta)]. Reflected points carry the opposite sign and are not independent measurements. The eta display range is [-3, 3].",
                           "Raw-pT spectra for J1 and J2 show saved AK4 pT divided by its saved JEC factor. This undoes the multiplicative correction; prior jet cleaning and corrected-pT rank ordering can still affect the sample.",
@@ -2133,16 +2275,22 @@ class Plotter:
             info["pairing"] = {k: self.paired[k] for k in ("matched", "only_old", "only_new", "jet_matched", "jet_unmatched", "reordered", "migration")}
         if self.qcd:
             info["qcd"] = {"label": self.args.mc_label, "scale": self.args.mc_scale,
+                           "plot_normalizations": self.qcd_normalizations,
                            "normalization": self.qcd["normalization"], "weight_convention": self.qcd["weight_convention"],
                            "selection": self.qcd["selection"],
                            "components": [{key: value for key, value in component.items() if key != "histograms"}
                                           for component in self.qcd["components"]]}
             info["notes"].extend([
-                "One QCD prediction is shared by both JEC samples and all eras; combining eras never adds copies of the MC prediction. No normalization to data is applied unless shape normalization is requested; --mc-scale is common to both data comparisons.",
+                "One QCD reduction is reused without duplication when combining eras. --mc-scale k fits separate old/new factors to each observable's data yield, including underflow and overflow, independently for each plotted dataset or combination. Numeric --mc-scale values apply a common fixed factor. Unit-area shape normalization takes precedence for spectrum plots when requested.",
                 "QCD inputs contain path and sample cross section in pb. Unit generator weights give component weight xsec_pb / generated_events; the supplied cross section includes any generator filtering. Existing summaries with an explicit filter_efficiency retain their recorded normalization. Saved MC histograms contain cross sections in pb and statistical variances in pb^2.",
-                "Data/QCD point errors contain data statistics; the shaded band around one is the common QCD statistical uncertainty. ROOT tables also store quadrature total errors for individual ratios. The QCD uncertainty is correlated between the two data/QCD ratios and between run points; it cancels in their quotient. Existing new/old plots retain the appropriate data-only comparison.",
+                "Data/QCD upper panels show only data; each lower-panel curve uses its corresponding QCD normalization. The band around one represents shared MC statistics. Fitted-yield spectrum ratios include bin/total covariance for both data and MC. ROOT tables store each scaled reference and quadrature total ratio errors; these errors are correlated across bins and JEC versions, not independent measurements.",
                 "MC skips data certification and HLT requirements and uses the same kinematic selection. No trigger-efficiency, pileup, luminosity, cross-section or JEC systematic uncertainties are included.",
-                "Normalized shape variances include the bin/total covariance and use all saved bins, including underflow and overflow. QCD run reference includes all selected mass bins, including underflow and overflow."])
+                "Normalized shape variances include the bin/total covariance and use all saved bins, including underflow and overflow. QCD run reference includes all selected mass bins, including underflow and overflow.",
+                "With --mc-scale k, run plots fit one factor per JEC to the total yield over runs with recorded luminosity, never one factor per run. The common MC rate cancels after this fit; run ratios have no residual MC normalization uncertainty and data errors include their covariance with the fitted total. Data-only cross sections remain absolute."])
+            self.table("qcd_normalization", ["plot", "mode", "jec", "k", "data_yield", "unscaled_qcd_yield", "luminosity_pb"],
+                       ([name, record["mode"], role, record[role]["k"], record[role]["data_yield"],
+                         record[role]["unscaled_qcd_yield"], record["luminosity_pb"]]
+                        for name, record in self.qcd_normalizations.items() for role in ("old", "new")))
         if self.mock:
             info["mock"] = self.mock
             info["notes"].insert(0, "Mock demonstration: the JEC differences are synthetic. Any supplied luminosity is artificial and the cross sections are illustrative.")
@@ -2179,15 +2327,18 @@ class Plotter:
                      s.get("certification_rejected", 0)+s.get("pass_json_rejected", 0),
                      s.get("certification_rejected", 0), s.get("pass_json_rejected", 0)]
                     for role, s in self.d["samples"].items()))
-        info["figures"] = [f"{fmt}/{name}.{fmt}" for name in self.figures for fmt in dict.fromkeys(self.args.formats)]
+        info["figures"] = [f"details/{self.plot_category(name)}/{fmt}/{name}.{fmt}"
+                           for name in self.figures for fmt in dict.fromkeys(self.args.formats)]
+        info["summary_figures"] = [f"summary/{self.plot_category(name)}/{fmt}/{name}.{fmt}"
+                                   for name in self.summary_figures for fmt in dict.fromkeys(self.args.formats)]
         info["root_file"] = str(self.args.root_file)
         info["root_directory"] = self.output.name
         info["root_tables"] = ["table_"+name for name in self.tables]
         info["notes"].append("Run dijet cross sections use recorded luminosity per run when supplied. Dataset totals produce LS-weighted estimates only with --estimate-run-lumi. N_run/L_era contribution points are no longer produced.")
         info["notes"].append("LS-weighted estimates assign L_run = L_dataset * N_distinct_LS_run/N_distinct_LS_dataset. Equal luminosity per LS is an unverified assumption; this does not constitute measured run luminosity or a validated run-stability result.")
         info["notes"].append("The dedicated standard-binned mass cross-section plot shows d sigma/d m in pb/TeV, with N/(bin_width_TeV * luminosity_pb). It is skipped for legacy mass bins because aggregate counts cannot be split exactly.")
-        info["notes"].append("Eta-asymmetry lower panels display New - Old with black filled circles and no error bars. Other old/new comparison lower panels display (New-old)/old with capped vertical statistical errors. Asymmetry-difference uncertainties are saved using the uncorrelated approximation because old/new covariance is not stored.")
-        info["notes"].append("Markers use ROOT size 1.0 and Matplotlib diameter 6.0 points. Upper-panel new markers remain open red circles. Histogram lines have no error-bar overlays. Metadata is stored only inside ROOT.")
+        info["notes"].append("Eta-asymmetry lower panels display New - Old with dark-gray open circles and no error bars. Other old/new comparison lower panels display (New-old)/old with capped vertical statistical errors. Asymmetry-difference uncertainties are saved using the uncorrelated approximation because old/new covariance is not stored.")
+        info["notes"].append("Markers use ROOT size 1.0 and Matplotlib diameter 6.0 points. Old JEC markers are dark-gray open circles; new JEC markers are muted-orange open downward triangles. QCD uses muted blue. Histogram lines have no error-bar overlays. Metadata is stored only inside ROOT.")
         self.report_data = info
 
     def write_root(self):
@@ -2237,6 +2388,7 @@ class Plotter:
         for index, (group, action) in enumerate(plan, 1):
             progress(f"Plot group {index}/{len(plan)}: {group}", name)
             action()
+        self.prepare_summary()
         progress("Writing editable ROOT histograms/canvases and metadata", name)
         self.report()
         self.write_root()
@@ -2275,19 +2427,8 @@ def combine(datasets):
     return merged
 
 
-def main():
+def plot_selection(datasets, args):
     started = time.monotonic()
-    args = parser().parse_args()
-    if args.jobs < 1 or args.min_count < 1 or args.ratio_min_count < 1 or args.dpi < 1 or not math.isfinite(args.energy_tev) or args.energy_tev <= 0:
-        raise ValueError("jobs, min-count, ratio-min-count, dpi and energy must be positive")
-    if not math.isfinite(args.mc_scale) or args.mc_scale <= 0:
-        raise ValueError("mc-scale must be finite and positive")
-    for name, limits in (("mass-range", args.mass_range), ("ht-range", args.ht_range)):
-        if limits and (not all(math.isfinite(value) for value in limits) or limits[0] < 0 or limits[1] <= limits[0]):
-            raise ValueError(f"{name} must be two finite increasing values in TeV with MIN >= 0")
-    paths = expand_inputs(args.inputs)
-    progress(f"Found {len(paths)} summary files")
-    datasets = load_datasets(paths, args.datasets, args.allow_partial, args.mc_input)
     progress(f"Loaded {len(datasets)} datasets: {', '.join(sorted(datasets))}")
     if any(d["config"].get("certification_mask") for d in datasets.values()):
         configure_certification(datasets, args)
@@ -2348,9 +2489,6 @@ def main():
             progress(f"Loaded recorded luminosity for {len(luminosity['runs'])} runs")
     output = Path(args.output_dir).resolve()
     args.root_file = str(Path(args.root_file).resolve() if args.root_file else output/"jec_comparison.root")
-    preflight = subprocess.run([args.root_python,"-c","import ROOT; ROOT.gROOT.SetBatch(True)"],capture_output=True,text=True)
-    if preflight.returncode:
-        raise ValueError("ROOT output requires a Python interpreter with working PyROOT. Run cmsenv, or pass --root-python PATH. "+preflight.stderr[-1000:])
     jobs = []
     if len(datasets) > 1:
         jobs.append((combine(datasets), luminosity, args, output / "combined"))
@@ -2374,6 +2512,44 @@ def main():
             raise ValueError("ROOT output merge failed: "+merged.stderr[-3000:])
         progress(f"Saved all dataset histograms, graphs, tables and canvases: {args.root_file}")
     progress(f"Finished: {sum(count for path, count in results)} plots in {time.monotonic()-started:.1f} s")
+
+
+def selection_arguments(args, selection, multiple):
+    result = copy.deepcopy(args)
+    if multiple:
+        result.output_dir = str(Path(args.output_dir)/selection)
+        for field in ("root_file", "export_lumisections"):
+            if getattr(args, field):
+                path = Path(getattr(args, field))
+                setattr(result, field, str(path.with_name(f"{path.stem}_{selection}{path.suffix}")))
+        if args.brilcalc_work_dir:
+            result.brilcalc_work_dir = str(Path(args.brilcalc_work_dir)/selection)
+    return result
+
+
+def main():
+    started = time.monotonic()
+    args = parser().parse_args()
+    if args.jobs < 1 or args.min_count < 1 or args.ratio_min_count < 1 or args.dpi < 1 or not math.isfinite(args.energy_tev) or args.energy_tev <= 0:
+        raise ValueError("jobs, min-count, ratio-min-count, dpi and energy must be positive")
+    if args.mc_scale != "k" and (not math.isfinite(args.mc_scale) or args.mc_scale <= 0):
+        raise ValueError("mc-scale must be lowercase k or a finite positive number")
+    for name, limits in (("mass-range", args.mass_range), ("ht-range", args.ht_range)):
+        if limits and (not all(math.isfinite(value) for value in limits) or limits[0] < 0 or limits[1] <= limits[0]):
+            raise ValueError(f"{name} must be two finite increasing values in TeV with MIN >= 0")
+    paths = expand_inputs(args.inputs)
+    progress(f"Found {len(paths)} summary files")
+    selections = load_plot_selections(paths, args.datasets, args.allow_partial, args.mc_input)
+    if not args.export_only:
+        preflight = subprocess.run([args.root_python,"-c","import ROOT; ROOT.gROOT.SetBatch(True)"],capture_output=True,text=True)
+        if preflight.returncode:
+            raise ValueError("ROOT output requires a Python interpreter with working PyROOT. Run cmsenv, or pass --root-python PATH. "+preflight.stderr[-1000:])
+    for selection, datasets in selections.items():
+        selection_args = selection_arguments(args, selection, len(selections) > 1)
+        progress(f"Plotting {selection} summaries in {selection_args.output_dir}")
+        plot_selection(datasets, selection_args)
+    if len(selections) > 1:
+        progress(f"Completed selected and all_stored in {time.monotonic()-started:.1f} s")
 
 
 if __name__ == "__main__":

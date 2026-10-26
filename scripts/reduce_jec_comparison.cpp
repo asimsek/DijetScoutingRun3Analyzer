@@ -127,6 +127,34 @@ struct Options {
     Certification certification;
 };
 
+std::array<fs::path,2> summaryPaths(const Options& o) {
+    const fs::path path=fs::absolute(o.output);
+    fs::path directory;
+    std::string name;
+    if(path.extension()==".json" && !fs::is_directory(path)) {
+        directory=path.parent_path();name=path.stem().string();
+        for(const std::string suffix:{"_selected","_all_stored"})
+            if(name.size()>=suffix.size() && name.compare(name.size()-suffix.size(),suffix.size(),suffix)==0) {
+                name.resize(name.size()-suffix.size());break;
+            }
+        if(name.empty()) throw std::runtime_error("--output requires a nonempty summary base name");
+    } else {
+        if(fs::exists(path) && !fs::is_directory(path)) throw std::runtime_error("Output is not a directory: "+path.string());
+        if(o.dataset=="." || o.dataset==".." || o.dataset.find_first_of("/\\")!=std::string::npos)
+            throw std::runtime_error("--dataset must be a filename label when --output is a directory");
+        directory=path;name=o.dataset;
+        if(!o.jec.empty()) name+="_"+o.jec;
+    }
+    return {directory/(name+"_selected.json"),directory/(name+"_all_stored.json")};
+}
+
+void checkSummaryOutputs(const Options& o) {
+    for(const auto& path:summaryPaths(o)) {
+        if(fs::exists(path) && !fs::is_regular_file(path)) throw std::runtime_error("Output is not a regular file: "+path.string());
+        if(fs::exists(path) && !o.force) throw std::runtime_error("Output exists: "+path.string()+"; use --force to replace both summaries");
+    }
+}
+
 std::string trim(std::string s) {
     const auto a = s.find_first_not_of(" \t\r\n");
     if (a == std::string::npos) return {};
@@ -187,9 +215,13 @@ Options parse(int argc, char** argv) {
         const std::string arg = argv[i];
         auto value = [&]() { if (++i >= argc) throw std::runtime_error("Missing value for " + arg); return std::string(argv[i]); };
         if (arg == "--help" || arg == "-h") {
-            std::cout << "Single: reduce_jec_comparison --input PATH --jec old|new --dataset ERA --output FILE.json\n"
-                      << "Paired: reduce_jec_comparison --old PATH --new PATH --dataset ERA --output FILE.json\n"
-                      << "QCD: reduce_jec_comparison --mc-list FILE --dataset QCD --output qcd.json\n"
+            std::cout << "Single: reduce_jec_comparison --input PATH --jec old|new --dataset ERA --output DIR\n"
+                      << "Paired: reduce_jec_comparison --old PATH --new PATH --dataset ERA --output DIR\n"
+                      << "QCD: reduce_jec_comparison --mc-list FILE --dataset QCD_2024 --output DIR\n"
+                      << "One input scan writes DATASET_selected.json and DATASET_all_stored.json inside DIR.\n"
+                      << "Single data samples include the JEC label: ERA_old_selected.json, ERA_old_all_stored.json (or new).\n"
+                      << "The output directory is created automatically. Explicit --output FILE.json remains supported;\n"
+                      << "an existing _selected or _all_stored suffix in that filename is replaced automatically.\n"
                       << "--mc-list FILE may also accompany data inputs and may be repeated.\n"
                       << "Each MC list row: path_or_glob xsec_pb; one complete QCD component per row.\n"
                       << "MC paths may be EOS paths, directories, globs, ROOT URLs or @filelists, relative to the MC list.\n"
@@ -199,9 +231,11 @@ Options parse(int argc, char** argv) {
                       << "Generator-weight branches, MC sharding and MC --max-entries are unsupported. Reduce QCD once and reuse its JSON.\n"
                       << "PATH: ROOT file, directory, quoted glob, @filelist.txt, or explicit root:// URL. Repeat input flags.\n"
                       << "--threads N (0=all), --cache-mb N (per reader), --chunk-entries N\n"
-                      << "--preset dijet|loose|all|all_stored, --mjj-min GeV, --pt-min GeV, --eta-max X, --deta-max X\n"
+                      << "--preset dijet|loose|all configures the selected summary; default: dijet.\n"
+                      << "--mjj-min GeV, --pt-min GeV, --eta-max X, --deta-max X\n"
                       << "Default dijet preset requires PassJSON > 0.5 and the existing analysis cuts.\n"
-                      << "all_stored applies no event cuts; PassJSON and external JSON filtering are disabled by default.\n"
+                      << "The all_stored summary is always produced, with no event cuts by default.\n"
+                      << "Legacy --preset all_stored is accepted as an alias for the default dual output.\n"
                       << "--require-pass-json explicitly requires saved PassJSON > 0.5 for all_stored only.\n"
                       << "Jet observables require only their own usable stored quantities in all_stored.\n"
                       << "--cert-json FILE applies a run/LS mask before all histogram filling, including all_stored.\n"
@@ -239,9 +273,11 @@ Options parse(int argc, char** argv) {
     o.paired = !o.oldInput.empty() || !o.newInput.empty();
     if (o.output.empty() || o.dataset.empty()) throw std::runtime_error("--output and --dataset are required");
     if (o.preset != "dijet" && o.preset != "loose" && o.preset != "all" && o.preset != "all_stored") throw std::runtime_error("Unknown preset");
-    if (o.requirePassJSON && o.preset != "all_stored") throw std::runtime_error("--require-pass-json is for all_stored; dijet and loose already require PassJSON");
+    if (o.preset == "all_stored") {
+        std::cout<<"--preset all_stored is no longer needed; writing dijet selected and all_stored summaries"<<std::endl;
+        o.preset="dijet";
+    }
     if (o.preset != "dijet" && !massSet) o.minMass = 0;
-    if (o.preset == "all_stored" && o.minMass != 0) throw std::runtime_error("all_stored has no mass selection; use --preset all with --mjj-min instead");
     if (o.match != "ordered" && o.match != "keyed") throw std::runtime_error("Unknown matching mode");
     for (double x : {o.minMass, o.minPt, o.maxEta, o.maxDEta, o.balanceAlpha, o.jetDR})
         if (!std::isfinite(x) || x < 0) throw std::runtime_error("Cuts must be finite and nonnegative");
@@ -260,7 +296,7 @@ Options parse(int argc, char** argv) {
     }
     if (!o.mcLists.empty() && (o.shards != 1 || o.maxEntries >= 0))
         throw std::runtime_error("--mc-list requires complete components: do not use --shards > 1 or --max-entries");
-    if (fs::exists(o.output) && !o.force) throw std::runtime_error("Output exists; use --force to replace it");
+    checkSummaryOutputs(o);
     return o;
 }
 
@@ -583,11 +619,14 @@ struct Summary {
 const std::array<int,16> pairFields={Mjj,AKMjj,Pt1,Pt2,Eta1,Eta2,AKPt1,AKPt2,AKEta1,AKEta2,AKPhi1,AKPhi2,Jec1,Jec2,NVtx,HT};
 struct Record {
     std::array<double,16> v;
-    Bins bins;
-    bool base,selected,seen=false;
-    Record(const Event& e,const Options& o,Bins b):bins(b) {
+    std::array<Bins,2> bins;
+    std::array<bool,2> retained,base,selected;
+    bool seen=false;
+    Record(const Event& e,const std::array<Options,2>& options,std::array<Bins,2> b,std::array<bool,2> keep):bins(b),retained(keep) {
         for(std::size_t i=0;i<v.size();++i) v[i]=e[pairFields[i]];
-        const auto c=cutflow(e,o);base=c[5];selected=c[6];
+        for(std::size_t view=0;view<options.size();++view) {
+            const auto c=cutflow(e,options[view]);base[view]=c[5];selected[view]=c[6];
+        }
     }
     Event event() const {Event e{};for(std::size_t i=0;i<v.size();++i)e[pairFields[i]]=v[i];return e;}
 };
@@ -776,7 +815,7 @@ struct MCComponent {
     double xsec=0,weight=0;
     Count generated=0,stored=0;
     std::vector<MCFile> files;
-    Summary summary;
+    std::array<Summary,2> summaries;
 };
 
 void expandMCInput(const std::string& value,std::vector<std::string>& out,unsigned depth=0) {
@@ -899,9 +938,10 @@ Count generatedEvents(TFile& file,long long entries) {
     return generated;
 }
 
-Count reduceMC(std::vector<MCComponent>& components,const Options& dataOptions,unsigned& workers) {
+Count reduceMC(std::vector<MCComponent>& components,std::array<Options,2> options,unsigned& workers) {
     if(components.empty()) return 0;
-    Options o=dataOptions;o.mc=true;o.requirePassJSON=false;o.certification=Certification{};
+    for(auto& option:options) {option.mc=true;option.requirePassJSON=false;option.certification=Certification{};}
+    const auto& o=options[0];
     std::vector<std::pair<std::size_t,std::size_t>> files;
     for(std::size_t c=0;c<components.size();++c)
         for(std::size_t f=0;f<components[c].files.size();++f) files.emplace_back(c,f);
@@ -934,13 +974,16 @@ Count reduceMC(std::vector<MCComponent>& components,const Options& dataOptions,u
     std::atomic<Count> processed{0};std::mutex mutex;Progress scan("Scan QCD",total,"entries");
     withProgress(scan,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t i,unsigned){
         const auto& task=tasks[i];const auto id=files[task.file];auto& component=components[id.first];
-        Reader reader(component.files[id.second].path,o,task.begin,task.end);Summary summary;Count pending=0;
+        Reader reader(component.files[id.second].path,o,task.begin,task.end);std::array<Summary,2> summaries;Count pending=0;
         for(long long entry=task.begin;entry<task.end;++entry) {
-            summary.fill(reader.read(entry),o,{static_cast<Count>(entry),0,0});
+            const auto& event=reader.read(entry);
+            for(std::size_t view=0;view<options.size();++view)
+                summaries[view].fill(event,options[view],{static_cast<Count>(entry),0,0});
             if(++pending>=50000) {processed+=pending;pending=0;}
         }
         processed+=pending;
-        std::lock_guard<std::mutex> lock(mutex);component.summary.merge(summary);
+        std::lock_guard<std::mutex> lock(mutex);
+        for(std::size_t view=0;view<options.size();++view) component.summaries[view].merge(summaries[view]);
     });});
     return processed.load();
 }
@@ -973,7 +1016,7 @@ void configJSON(std::ostream& out,const Options& o,bool data=true) {
     if(data && o.requirePassJSON) out<<",\"require_pass_json\":true";
     out<<'}';
 }
-void mcJSON(std::ostream& out,const std::vector<MCComponent>& components,const Options& o) {
+void mcJSON(std::ostream& out,const std::vector<MCComponent>& components,const Options& o,std::size_t view) {
     out<<"{\"config\":";configJSON(out,o,false);
     out<<",\"tree\":"<<quote(o.tree)<<",\"normalization\":\"cross_section_pb\",\"weight_convention\":\"unit\""
        <<",\"selection\":\"preset kinematics without data certification, PassJSON or HLT; generated counters before skim cuts\""
@@ -982,15 +1025,16 @@ void mcJSON(std::ostream& out,const std::vector<MCComponent>& components,const O
     for(std::size_t i=0;i<components.size();++i) {
         if(i) out<<',';
         const auto& c=components[i];
-        selected+=c.summary.cuts.back()*c.weight;variance+=c.summary.cuts.back()*c.weight*c.weight;
+        const auto& summary=c.summaries[view];
+        selected+=summary.cuts.back()*c.weight;variance+=summary.cuts.back()*c.weight*c.weight;
         out<<"{\"source\":"<<quote(c.source)<<",\"xsec_pb\":"<<c.xsec
            <<",\"generated_events\":"<<c.generated<<",\"stored_entries\":"<<c.stored
-           <<",\"selected_entries\":"<<c.summary.cuts.back()<<",\"weight_pb\":"<<c.weight<<",\"files\":[";
+           <<",\"selected_entries\":"<<summary.cuts.back()<<",\"weight_pb\":"<<c.weight<<",\"files\":[";
         for(std::size_t j=0;j<c.files.size();++j) {
             if(j) out<<',';
             const auto& f=c.files[j];out<<"{\"path\":"<<quote(f.path)<<",\"entries\":"<<f.entries<<",\"generated_events\":"<<f.generated<<'}';
         }
-        out<<"],\"histograms\":";histJSON(out,c.summary.h);out<<'}';
+        out<<"],\"histograms\":";histJSON(out,summary.h);out<<'}';
     }
     out<<"],\"selected_sumw\":"<<selected<<",\"selected_sumw2\":"<<variance<<",\"histograms\":{";
     const auto h=makeHists();
@@ -998,8 +1042,8 @@ void mcJSON(std::ostream& out,const std::vector<MCComponent>& components,const O
         if(i) out<<',';
         std::vector<double> sumw(h[i].counts.size()),sumw2(sumw.size());
         for(const auto& c:components) for(std::size_t j=0;j<sumw.size();++j) {
-            sumw[j]+=c.summary.h[i].counts[j]*c.weight;
-            sumw2[j]+=c.summary.h[i].counts[j]*c.weight*c.weight;
+            sumw[j]+=c.summaries[view].h[i].counts[j]*c.weight;
+            sumw2[j]+=c.summaries[view].h[i].counts[j]*c.weight*c.weight;
         }
         out<<quote(h[i].name)<<":{\"label\":"<<quote(h[i].label)<<",\"edges\":";arrayJSON(out,h[i].edges);
         out<<",\"sumw\":";arrayJSON(out,sumw);out<<",\"sumw2\":";arrayJSON(out,sumw2);out<<'}';
@@ -1041,136 +1085,196 @@ void pairedJSON(std::ostream& out,const Paired& p) {
         out<<"{\"run\":"<<r.first<<",\"moments\":";momentsJSON(out,std::vector<Moment>(r.second.begin(),r.second.end()));out<<'}';}out<<"]}";
 }
 
+void writeSummary(std::ostream& out,const Options& o,const std::vector<FileInfo>& files,
+                  const Summary& old,const Summary& next,const Paired& pair,
+                  const std::vector<MCComponent>& components,std::size_t view,double seconds,unsigned workers,Count processed) {
+    const bool mcOnly=!o.paired && o.input.empty();
+    out<<std::setprecision(17)<<"{\"schema_version\":1,\"dataset\":"<<quote(o.dataset)<<",\"tree\":"<<quote(o.tree)
+       <<",\"mode\":"<<quote(mcOnly?"mc":o.paired?o.match:"single")<<",\"partial\":"<<(o.maxEntries>=0?"true":"false")
+       <<",\"config\":";configJSON(out,o,!mcOnly);
+    out<<",\"thresholds\":";arrayJSON(out,thresholds);
+    if(!mcOnly && o.certification.active()) out<<",\"certification_source\":"<<quote(o.certification.source);
+    if(o.preset=="all_stored") out<<",\"cutflow_labels\":[\"Stored\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\"]";
+    else out<<",\"cutflow_labels\":[\"Stored\",\"JSON and HLT\",\"Valid dijet\",\"Tight IDs\",\"pT\",\"eta\",\"delta eta\",\"Mass\"]";
+    out<<",\"files\":{";
+    auto writeFiles=[&](const std::string& label,bool isNew){out<<quote(label)<<":[";for(std::size_t i=0;i<files.size();++i){if(i)out<<',';const auto& f=files[i];
+        out<<"{\"path\":"<<quote(isNew?f.newPath:f.oldPath)<<",\"entries\":"<<(isNew?f.newEntries:f.oldEntries)
+           <<",\"processed\":"<<(isNew?f.newLimit:f.oldLimit)<<'}';}out<<']';};
+    if(!mcOnly) writeFiles(o.paired?"old":o.jec,false);if(o.paired){out<<',';writeFiles("new",true);}
+    out<<"},\"samples\":{";
+    if(!mcOnly) {out<<quote(o.paired?"old":o.jec)<<':';summaryJSON(out,old,o.preset=="all_stored");}
+    if(o.paired){out<<",\"new\":";summaryJSON(out,next,o.preset=="all_stored");}out<<'}';
+    if(o.paired){out<<",\"paired\":";pairedJSON(out,pair);}
+    if(!components.empty()) {out<<",\"qcd\":";mcJSON(out,components,o,view);}
+    out<<",\"elapsed_seconds\":"<<seconds<<",\"threads\":"<<workers<<",\"processed_entries\":"<<processed<<"}\n";
+}
+
 int main(int argc,char** argv) {
     try {
-        const Options o=parse(argc,argv);
+        const Options requested=parse(argc,argv);
+        std::array<Options,2> options={requested,requested};
+        options[0].requirePassJSON=false;
+        options[1].preset="all_stored";options[1].minMass=0;
+        const auto& o=options[0];
+        const auto outputs=summaryPaths(o);
         ROOT::EnableThreadSafety();
         const auto started=Clock::now();
         const bool mcOnly=!o.paired && o.input.empty();
         auto components=loadMCComponents(o);
-        if(!mcOnly) std::cout<<"Preset: "<<o.preset<<"; PassJSON cut: "
-                 <<(o.requirePassJSON || o.preset=="dijet" || o.preset=="loose"?"enabled (PassJSON > 0.5)":"disabled")
-                 <<"; external run/LS mask: "<<(o.certification.active()?"enabled":"disabled")<<std::endl;
-        if(!mcOnly && o.certification.active()) std::cout<<"Run/LS certification filter: "<<o.certification.source<<" ("<<o.certification.ranges.size()<<" runs)"<<std::endl;
+        std::cout<<"One scan, two summaries: "<<outputs[0]<<" and "<<outputs[1]<<std::endl;
+        if(!mcOnly) {
+            std::cout<<"Selected preset: "<<o.preset<<"; PassJSON cut: "
+                     <<(o.preset=="dijet" || o.preset=="loose"?"enabled (PassJSON > 0.5)":"disabled")
+                     <<"; external run/LS mask: "<<(o.certification.active()?"enabled":"disabled")<<std::endl;
+            std::cout<<"All-stored summary: no trigger, jet-ID or kinematic cuts; PassJSON filter: "
+                     <<(options[1].requirePassJSON?"enabled":"disabled")<<std::endl;
+        }
+        if(!mcOnly && o.certification.active()) std::cout<<"Run/LS certification filter for both summaries: "<<o.certification.source<<" ("<<o.certification.ranges.size()<<" runs)"<<std::endl;
         std::vector<FileInfo> files;
         const auto& paths=o.paired?o.oldInput:o.input;
         for(std::size_t i=0;i<paths.size();++i)if(i%o.shards==o.shard) {
             FileInfo f;f.oldPath=paths[i];if(o.paired)f.newPath=o.newInput[i];files.push_back(std::move(f));
         }
         if(files.empty() && !mcOnly)throw std::runtime_error("This shard has no files");
-        if(!mcOnly) std::cout<<"Validating "<<files.size()<<" file"<<(o.paired?" pairs":"s")<<" using "<<o.threads<<" threads"<<std::endl;
         if(!mcOnly) {
-        std::atomic<Count> validated{0};Progress validation("Validate",files.size(),o.paired?"pairs":"files");
-        withProgress(validation,validated,[&]{parallel(files.size(),o.threads,[&](std::size_t i,unsigned){
-            auto& f=files[i];Reader a(f.oldPath,o);f.oldEntries=a.tree->GetEntries();
-            f.oldLimit=o.maxEntries<0?f.oldEntries:std::min(f.oldEntries,o.maxEntries);
-            if(o.paired){Reader b(f.newPath,o);f.newEntries=b.tree->GetEntries();f.newLimit=o.maxEntries<0?f.newEntries:std::min(f.newEntries,o.maxEntries);
-                if(o.match=="ordered" && f.oldEntries!=f.newEntries)throw std::runtime_error("Entry counts differ in "+f.oldPath+" and "+f.newPath+"; use --match keyed or independent summaries");}
-            auto it=a.tree->GetClusterIterator(0);long long last=0,s;
-            f.starts.push_back(0);
-            while((s=it())<f.oldLimit)if(s-last>=o.chunk){f.starts.push_back(s);last=s;}
-            if(f.oldLimit>0)f.starts.push_back(f.oldLimit);
-            validated.fetch_add(1,std::memory_order_relaxed);
-        });});
+            std::cout<<"Validating "<<files.size()<<" file"<<(o.paired?" pairs":"s")<<" using "<<o.threads<<" threads"<<std::endl;
+            std::atomic<Count> validated{0};Progress validation("Validate",files.size(),o.paired?"pairs":"files");
+            withProgress(validation,validated,[&]{parallel(files.size(),o.threads,[&](std::size_t i,unsigned){
+                auto& f=files[i];Reader a(f.oldPath,o);f.oldEntries=a.tree->GetEntries();
+                f.oldLimit=o.maxEntries<0?f.oldEntries:std::min(f.oldEntries,o.maxEntries);
+                if(o.paired){Reader b(f.newPath,o);f.newEntries=b.tree->GetEntries();f.newLimit=o.maxEntries<0?f.newEntries:std::min(f.newEntries,o.maxEntries);
+                    if(o.match=="ordered" && f.oldEntries!=f.newEntries)throw std::runtime_error("Entry counts differ in "+f.oldPath+" and "+f.newPath+"; use --match keyed or independent summaries");}
+                auto it=a.tree->GetClusterIterator(0);long long last=0,s;
+                f.starts.push_back(0);
+                while((s=it())<f.oldLimit)if(s-last>=o.chunk){f.starts.push_back(s);last=s;}
+                if(f.oldLimit>0)f.starts.push_back(f.oldLimit);
+                validated.fetch_add(1,std::memory_order_relaxed);
+            });});
         }
         std::vector<Task> tasks;
         for(std::size_t i=0;i<files.size();++i){const auto& f=files[i];
             if(o.paired && o.match=="keyed")tasks.push_back({i,0,f.oldLimit});
             else for(std::size_t j=1;j<f.starts.size();++j)tasks.push_back({i,f.starts[j-1],f.starts[j]});}
         const unsigned workers=std::max(1u,std::min<unsigned>(o.threads,std::max<std::size_t>(1,tasks.size())));
-        std::vector<Summary> olds(workers),news(o.paired?workers:0);std::vector<Paired> pairs(o.paired?workers:0);
+        std::array<std::vector<Summary>,2> olds,news;
+        std::array<std::vector<Paired>,2> pairs;
+        for(std::size_t view=0;view<options.size();++view) {
+            olds[view].resize(workers);
+            if(o.paired){news[view].resize(workers);pairs[view].resize(workers);}
+        }
         std::atomic<Count> processed{0};
         Count total=0;for(const auto& f:files)total+=f.oldLimit+(o.paired?f.newLimit:0);
-        if(!mcOnly) std::cout<<"Scanning "<<total<<" entries in "<<tasks.size()<<" tasks; only "<<NFields<<" scalar branches are read"<<std::endl;
-        if(o.paired && o.match=="keyed")std::cout<<"Keyed matching caches old events per active file pair; budget about 3 GB per 7.25 million events per worker"<<std::endl;
+        if(!mcOnly) std::cout<<"Scanning "<<total<<" entries once in "<<tasks.size()<<" tasks; only "<<NFields<<" scalar branches are read"<<std::endl;
+        if(o.paired && o.match=="keyed")std::cout<<"Keyed matching caches one old-event record with both histogram assignments per active file pair"<<std::endl;
         if(!mcOnly) {
-        Progress scanning("Scan",total,"entries");
-        withProgress(scanning,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t ti,unsigned slot){
-            const auto& task=tasks[ti];const auto& f=files[task.file];
-            Reader a(f.oldPath,o,task.begin,task.end);
-            auto& old=olds[slot];Count pending=0;
-            auto tick=[&]{if(++pending>=50000){processed+=pending;pending=0;}};
-            if(!o.paired){for(long long i=task.begin;i<task.end;++i){const auto& e=a.read(i);old.fill(e,o,key(e));tick();}}
-            else {
-                Reader b(f.newPath,o,o.match=="keyed"?0:task.begin,o.match=="keyed"?f.newLimit:task.end);
-                auto& next=news[slot];auto& pair=pairs[slot];
-                if(o.match=="ordered")for(long long i=task.begin;i<task.end;++i){
-                    const auto& ea=a.read(i);const auto& eb=b.read(i);const auto ka=key(ea),kb=key(eb);
-                    if(!(ka==kb))throw std::runtime_error("Event identity mismatch at entry "+std::to_string(i)+" in "+f.oldPath+"; use --match keyed or independent summaries");
-                    const auto ia=old.fill(ea,o,ka),ib=next.fill(eb,o,kb);const auto ca=cutflow(ea,o),cb=cutflow(eb,o);
-                    if(old.retained && next.retained) pair.fill(ea,eb,ca[5],cb[5],ca[6],cb[6],ia,ib,ka,o);
-                    else if(old.retained) ++pair.onlyOld;else if(next.retained) ++pair.onlyNew;tick();tick();
+            Progress scanning("Scan",total,"entries");
+            withProgress(scanning,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t ti,unsigned slot){
+                const auto& task=tasks[ti];const auto& f=files[task.file];
+                Reader a(f.oldPath,o,task.begin,task.end);Count pending=0;
+                auto tick=[&]{if(++pending>=50000){processed+=pending;pending=0;}};
+                if(!o.paired) {
+                    for(long long i=task.begin;i<task.end;++i) {
+                        const auto& e=a.read(i);const auto k=key(e);
+                        for(std::size_t view=0;view<options.size();++view) olds[view][slot].fill(e,options[view],k);
+                        tick();
+                    }
                 } else {
-                    const Count matchedBefore=pair.matched;
-                    const Count oldBefore=old.cuts[0],newBefore=next.cuts[0];
-                    std::unordered_map<Key,Record,KeyHash> index;index.max_load_factor(0.85);index.reserve(f.oldLimit);
-                    for(long long i=0;i<f.oldLimit;++i){const auto& e=a.read(i);const auto k=key(e);auto bins=old.fill(e,o,k);
-                        if(old.retained && !index.emplace(k,Record(e,o,std::move(bins))).second)throw std::runtime_error("Duplicate old event key in "+f.oldPath);tick();}
-                    for(long long i=0;i<f.newLimit;++i){const auto& e=b.read(i);const auto k=key(e);const auto ib=next.fill(e,o,k);
-                        if(!next.retained){tick();continue;}
-                        const auto found=index.find(k);
-                        if(found==index.end())++pair.onlyNew;
-                        else {auto& r=found->second;if(r.seen)throw std::runtime_error("Duplicate matched new event key in "+f.newPath);r.seen=true;
-                            const auto c=cutflow(e,o);pair.fill(r.event(),e,r.base,c[5],r.selected,c[6],r.bins,ib,k,o);}tick();}
-                    for(const auto& item:index)pair.onlyOld+=!item.second.seen;
-                    if(old.cuts[0]>oldBefore && next.cuts[0]>newBefore && pair.matched==matchedBefore)
-                        throw std::runtime_error("No common events in file pair "+f.oldPath+" and "+f.newPath+"; check file pairing or use independent summaries");
+                    Reader b(f.newPath,o,o.match=="keyed"?0:task.begin,o.match=="keyed"?f.newLimit:task.end);
+                    if(o.match=="ordered") {
+                        for(long long i=task.begin;i<task.end;++i) {
+                            const auto& ea=a.read(i);const auto& eb=b.read(i);const auto ka=key(ea),kb=key(eb);
+                            if(!(ka==kb))throw std::runtime_error("Event identity mismatch at entry "+std::to_string(i)+" in "+f.oldPath+"; use --match keyed or independent summaries");
+                            for(std::size_t view=0;view<options.size();++view) {
+                                auto& old=olds[view][slot];auto& next=news[view][slot];auto& pair=pairs[view][slot];const auto& opt=options[view];
+                                const auto ia=old.fill(ea,opt,ka),ib=next.fill(eb,opt,kb);const auto ca=cutflow(ea,opt),cb=cutflow(eb,opt);
+                                if(old.retained && next.retained) pair.fill(ea,eb,ca[5],cb[5],ca[6],cb[6],ia,ib,ka,opt);
+                                else if(old.retained) ++pair.onlyOld;else if(next.retained) ++pair.onlyNew;
+                            }
+                            tick();tick();
+                        }
+                    } else {
+                        std::array<Count,2> matchedBefore,oldBefore,newBefore;
+                        for(std::size_t view=0;view<options.size();++view) {
+                            matchedBefore[view]=pairs[view][slot].matched;
+                            oldBefore[view]=olds[view][slot].cuts[0];newBefore[view]=news[view][slot].cuts[0];
+                        }
+                        std::unordered_map<Key,Record,KeyHash> index;index.max_load_factor(0.85);index.reserve(f.oldLimit);
+                        for(long long i=0;i<f.oldLimit;++i) {
+                            const auto& e=a.read(i);const auto k=key(e);std::array<Bins,2> bins;std::array<bool,2> retained;
+                            for(std::size_t view=0;view<options.size();++view) {
+                                bins[view]=olds[view][slot].fill(e,options[view],k);retained[view]=olds[view][slot].retained;
+                            }
+                            if((retained[0] || retained[1]) && !index.emplace(k,Record(e,options,std::move(bins),retained)).second)
+                                throw std::runtime_error("Duplicate old event key in "+f.oldPath);
+                            tick();
+                        }
+                        for(long long i=0;i<f.newLimit;++i) {
+                            const auto& e=b.read(i);const auto k=key(e);std::array<Bins,2> bins;std::array<bool,2> retained;
+                            for(std::size_t view=0;view<options.size();++view) {
+                                bins[view]=news[view][slot].fill(e,options[view],k);retained[view]=news[view][slot].retained;
+                            }
+                            if(!retained[0] && !retained[1]){tick();continue;}
+                            const auto found=index.find(k);
+                            if(found==index.end()) {
+                                for(std::size_t view=0;view<options.size();++view) pairs[view][slot].onlyNew+=retained[view];
+                            } else {
+                                auto& r=found->second;if(r.seen)throw std::runtime_error("Duplicate matched new event key in "+f.newPath);r.seen=true;
+                                const auto oldEvent=r.event();
+                                for(std::size_t view=0;view<options.size();++view) {
+                                    auto& pair=pairs[view][slot];const auto& opt=options[view];
+                                    if(r.retained[view] && retained[view]) {
+                                        const auto c=cutflow(e,opt);
+                                        pair.fill(oldEvent,e,r.base[view],c[5],r.selected[view],c[6],r.bins[view],bins[view],k,opt);
+                                    } else if(r.retained[view]) ++pair.onlyOld;
+                                    else if(retained[view]) ++pair.onlyNew;
+                                }
+                            }
+                            tick();
+                        }
+                        for(const auto& item:index) if(!item.second.seen)
+                            for(std::size_t view=0;view<options.size();++view) pairs[view][slot].onlyOld+=item.second.retained[view];
+                        for(std::size_t view=0;view<options.size();++view)
+                            if(olds[view][slot].cuts[0]>oldBefore[view] && news[view][slot].cuts[0]>newBefore[view] && pairs[view][slot].matched==matchedBefore[view])
+                                throw std::runtime_error("No common events for "+options[view].preset+" in file pair "+f.oldPath+" and "+f.newPath+"; check file pairing or use independent summaries");
+                    }
                 }
+                processed+=pending;
+            });});
+        }
+        std::array<Summary,2> old,next;std::array<Paired,2> pair;
+        for(std::size_t view=0;view<options.size();++view) {
+            for(unsigned i=0;i<workers;++i){old[view].merge(olds[view][i]);if(o.paired){next[view].merge(news[view][i]);pair[view].merge(pairs[view][i]);}}
+            if(!mcOnly) {
+                auto accounting=[&](const std::string& label,const Summary& s) {
+                    if(s.inputEntries!=s.cuts[0]+s.certificationRejected+s.passJSONRejected) throw std::runtime_error("Inconsistent event-filter accounting");
+                    std::cout<<(view?"all_stored":"selected")<<" "<<label<<": read="<<s.inputEntries<<", retained="<<s.cuts[0]
+                             <<", selected="<<s.cuts.back()<<", rejected by run/LS mask="<<s.certificationRejected
+                             <<", rejected by PassJSON="<<s.passJSONRejected<<std::endl;
+                };
+                accounting(o.paired?"old":o.jec,old[view]);if(o.paired) accounting("new",next[view]);
             }
-            processed+=pending;
-        });});
-        }
-        Summary old,next;Paired pair;
-        for(unsigned i=0;i<workers;++i){old.merge(olds[i]);if(o.paired){next.merge(news[i]);pair.merge(pairs[i]);}}
-        if(!mcOnly && (o.certification.active() || o.requirePassJSON)) {
-            auto accounting=[&](const std::string& label,const Summary& s) {
-                if(s.inputEntries!=s.cuts[0]+s.certificationRejected+s.passJSONRejected) throw std::runtime_error("Inconsistent event-filter accounting");
-                std::cout<<label<<": read="<<s.inputEntries<<", retained="<<s.cuts[0]<<", rejected by run/LS mask="<<s.certificationRejected
-                         <<", rejected by PassJSON="<<s.passJSONRejected<<std::endl;
-            };
-            accounting(o.paired?"old":o.jec,old);if(o.paired) accounting("new",next);
-        }
-        if(!mcOnly && (o.preset=="all" || o.preset=="all_stored")) {
-            if(o.preset=="all_stored") std::cout<<"All-stored preset: "
-                <<(o.certification.active() || o.requirePassJSON?"stored events passing explicitly requested JSON filters":"every stored event")
-                <<" retained; no trigger, jet-ID or kinematic cuts; jet observables use their own available quantities"<<std::endl;
-            else std::cout<<"All preset: histograms require valid stored dijets; mass threshold="<<o.minMass<<" GeV"<<std::endl;
-            auto validity=[&](const std::string& label,const Summary& s) {
-                const Count valid=o.preset=="all_stored"?s.validDijets:s.cuts[2];
-                std::cout<<label<<": stored="<<s.cuts[0]<<", valid dijets="<<valid
-                         <<", without valid dijet="<<s.cuts[0]-valid<<", selected="<<s.cuts.back()<<std::endl;
-            };
-            validity(o.paired?"old":o.jec,old);if(o.paired)validity("new",next);
         }
         unsigned mcWorkers=0;
-        processed+=reduceMC(components,o,mcWorkers);
+        processed+=reduceMC(components,options,mcWorkers);
         const double seconds=std::chrono::duration<double>(Clock::now()-started).count();
-        const fs::path output=fs::absolute(o.output);if(output.has_parent_path())fs::create_directories(output.parent_path());
-        const fs::path temp=output.string()+".tmp."+std::to_string(Clock::now().time_since_epoch().count());
-        std::ofstream out(temp);if(!out)throw std::runtime_error("Cannot create output: "+temp.string());
-        out<<std::setprecision(17)<<"{\"schema_version\":1,\"dataset\":"<<quote(o.dataset)<<",\"tree\":"<<quote(o.tree)
-           <<",\"mode\":"<<quote(mcOnly?"mc":o.paired?o.match:"single")<<",\"partial\":"<<(o.maxEntries>=0?"true":"false")
-           <<",\"config\":";configJSON(out,o,!mcOnly);
-        out<<",\"thresholds\":";arrayJSON(out,thresholds);
-        if(!mcOnly && o.certification.active()) out<<",\"certification_source\":"<<quote(o.certification.source);
-        if(o.preset=="all_stored") out<<",\"cutflow_labels\":[\"Stored\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\"]";
-        else out<<",\"cutflow_labels\":[\"Stored\",\"JSON and HLT\",\"Valid dijet\",\"Tight IDs\",\"pT\",\"eta\",\"delta eta\",\"Mass\"]";
-        out<<",\"files\":{";
-        auto writeFiles=[&](const std::string& label,bool isNew){out<<quote(label)<<":[";for(std::size_t i=0;i<files.size();++i){if(i)out<<',';const auto& f=files[i];
-            out<<"{\"path\":"<<quote(isNew?f.newPath:f.oldPath)<<",\"entries\":"<<(isNew?f.newEntries:f.oldEntries)
-               <<",\"processed\":"<<(isNew?f.newLimit:f.oldLimit)<<'}';}out<<']';};
-        if(!mcOnly) writeFiles(o.paired?"old":o.jec,false);if(o.paired){out<<',';writeFiles("new",true);}
-        out<<"},\"samples\":{";
-        if(!mcOnly) {out<<quote(o.paired?"old":o.jec)<<':';summaryJSON(out,old,o.preset=="all_stored");}
-        if(o.paired){out<<",\"new\":";summaryJSON(out,next,o.preset=="all_stored");}out<<'}';
-        if(o.paired){out<<",\"paired\":";pairedJSON(out,pair);}
-        if(!components.empty()) {out<<",\"qcd\":";mcJSON(out,components,o);}
-        out<<",\"elapsed_seconds\":"<<seconds<<",\"threads\":"<<std::max(workers,mcWorkers)<<",\"processed_entries\":"<<processed<<"}\n";
-        out.close();if(!out){fs::remove(temp);throw std::runtime_error("Failed to write summary");}
-        if(fs::exists(output) && !o.force){fs::remove(temp);throw std::runtime_error("Output appeared during processing; refusing to replace it");}
-        fs::rename(temp,output);
-        std::cout<<"Saved "<<output<<"; "<<processed<<" entries in "<<std::fixed<<std::setprecision(2)<<seconds
-                 <<" s ("<<std::setprecision(0)<<processed/seconds<<" entries/s)"<<std::endl;
+        std::array<fs::path,2> temporary;
+        try {
+            for(std::size_t view=0;view<options.size();++view) {
+                fs::create_directories(outputs[view].parent_path());
+                temporary[view]=outputs[view].string()+".tmp."+std::to_string(Clock::now().time_since_epoch().count());
+                std::ofstream out(temporary[view]);if(!out)throw std::runtime_error("Cannot create output: "+temporary[view].string());
+                writeSummary(out,options[view],files,old[view],next[view],pair[view],components,view,seconds,std::max(workers,mcWorkers),processed.load());
+                out.close();if(!out)throw std::runtime_error("Failed to write summary: "+temporary[view].string());
+            }
+            checkSummaryOutputs(o);
+            for(std::size_t view=0;view<options.size();++view) fs::rename(temporary[view],outputs[view]);
+        } catch(...) {
+            for(const auto& path:temporary) if(!path.empty()) {std::error_code error;fs::remove(path,error);}
+            throw;
+        }
+        for(const auto& output:outputs) std::cout<<"Saved "<<output<<std::endl;
+        std::cout<<processed<<" entries read once for both summaries in "<<std::fixed<<std::setprecision(2)<<seconds
+                 <<" s ("<<std::setprecision(0)<<(seconds>0?processed.load()/seconds:0)<<" entries/s)"<<std::endl;
         return 0;
     } catch(const std::exception& e){std::cerr<<"Error: "<<e.what()<<'\n';return 1;}
 }
