@@ -1313,8 +1313,7 @@ int main(int argc, char** argv) {
     }
 
     mc_total_hists.resize(plots.size());
-    for (std::size_t index = 0; index < mc_samples.size(); ++index) {
-      const auto& sample = mc_samples[index];
+    for (const auto& sample : mc_samples) {
       auto sample_result = process_files_parallel(sample.files, plots, true, false, false, args.threads,
                                                   "h_mc_" + sample.name, "",
                                                   sample.xsec_pb);
@@ -1324,16 +1323,7 @@ int main(int argc, char** argv) {
       }
       const double n_passed = static_cast<double>(sample_result.selected_events);
       const double eff = n_processed > 0.0 ? n_passed / n_processed : 0.0;
-      double sample_weight = 0.0;
-      const bool is_last_sample = index + 1 == mc_samples.size();
-      if (is_last_sample) {
-        if (eff <= 0.0) {
-          throw std::runtime_error("Non-positive MC efficiency for last entry: " + sample.source);
-        }
-        sample_weight = args.lumi_pb * sample.xsec_pb / (n_processed * eff);
-      } else {
-        sample_weight = args.lumi_pb * sample.xsec_pb / n_processed;
-      }
+      const double sample_weight = args.lumi_pb * sample.xsec_pb / n_processed;
       for (std::size_t i = 0; i < sample_result.hists.size(); ++i) {
         sample_result.hists[i]->Scale(sample_weight);
         mc_yield_raws[i] += sample_result.hists[i]->Integral(0, sample_result.hists[i]->GetNbinsX() + 1);
