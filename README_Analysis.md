@@ -327,8 +327,30 @@ python3 plot_jec_comparison.py \
   --output-dir summaries/plots/jec
 ```
 
-
 `--resume` continues from saved checkpoints; `--force` discards saved progress and regenerates both summaries from scratch.
+
+
+**Instead, you can split into separate jobs submit to condor for faster processing:**
+
+```bash
+python3 condor_submit_jec_comparison.py --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples_oldJECs/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec old --dataset 2024H --jobs 64 --threads 4 --output summaries --workdir summaries/condor_2024H_old
+
+python3 condor_submit_jec_comparison.py --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --jobs 64 --threads 4 --output summaries --workdir summaries/condor_2024H_new
+```
+
+**Merge condor outputs:**
+
+```bash
+python3 condor_submit_jec_comparison.py --merge summaries/condor_2024H_old
+python3 condor_submit_jec_comparison.py --merge summaries/condor_2024H_new
+```
+
+**To retry missing or invalid splits while skipping jobs still in Condor:**
+
+```bash
+python3 condor_submit_jec_comparison.py --retry-failed summaries/condor_2024H_old
+python3 condor_submit_jec_comparison.py --retry-failed summaries/condor_2024H_new
+```
 
 
 **Prepare QCD MC List:**

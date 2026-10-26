@@ -239,7 +239,7 @@ def prepare(args):
                 "schedd": args.schedd, "pool": args.pool, "shared_dir": args.shared_dir}
     descriptions = []
     for index in range(count):
-        stem = f"reduce_{index:04d}"
+        stem = f"reduce_{label}_{index:04d}"
         assigned = files[index::count]
         job = {"production": manifest["production"], "index": index, "jec": args.jec, "files": assigned,
                "runtime_files": [runtime[path] for path in assigned], "list": stem + ".txt",
