@@ -1,10 +1,12 @@
 #include <ROOT/RConfig.hxx>
+#include <TBranch.h>
 #include <TFile.h>
 #include <TLeaf.h>
 #include <TH1.h>
 #include <TParameter.h>
 #include <TROOT.h>
 #include <TTree.h>
+#include <TUUID.h>
 #include <nlohmann/json.hpp>
 #include "../include/EOSUtils.h"
 
@@ -32,6 +34,8 @@
 #include <unordered_map>
 #include <vector>
 #include <sys/ioctl.h>
+#include <sys/file.h>
+#include <fcntl.h>
 #include <unistd.h>
 
 namespace fs = std::filesystem;
@@ -123,7 +127,7 @@ struct Options {
     double minMass = 1181, minPt = 30, maxEta = 2.5, maxDEta = 1.3;
     double balanceAlpha = 0.3, jetDR = 0.02;
     long long cacheMB = 32, chunk = 1000000, maxEntries = -1;
-    bool force = false, paired = false, requirePassJSON = false, mc = false;
+    bool force = false, resume = false, paired = false, requirePassJSON = false, mc = false;
     Certification certification;
 };
 
@@ -151,7 +155,7 @@ std::array<fs::path,2> summaryPaths(const Options& o) {
 void checkSummaryOutputs(const Options& o) {
     for(const auto& path:summaryPaths(o)) {
         if(fs::exists(path) && !fs::is_regular_file(path)) throw std::runtime_error("Output is not a regular file: "+path.string());
-        if(fs::exists(path) && !o.force) throw std::runtime_error("Output exists: "+path.string()+"; use --force to replace both summaries");
+        if(fs::exists(path) && !o.force && !o.resume) throw std::runtime_error("Output exists: "+path.string()+"; use --resume with its checkpoint or --force to start over");
     }
 }
 
@@ -241,6 +245,9 @@ Options parse(int argc, char** argv) {
                       << "--cert-json FILE applies a run/LS mask before all histogram filling, including all_stored.\n"
                       << "--match ordered|keyed, --jet-match-dr X, --balance-alpha-max X\n"
                       << "--tree PATH, --shard-index I --shards N, --max-entries N (per file), --force\n"
+                      << "Completed chunks are checkpointed automatically beside the summaries.\n"
+                      << "--resume continues a matching checkpoint; unfinished chunks are reread.\n"
+                      << "Keep the same inputs, cuts, thread count and chunk size; --force discards saved progress.\n"
                       << "ordered verifies event identities at every entry; keyed joins within corresponding file pairs.\n";
             std::exit(0);
         } else if (arg == "--input") expandInput(value(), o.input);
@@ -268,9 +275,11 @@ Options parse(int argc, char** argv) {
         else if (arg == "--chunk-entries") o.chunk = std::stoll(value());
         else if (arg == "--max-entries") o.maxEntries = std::stoll(value());
         else if (arg == "--force") o.force = true;
+        else if (arg == "--resume") o.resume = true;
         else throw std::runtime_error("Unknown option: " + arg);
     }
     o.paired = !o.oldInput.empty() || !o.newInput.empty();
+    if(o.force && o.resume) throw std::runtime_error("Use either --resume or --force, not both");
     if (o.output.empty() || o.dataset.empty()) throw std::runtime_error("--output and --dataset are required");
     if (o.preset != "dijet" && o.preset != "loose" && o.preset != "all" && o.preset != "all_stored") throw std::runtime_error("Unknown preset");
     if (o.preset == "all_stored") {
@@ -316,10 +325,24 @@ const std::vector<double> ptEdges = {0,20,30,40,50,60,80,100,120,150,200,250,300
 const std::vector<double> uniformPtEdges = uniform(70,0,7000);
 const std::vector<double> thresholds = {0,250,300,400,500,600,800,1000,1181,1500,2000,3000};
 
-int bin(const std::vector<double>& e, double x) {
+double inverseBinWidth(const std::vector<double>& e) {
+    if(e.size()<2) return 0;
+    const double width=(e.back()-e.front())/(e.size()-1);
+    if(!std::isfinite(width) || width<=0) return 0;
+    for(std::size_t i=1;i<e.size();++i)
+        if(std::abs((e[i]-e[i-1])-width)>width*1e-10) return 0;
+    return 1/width;
+}
+int bin(const std::vector<double>& e, double x, double inverseWidth=0) {
     if (!std::isfinite(x)) return -1;
     if (x < e.front()) return 0;
     if (x >= e.back()) return static_cast<int>(e.size());
+    if(inverseWidth>0) {
+        int b=std::min(static_cast<int>(e.size())-1,1+static_cast<int>((x-e.front())*inverseWidth));
+        while(b>1 && x<e[b-1]) --b;
+        while(b<static_cast<int>(e.size())-1 && x>=e[b]) ++b;
+        return b;
+    }
     return static_cast<int>(std::upper_bound(e.begin(), e.end(), x) - e.begin());
 }
 struct Moment {
@@ -333,12 +356,12 @@ struct Hist {
     std::vector<double> edges;
     std::vector<Count> counts;
     Count invalid = 0, unavailable = 0;
-    double uniformWidth = 0;
+    double uniformWidth = 0, inverseWidth = 0;
     Hist(std::string n, std::string l, std::vector<double> e, double width=0): name(std::move(n)), label(std::move(l)),
-        edges(std::move(e)), counts(edges.size()+1, 0), uniformWidth(width) {}
+        edges(std::move(e)), counts(edges.size()+1, 0), uniformWidth(width), inverseWidth(inverseBinWidth(edges)) {}
     int fill(double x) {
         if(uniformWidth>0) return fillUniform(x,uniformWidth);
-        const int b = bin(edges,x);
+        const int b = bin(edges,x,inverseWidth);
         if(b < 0) ++invalid; else ++counts[b];
         return b;
     }
@@ -354,11 +377,13 @@ struct Profile {
     std::string name, label, ylabel;
     std::vector<double> xedges, yedges;
     std::vector<Moment> values;
+    double inverseXWidth=0,inverseYWidth=0;
     Profile(std::string n, std::string l, std::string yl, std::vector<double> x, std::vector<double> y = {}):
         name(std::move(n)), label(std::move(l)), ylabel(std::move(yl)), xedges(std::move(x)),
-        yedges(std::move(y)), values((xedges.size()+1)*(yedges.empty()?1:yedges.size()+1)) {}
+        yedges(std::move(y)), values((xedges.size()+1)*(yedges.empty()?1:yedges.size()+1)),
+        inverseXWidth(inverseBinWidth(xedges)),inverseYWidth(inverseBinWidth(yedges)) {}
     void fill(double x, double z, double y = 0) {
-        const int bx=bin(xedges,x), by=yedges.empty()?0:bin(yedges,y);
+        const int bx=bin(xedges,x,inverseXWidth), by=yedges.empty()?0:bin(yedges,y,inverseYWidth);
         if(bx>=0 && by>=0) values[bx*(yedges.empty()?1:yedges.size()+1)+by].fill(z);
     }
     void merge(const Profile& p) { for(std::size_t i=0;i<values.size();++i) values[i].merge(p.values[i]); }
@@ -695,10 +720,194 @@ struct Paired {
     }
 };
 
+using State = nlohmann::json;
+
+template<class T> void restoreValues(const State& state,T& values) {
+    if(!state.is_array() || state.size()!=values.size()) throw std::runtime_error("Checkpoint array dimensions do not match this reducer");
+    state.get_to(values);
+}
+template<class T> State momentState(const T& values) {
+    State out=State::array();
+    for(const auto& v:values) out.push_back({v.n,v.sum,v.sum2});
+    return out;
+}
+template<class T> void restoreMoments(const State& state,T& values) {
+    if(!state.is_array() || state.size()!=values.size()) throw std::runtime_error("Checkpoint moment dimensions do not match this reducer");
+    for(std::size_t i=0;i<values.size();++i) {
+        const auto& row=state.at(i);
+        if(row.size()!=3) throw std::runtime_error("Invalid checkpoint moment");
+        values[i]={row.at(0).get<Count>(),row.at(1).get<double>(),row.at(2).get<double>()};
+    }
+}
+State histState(const std::vector<Hist>& h) {
+    State out=State::array();for(const auto& v:h) out.push_back({v.counts,v.invalid,v.unavailable});return out;
+}
+void restoreHists(const State& state,std::vector<Hist>& h) {
+    if(state.size()!=h.size()) throw std::runtime_error("Checkpoint histogram count does not match this reducer");
+    for(std::size_t i=0;i<h.size();++i) {
+        restoreValues(state.at(i).at(0),h[i].counts);
+        h[i].invalid=state.at(i).at(1).get<Count>();h[i].unavailable=state.at(i).at(2).get<Count>();
+    }
+}
+State profileState(const std::vector<Profile>& p) {
+    State out=State::array();for(const auto& v:p) out.push_back(momentState(v.values));return out;
+}
+void restoreProfiles(const State& state,std::vector<Profile>& p) {
+    if(state.size()!=p.size()) throw std::runtime_error("Checkpoint profile count does not match this reducer");
+    for(std::size_t i=0;i<p.size();++i) restoreMoments(state.at(i),p[i].values);
+}
+State summaryState(const Summary& s) {
+    State runs=State::array(),lumis=State::array();
+    for(const auto& item:s.runs) {
+        const auto& r=item.second;
+        runs.push_back({item.first,r.stored,r.base,r.selected,r.signs,r.etaZero,momentState(r.means)});
+    }
+    for(const auto& item:s.lumis) {
+        const auto& l=item.second;lumis.push_back({item.first,l.stored,l.base,l.selected,l.hashSum,l.hashXor});
+    }
+    return {{"h",histState(s.h)},{"p",profileState(s.p)},{"cuts",s.cuts},{"thresholds",s.thresholdCounts},
+            {"runs",runs},{"lumis",lumis},{"valid",s.validDijets},{"input",s.inputEntries},
+            {"cert_rejected",s.certificationRejected},{"json_rejected",s.passJSONRejected}};
+}
+void restoreSummary(const State& state,Summary& s) {
+    restoreHists(state.at("h"),s.h);restoreProfiles(state.at("p"),s.p);
+    restoreValues(state.at("cuts"),s.cuts);restoreValues(state.at("thresholds"),s.thresholdCounts);
+    s.validDijets=state.at("valid").get<Count>();s.inputEntries=state.at("input").get<Count>();
+    s.certificationRejected=state.at("cert_rejected").get<Count>();s.passJSONRejected=state.at("json_rejected").get<Count>();
+    for(const auto& row:state.at("runs")) {
+        RunStat r;r.stored=row.at(1).get<Count>();r.base=row.at(2).get<Count>();r.selected=row.at(3).get<Count>();
+        restoreValues(row.at(4),r.signs);restoreValues(row.at(5),r.etaZero);restoreMoments(row.at(6),r.means);
+        if(!s.runs.emplace(row.at(0).get<std::uint32_t>(),r).second) throw std::runtime_error("Duplicate run in checkpoint");
+    }
+    for(const auto& row:state.at("lumis")) {
+        LSStat l{row.at(1).get<Count>(),row.at(2).get<Count>(),row.at(3).get<Count>(),row.at(4).get<Count>(),row.at(5).get<Count>()};
+        if(!s.lumis.emplace(row.at(0).get<Count>(),l).second) throw std::runtime_error("Duplicate lumisection in checkpoint");
+    }
+    if(s.inputEntries!=s.cuts[0]+s.certificationRejected+s.passJSONRejected) throw std::runtime_error("Invalid checkpoint event accounting");
+}
+State pairedState(const Paired& p) {
+    State runs=State::array(),shifts=State::array();
+    for(const auto& item:p.runs) runs.push_back({item.first,item.second});
+    for(const auto& item:p.runShifts) shifts.push_back({item.first,momentState(item.second)});
+    return {{"counts",{p.matched,p.onlyOld,p.onlyNew,p.jetMatched,p.jetUnmatched,p.reordered}},
+            {"migration",p.migration},{"thresholds",p.thresholdMigration},{"h",histState(p.shifts)},
+            {"p",profileState(p.profiles)},{"overlap",p.overlap},{"runs",runs},{"shifts",shifts}};
+}
+void restorePaired(const State& state,Paired& p) {
+    std::array<Count,6> counts;restoreValues(state.at("counts"),counts);
+    p.matched=counts[0];p.onlyOld=counts[1];p.onlyNew=counts[2];p.jetMatched=counts[3];p.jetUnmatched=counts[4];p.reordered=counts[5];
+    restoreValues(state.at("migration"),p.migration);restoreValues(state.at("thresholds"),p.thresholdMigration);
+    restoreHists(state.at("h"),p.shifts);restoreProfiles(state.at("p"),p.profiles);
+    if(state.at("overlap").size()!=p.overlap.size()) throw std::runtime_error("Invalid checkpoint overlap dimensions");
+    for(std::size_t i=0;i<p.overlap.size();++i) restoreValues(state.at("overlap").at(i),p.overlap[i]);
+    for(const auto& row:state.at("runs")) {
+        std::array<Count,3> values;restoreValues(row.at(1),values);
+        if(!p.runs.emplace(row.at(0).get<std::uint32_t>(),values).second) throw std::runtime_error("Duplicate paired run in checkpoint");
+    }
+    for(const auto& row:state.at("shifts")) {
+        std::array<Moment,3> values;restoreMoments(row.at(1),values);
+        if(!p.runShifts.emplace(row.at(0).get<std::uint32_t>(),values).second) throw std::runtime_error("Duplicate paired shift in checkpoint");
+    }
+}
+
+class Checkpoints {
+    fs::path directory;
+    int lock=-1;
+    static Count checksum(const std::vector<std::uint8_t>& bytes,std::size_t begin=0) {
+        Count hash=14695981039346656037ULL;
+        for(std::size_t i=begin;i<bytes.size();++i) {hash^=bytes[i];hash*=1099511628211ULL;}
+        return hash;
+    }
+    State read(const fs::path& path) const {
+        std::ifstream in(path,std::ios::binary);
+        if(!in) throw std::runtime_error("Cannot read checkpoint: "+path.string());
+        std::vector<std::uint8_t> bytes((std::istreambuf_iterator<char>(in)),{});
+        if(in.bad() || bytes.size()<9) throw std::runtime_error("Incomplete checkpoint: "+path.string());
+        Count expected=0;for(int i=0;i<8;++i) expected|=Count(bytes[i])<<(8*i);
+        if(checksum(bytes,8)!=expected) throw std::runtime_error("Checkpoint checksum mismatch: "+path.string());
+        const auto* begin=reinterpret_cast<const char*>(bytes.data());
+        return State::from_cbor(begin+8,begin+bytes.size());
+    }
+    void write(const fs::path& path,const State& state) const {
+        const auto bytes=State::to_cbor(state);const auto hash=checksum(bytes);
+        const fs::path temporary=path.string()+".tmp."+std::to_string(getpid());
+        try {
+            std::ofstream out(temporary,std::ios::binary|std::ios::trunc);
+            if(!out) throw std::runtime_error("Cannot write checkpoint: "+temporary.string());
+            for(int i=0;i<8;++i) out.put(static_cast<char>((hash>>(8*i))&255));
+            out.write(reinterpret_cast<const char*>(bytes.data()),bytes.size());out.close();
+            if(!out) throw std::runtime_error("Failed writing checkpoint: "+temporary.string());
+            const int fd=open(temporary.c_str(),O_RDWR);
+            if(fd<0) throw std::runtime_error("Cannot sync checkpoint: "+temporary.string());
+            const int status=fsync(fd);close(fd);
+            if(status!=0) throw std::runtime_error("Cannot sync checkpoint: "+temporary.string());
+            fs::rename(temporary,path);
+        } catch(...) {std::error_code error;fs::remove(temporary,error);throw;}
+    }
+public:
+    Checkpoints(const Options& o,const State& identity) {
+        const auto output=summaryPaths(o)[0];
+        auto stem=output.stem().string();stem.resize(stem.size()-std::string("_selected").size());
+        directory=output.parent_path()/("."+stem+".checkpoint");fs::create_directories(directory);
+        lock=open((directory/"lock").c_str(),O_CREAT|O_RDWR|O_CLOEXEC,0600);
+        if(lock<0) throw std::runtime_error("Cannot open checkpoint lock: "+directory.string());
+        if(flock(lock,LOCK_EX|LOCK_NB)!=0) {close(lock);lock=-1;throw std::runtime_error("Checkpoint is locked by another reducer (or filesystem locking is unavailable): "+directory.string());}
+        try {
+            const auto config=directory/"config.cbor";
+            if(o.force) {
+                for(const auto& item:fs::directory_iterator(directory)) {
+                    const auto name=item.path().filename().string();
+                    if(item.is_regular_file() && (item.path().extension()==".cbor" || name.find(".cbor.tmp.")!=std::string::npos)) fs::remove(item.path());
+                }
+            }
+            if(fs::exists(config)) {
+                if(!o.resume) throw std::runtime_error("Saved progress exists: "+directory.string()+"; use --resume to continue or --force to start over");
+                if(read(config)!=identity) throw std::runtime_error("Checkpoint inputs or options differ; use the original inputs/options (including --threads and --chunk-entries) or --force to start over");
+            } else {
+                for(const auto& item:fs::directory_iterator(directory))
+                    if(item.path().extension()==".cbor") throw std::runtime_error("Checkpoint configuration is missing; use --force to start over: "+directory.string());
+                if(o.resume) for(const auto& path:summaryPaths(o))
+                    if(fs::exists(path)) throw std::runtime_error("Cannot resume existing summaries without their matching checkpoint; use --force to start over");
+                write(config,identity);
+            }
+            std::cout<<"Checkpoint directory: "<<directory<<" (saved after each completed chunk)"<<std::endl;
+        } catch(...) {flock(lock,LOCK_UN);close(lock);lock=-1;throw;}
+    }
+    ~Checkpoints(){if(lock>=0){flock(lock,LOCK_UN);close(lock);}}
+    Checkpoints(const Checkpoints&)=delete;
+    Checkpoints& operator=(const Checkpoints&)=delete;
+    void prepare(const std::string& phase,const State& identity) const {
+        const auto path=directory/(phase+".plan.cbor");
+        if(fs::exists(path)) {
+            if(read(path)!=identity) throw std::runtime_error("Checkpoint "+phase+" input metadata or task boundaries changed; use --force to start over");
+        } else {
+            for(const auto& item:fs::directory_iterator(directory))
+                if(item.path().filename().string().find(phase+".worker.")==0 && item.path().extension()==".cbor")
+                    throw std::runtime_error("Checkpoint task plan is missing; use --force to start over: "+path.string());
+            write(path,identity);
+        }
+    }
+    State load(const std::string& phase,unsigned slot) const {
+        const auto path=directory/(phase+".worker."+std::to_string(slot)+".cbor");
+        return fs::exists(path)?read(path):State();
+    }
+    void save(const std::string& phase,unsigned slot,const State& state) const {
+        write(directory/(phase+".worker."+std::to_string(slot)+".cbor"),state);
+    }
+};
+
+State fileIdentity(TFile& file,const std::string& path) {
+    State state={{"path",path},{"uuid",file.GetUUID().AsString()},{"bytes",file.GetSize()},
+                 {"modified",file.GetModificationDate().Get()}};
+    if(path.find("://")==std::string::npos) state["mtime"]=fs::last_write_time(path).time_since_epoch().count();
+    return state;
+}
+
 struct Reader {
     Event e{};
     std::unique_ptr<TFile> file;
     TTree* tree=nullptr;
+    std::vector<TBranch*> activeBranches;
     Reader(const std::string& path,const Options& o,long long begin=0,long long end=-1) {
         file.reset(TFile::Open(path.c_str(),"READ"));
         if(!file || file->IsZombie())throw std::runtime_error("Cannot open ROOT file: "+path);
@@ -715,22 +924,26 @@ struct Reader {
             if(!leaf || std::string(leaf->GetTypeName())!="Double_t" || leaf->GetLenStatic()!=1 || leaf->GetLeafCount())
                 throw std::runtime_error(path+": expected scalar Double_t branch "+branches[i]);
             tree->SetBranchStatus(branches[i],1);
-            if(tree->SetBranchAddress(branches[i],&e[i])<0)throw std::runtime_error("Cannot bind branch "+std::string(branches[i]));
+            TBranch* branch=nullptr;
+            if(tree->SetBranchAddress(branches[i],&e[i],&branch)<0 || !branch)throw std::runtime_error("Cannot bind branch "+std::string(branches[i]));
+            activeBranches.push_back(branch);
             if(o.cacheMB)tree->AddBranchToCache(branches[i],false);
         }
         tree->StopCacheLearningPhase();
     }
     const Event& read(long long entry) {
-        if(tree->GetEntry(entry)<=0)throw std::runtime_error("ROOT read failed at entry "+std::to_string(entry)+" in "+file->GetName());
+        if(tree->LoadTree(entry)<0)throw std::runtime_error("ROOT read failed at entry "+std::to_string(entry)+" in "+file->GetName());
+        for(auto* branch:activeBranches)
+            if(branch->GetEntry(entry)<=0)throw std::runtime_error("ROOT read failed for branch "+std::string(branch->GetName())+" at entry "+std::to_string(entry)+" in "+file->GetName());
         return e;
     }
 };
-struct FileInfo { std::string oldPath,newPath; long long oldEntries=0,newEntries=0,oldLimit=0,newLimit=0;std::vector<long long> starts; };
+struct FileInfo { std::string oldPath,newPath; long long oldEntries=0,newEntries=0,oldLimit=0,newLimit=0;std::vector<long long> starts;State oldIdentity,newIdentity; };
 struct Task {std::size_t file;long long begin,end;};
 
 class Progress {
     std::string phase,unit;
-    Count total;
+    Count total,initial;
     bool interactive;
     Clock::time_point started=Clock::now(),last=started;
     std::size_t previousWidth=0;
@@ -755,7 +968,7 @@ class Progress {
         const auto now=Clock::now();
         const double seconds=std::chrono::duration<double>(now-started).count();
         const double fraction=total?std::min(1.0,double(completed)/total):(finished&&success?1.0:0.0);
-        const double rate=seconds>0?completed/seconds:0;
+        const double rate=seconds>0?(completed-std::min(completed,initial))/seconds:0;
         const std::string eta=finished&&success?"00:00":(rate>0?duration(std::ceil((total-std::min(completed,total))/rate)):"--:--");
         std::ostringstream percent;percent<<std::fixed<<std::setprecision(1)<<100*fraction;
         const std::string metrics=" | "+compact(rate)+" "+unit+"/s | elapsed "+duration(seconds)+" | ETA "+eta
@@ -777,8 +990,8 @@ class Progress {
         std::cerr.flush();last=now;
     }
 public:
-    Progress(std::string stage,Count count,std::string units):phase(std::move(stage)),unit(std::move(units)),total(count),
-        interactive(isatty(STDERR_FILENO) && (!std::getenv("TERM") || std::string(std::getenv("TERM"))!="dumb")) {draw(0,false,true);}
+    Progress(std::string stage,Count count,std::string units,Count resumed=0):phase(std::move(stage)),unit(std::move(units)),total(count),initial(resumed),
+        interactive(isatty(STDERR_FILENO) && (!std::getenv("TERM") || std::string(std::getenv("TERM"))!="dumb")) {draw(initial,false,true);}
     void update(Count completed) {
         if(std::chrono::duration<double>(Clock::now()-last).count()>=(interactive?0.25:10.0))draw(completed,false,true);
     }
@@ -809,6 +1022,7 @@ struct MCFile {
     Count generated=0;
     long long entries=0;
     std::vector<long long> starts;
+    State identity;
 };
 struct MCComponent {
     std::string source;
@@ -938,7 +1152,7 @@ Count generatedEvents(TFile& file,long long entries) {
     return generated;
 }
 
-Count reduceMC(std::vector<MCComponent>& components,std::array<Options,2> options,unsigned& workers) {
+Count reduceMC(std::vector<MCComponent>& components,std::array<Options,2> options,unsigned& workers,Checkpoints& checkpoints,Count& restoredEntries) {
     if(components.empty()) return 0;
     for(auto& option:options) {option.mc=true;option.requirePassJSON=false;option.certification=Certification{};}
     const auto& o=options[0];
@@ -950,6 +1164,7 @@ Count reduceMC(std::vector<MCComponent>& components,std::array<Options,2> option
     withProgress(validation,validated,[&]{parallel(files.size(),o.threads,[&](std::size_t i,unsigned){
         auto& file=components[files[i].first].files[files[i].second];
         Reader reader(file.path,o);file.entries=reader.tree->GetEntries();file.generated=generatedEvents(*reader.file,file.entries);
+        file.identity=fileIdentity(*reader.file,file.path);
         auto clusters=reader.tree->GetClusterIterator(0);long long last=0,next;
         file.starts.push_back(0);
         while((next=clusters())<file.entries) if(next-last>=o.chunk) {file.starts.push_back(next);last=next;}
@@ -971,20 +1186,60 @@ Count reduceMC(std::vector<MCComponent>& components,std::array<Options,2> option
             throw std::runtime_error("Invalid MC component weight or variance: "+component.source);
     }
     workers=static_cast<unsigned>(std::min<std::size_t>(o.threads,tasks.size()));
-    std::atomic<Count> processed{0};std::mutex mutex;Progress scan("Scan QCD",total,"entries");
-    withProgress(scan,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t i,unsigned){
-        const auto& task=tasks[i];const auto id=files[task.file];auto& component=components[id.first];
-        Reader reader(component.files[id.second].path,o,task.begin,task.end);std::array<Summary,2> summaries;Count pending=0;
+    State planFiles=State::array(),planTasks=State::array();
+    for(const auto& id:files) {
+        const auto& file=components[id.first].files[id.second];
+        planFiles.push_back({file.identity,file.entries,file.generated});
+    }
+    for(const auto& task:tasks) planTasks.push_back({task.file,task.begin,task.end});
+    checkpoints.prepare("mc",{{"files",planFiles},{"tasks",planTasks},{"workers",workers}});
+    std::vector<std::map<std::size_t,std::array<Summary,2>>> summaries(workers);
+    std::vector<std::vector<std::size_t>> finished(workers);
+    std::vector<bool> completed(tasks.size(),false);
+    Count restored=0,restoredTasks=0;
+    for(unsigned slot=0;slot<workers;++slot) {
+        const auto state=checkpoints.load("mc",slot);if(state.is_null()) continue;
+        finished[slot]=state.at("done").get<std::vector<std::size_t>>();
+        std::map<std::size_t,Count> expected;
+        for(const auto i:finished[slot]) {
+            if(i>=tasks.size() || completed[i]) throw std::runtime_error("Invalid or duplicate MC task in checkpoint");
+            completed[i]=true;++restoredTasks;
+            const auto& task=tasks[i];const Count count=task.end-task.begin;
+            expected[files[task.file].first]+=count;restored+=count;
+        }
+        for(const auto& row:state.at("components")) {
+            const auto id=row.at(0).get<std::size_t>();
+            if(!expected.count(id) || !summaries[slot].try_emplace(id).second) throw std::runtime_error("Invalid MC component in checkpoint");
+            auto& views=summaries[slot].at(id);
+            for(std::size_t view=0;view<options.size();++view) {
+                restoreSummary(row.at(1).at(view),views[view]);
+                if(views[view].inputEntries!=expected.at(id)) throw std::runtime_error("MC checkpoint task/event counts disagree");
+            }
+        }
+        if(summaries[slot].size()!=expected.size()) throw std::runtime_error("Missing MC component in checkpoint");
+    }
+    if(restoredTasks) std::cout<<"Resuming QCD: "<<restoredTasks<<"/"<<tasks.size()<<" chunks complete; skipping "<<restored<<" entries"<<std::endl;
+    restoredEntries=restored;
+    std::atomic<Count> processed{restored};Progress scan("Scan QCD",total,"entries",restored);
+    withProgress(scan,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t i,unsigned slot){
+        if(completed[i]) return;
+        const auto& task=tasks[i];const auto id=files[task.file];const auto& component=components[id.first];
+        Reader reader(component.files[id.second].path,o,task.begin,task.end);std::array<Summary,2> views;Count pending=0;
         for(long long entry=task.begin;entry<task.end;++entry) {
             const auto& event=reader.read(entry);
             for(std::size_t view=0;view<options.size();++view)
-                summaries[view].fill(event,options[view],{static_cast<Count>(entry),0,0});
+                views[view].fill(event,options[view],{static_cast<Count>(entry),0,0});
             if(++pending>=50000) {processed+=pending;pending=0;}
         }
+        for(std::size_t view=0;view<options.size();++view) summaries[slot][id.first][view].merge(views[view]);
+        finished[slot].push_back(i);
+        State saved=State::array();
+        for(const auto& item:summaries[slot]) saved.push_back({item.first,{summaryState(item.second[0]),summaryState(item.second[1])}});
+        checkpoints.save("mc",slot,{{"done",finished[slot]},{"components",saved}});
         processed+=pending;
-        std::lock_guard<std::mutex> lock(mutex);
-        for(std::size_t view=0;view<options.size();++view) component.summaries[view].merge(summaries[view]);
     });});
+    for(const auto& slot:summaries) for(const auto& item:slot)
+        for(std::size_t view=0;view<options.size();++view) components[item.first].summaries[view].merge(item.second[view]);
     return processed.load();
 }
 
@@ -1121,6 +1376,17 @@ int main(int argc,char** argv) {
         const auto started=Clock::now();
         const bool mcOnly=!o.paired && o.input.empty();
         auto components=loadMCComponents(o);
+        State mcIdentity=State::array();
+        for(const auto& component:components) {
+            State paths=State::array();for(const auto& file:component.files) paths.push_back(file.path);
+            mcIdentity.push_back({component.source,component.xsec,paths});
+        }
+        Checkpoints checkpoints(requested,{{"version",1},{"dataset",o.dataset},{"jec",o.jec},{"tree",o.tree},
+            {"input",o.input},{"old",o.oldInput},{"new",o.newInput},{"mc",mcIdentity},{"preset",o.preset},
+            {"cuts",{o.minMass,o.minPt,o.maxEta,o.maxDEta,o.balanceAlpha,o.jetDR}},
+            {"certification",o.certification.canonical},{"require_json",requested.requirePassJSON},
+            {"match",o.match},{"threads",o.threads},{"chunk",o.chunk},{"shard",o.shard},{"shards",o.shards},
+            {"max_entries",o.maxEntries},{"outputs",{outputs[0].string(),outputs[1].string()}}});
         std::cout<<"One scan, two summaries: "<<outputs[0]<<" and "<<outputs[1]<<std::endl;
         if(!mcOnly) {
             std::cout<<"Selected preset: "<<o.preset<<"; PassJSON cut: "
@@ -1141,8 +1407,9 @@ int main(int argc,char** argv) {
             std::atomic<Count> validated{0};Progress validation("Validate",files.size(),o.paired?"pairs":"files");
             withProgress(validation,validated,[&]{parallel(files.size(),o.threads,[&](std::size_t i,unsigned){
                 auto& f=files[i];Reader a(f.oldPath,o);f.oldEntries=a.tree->GetEntries();
+                f.oldIdentity=fileIdentity(*a.file,f.oldPath);
                 f.oldLimit=o.maxEntries<0?f.oldEntries:std::min(f.oldEntries,o.maxEntries);
-                if(o.paired){Reader b(f.newPath,o);f.newEntries=b.tree->GetEntries();f.newLimit=o.maxEntries<0?f.newEntries:std::min(f.newEntries,o.maxEntries);
+                if(o.paired){Reader b(f.newPath,o);f.newIdentity=fileIdentity(*b.file,f.newPath);f.newEntries=b.tree->GetEntries();f.newLimit=o.maxEntries<0?f.newEntries:std::min(f.newEntries,o.maxEntries);
                     if(o.match=="ordered" && f.oldEntries!=f.newEntries)throw std::runtime_error("Entry counts differ in "+f.oldPath+" and "+f.newPath+"; use --match keyed or independent summaries");}
                 auto it=a.tree->GetClusterIterator(0);long long last=0,s;
                 f.starts.push_back(0);
@@ -1162,13 +1429,41 @@ int main(int argc,char** argv) {
             olds[view].resize(workers);
             if(o.paired){news[view].resize(workers);pairs[view].resize(workers);}
         }
-        std::atomic<Count> processed{0};
+        State planFiles=State::array(),planTasks=State::array();
+        for(const auto& f:files) planFiles.push_back({f.oldIdentity,f.newIdentity,f.oldEntries,f.newEntries,f.oldLimit,f.newLimit});
+        for(const auto& task:tasks) planTasks.push_back({task.file,task.begin,task.end});
+        checkpoints.prepare("data",{{"files",planFiles},{"tasks",planTasks},{"workers",workers}});
+        std::vector<std::vector<std::size_t>> finished(workers);
+        std::vector<bool> completed(tasks.size(),false);
+        Count restored=0,restoredTasks=0;
+        for(unsigned slot=0;slot<workers;++slot) {
+            const auto state=checkpoints.load("data",slot);if(state.is_null()) continue;
+            finished[slot]=state.at("done").get<std::vector<std::size_t>>();Count oldCount=0,newCount=0;
+            for(const auto ti:finished[slot]) {
+                if(ti>=tasks.size() || completed[ti]) throw std::runtime_error("Invalid or duplicate data task in checkpoint");
+                completed[ti]=true;++restoredTasks;const auto& task=tasks[ti];oldCount+=task.end-task.begin;
+                if(o.paired) newCount+=o.match=="keyed"?files[task.file].newLimit:task.end-task.begin;
+            }
+            restored+=oldCount+newCount;
+            for(std::size_t view=0;view<options.size();++view) {
+                const auto& saved=state.at("views").at(view);
+                restoreSummary(saved.at("old"),olds[view][slot]);
+                if(olds[view][slot].inputEntries!=oldCount) throw std::runtime_error("Data checkpoint task/event counts disagree");
+                if(o.paired) {
+                    restoreSummary(saved.at("new"),news[view][slot]);restorePaired(saved.at("pair"),pairs[view][slot]);
+                    if(news[view][slot].inputEntries!=newCount) throw std::runtime_error("Paired checkpoint task/event counts disagree");
+                }
+            }
+        }
+        if(restoredTasks) std::cout<<"Resuming data: "<<restoredTasks<<"/"<<tasks.size()<<" chunks complete; skipping "<<restored<<" entries"<<std::endl;
+        std::atomic<Count> processed{restored};
         Count total=0;for(const auto& f:files)total+=f.oldLimit+(o.paired?f.newLimit:0);
         if(!mcOnly) std::cout<<"Scanning "<<total<<" entries once in "<<tasks.size()<<" tasks; only "<<NFields<<" scalar branches are read"<<std::endl;
         if(o.paired && o.match=="keyed")std::cout<<"Keyed matching caches one old-event record with both histogram assignments per active file pair"<<std::endl;
         if(!mcOnly) {
-            Progress scanning("Scan",total,"entries");
+            Progress scanning("Scan",total,"entries",restored);
             withProgress(scanning,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t ti,unsigned slot){
+                if(completed[ti]) return;
                 const auto& task=tasks[ti];const auto& f=files[task.file];
                 Reader a(f.oldPath,o,task.begin,task.end);Count pending=0;
                 auto tick=[&]{if(++pending>=50000){processed+=pending;pending=0;}};
@@ -1238,6 +1533,13 @@ int main(int argc,char** argv) {
                                 throw std::runtime_error("No common events for "+options[view].preset+" in file pair "+f.oldPath+" and "+f.newPath+"; check file pairing or use independent summaries");
                     }
                 }
+                finished[slot].push_back(ti);State views=State::array();
+                for(std::size_t view=0;view<options.size();++view) {
+                    State saved={{"old",summaryState(olds[view][slot])}};
+                    if(o.paired) {saved["new"]=summaryState(news[view][slot]);saved["pair"]=pairedState(pairs[view][slot]);}
+                    views.push_back(std::move(saved));
+                }
+                checkpoints.save("data",slot,{{"done",finished[slot]},{"views",views}});
                 processed+=pending;
             });});
         }
@@ -1255,7 +1557,8 @@ int main(int argc,char** argv) {
             }
         }
         unsigned mcWorkers=0;
-        processed+=reduceMC(components,options,mcWorkers);
+        Count mcRestored=0;
+        processed+=reduceMC(components,options,mcWorkers,checkpoints,mcRestored);
         const double seconds=std::chrono::duration<double>(Clock::now()-started).count();
         std::array<fs::path,2> temporary;
         try {
@@ -1273,8 +1576,10 @@ int main(int argc,char** argv) {
             throw;
         }
         for(const auto& output:outputs) std::cout<<"Saved "<<output<<std::endl;
-        std::cout<<processed<<" entries read once for both summaries in "<<std::fixed<<std::setprecision(2)<<seconds
-                 <<" s ("<<std::setprecision(0)<<(seconds>0?processed.load()/seconds:0)<<" entries/s)"<<std::endl;
+        const Count reused=restored+mcRestored,read=processed.load()-reused;
+        if(reused) std::cout<<reused<<" entries restored from checkpoints; ";
+        std::cout<<read<<" entries read once for both summaries in "<<std::fixed<<std::setprecision(2)<<seconds
+                 <<" s ("<<std::setprecision(0)<<(seconds>0?read/seconds:0)<<" entries/s)"<<std::endl;
         return 0;
     } catch(const std::exception& e){std::cerr<<"Error: "<<e.what()<<'\n';return 1;}
 }

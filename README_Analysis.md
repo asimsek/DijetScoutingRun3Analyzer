@@ -328,6 +328,9 @@ python3 plot_jec_comparison.py \
 ```
 
 
+`--resume` continues from saved checkpoints; `--force` discards saved progress and regenerates both summaries from scratch.
+
+
 **Prepare QCD MC List:**
 
 ```bash
