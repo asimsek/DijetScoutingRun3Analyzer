@@ -1,9 +1,12 @@
 #include <ROOT/RConfig.hxx>
 #include <TFile.h>
 #include <TLeaf.h>
+#include <TH1.h>
+#include <TParameter.h>
 #include <TROOT.h>
 #include <TTree.h>
 #include <nlohmann/json.hpp>
+#include "../include/EOSUtils.h"
 
 #include <algorithm>
 #include <array>
@@ -112,7 +115,7 @@ using Event = std::array<double, NFields>;
 using Bins = std::array<std::int16_t, 36>;
 
 struct Options {
-    std::vector<std::string> input, oldInput, newInput;
+    std::vector<std::string> input, oldInput, newInput, mcLists;
     std::string output, dataset, jec, tree = "rootTupleTree/tree", preset = "dijet";
     std::string match = "ordered";
     unsigned threads = std::max(1u, std::thread::hardware_concurrency());
@@ -120,7 +123,7 @@ struct Options {
     double minMass = 1181, minPt = 30, maxEta = 2.5, maxDEta = 1.3;
     double balanceAlpha = 0.3, jetDR = 0.02;
     long long cacheMB = 32, chunk = 1000000, maxEntries = -1;
-    bool force = false, paired = false, requirePassJSON = false;
+    bool force = false, paired = false, requirePassJSON = false, mc = false;
     Certification certification;
 };
 
@@ -186,6 +189,13 @@ Options parse(int argc, char** argv) {
         if (arg == "--help" || arg == "-h") {
             std::cout << "Single: reduce_jec_comparison --input PATH --jec old|new --dataset ERA --output FILE.json\n"
                       << "Paired: reduce_jec_comparison --old PATH --new PATH --dataset ERA --output FILE.json\n"
+                      << "QCD: reduce_jec_comparison --mc-list FILE --dataset QCD --output qcd.json\n"
+                      << "--mc-list FILE may also accompany data inputs and may be repeated.\n"
+                      << "Each MC list row: path_or_glob xsec_pb [filter_efficiency]; one complete QCD component per row.\n"
+                      << "MC paths may be EOS paths, directories, globs, ROOT URLs or @filelists, relative to the MC list.\n"
+                      << "QCD uses unit generator weights, skips data JSON and HLT cuts, and keeps the other preset cuts.\n"
+                      << "MC normalization uses generated-event counters before skim cuts; filter efficiency defaults to 1.\n"
+                      << "Generator-weight branches, MC sharding and MC --max-entries are unsupported. Reduce QCD once and reuse its JSON.\n"
                       << "PATH: ROOT file, directory, quoted glob, @filelist.txt, or explicit root:// URL. Repeat input flags.\n"
                       << "--threads N (0=all), --cache-mb N (per reader), --chunk-entries N\n"
                       << "--preset dijet|loose|all|all_stored, --mjj-min GeV, --pt-min GeV, --eta-max X, --deta-max X\n"
@@ -199,6 +209,7 @@ Options parse(int argc, char** argv) {
                       << "ordered verifies event identities at every entry; keyed joins within corresponding file pairs.\n";
             std::exit(0);
         } else if (arg == "--input") expandInput(value(), o.input);
+        else if (arg == "--mc-list") o.mcLists.push_back(value());
         else if (arg == "--old") expandInput(value(), o.oldInput);
         else if (arg == "--new") expandInput(value(), o.newInput);
         else if (arg == "--output") o.output = value();
@@ -240,10 +251,14 @@ Options parse(int argc, char** argv) {
         if (!o.input.empty() || !o.jec.empty()) throw std::runtime_error("Use either --input/--jec or --old/--new");
         uniqueInputs(o.oldInput); uniqueInputs(o.newInput);
         if (o.oldInput.size() != o.newInput.size()) throw std::runtime_error("Paired mode requires equal numbers of corresponding files");
-    } else {
+    } else if (!o.input.empty() || o.mcLists.empty()) {
         uniqueInputs(o.input);
         if (o.jec != "old" && o.jec != "new") throw std::runtime_error("--jec must be old or new");
+    } else if (!o.jec.empty()) {
+        throw std::runtime_error("MC-only reduction does not use --jec");
     }
+    if (!o.mcLists.empty() && (o.shards != 1 || o.maxEntries >= 0))
+        throw std::runtime_error("--mc-list requires complete components: do not use --shards > 1 or --max-entries");
     if (fs::exists(o.output) && !o.force) throw std::runtime_error("Output exists; use --force to replace it");
     return o;
 }
@@ -389,7 +404,7 @@ bool validJets(const Event& e) {
 std::array<bool,7> cutflow(const Event& e,const Options& o) {
     std::array<bool,7> c{};
     if(o.preset=="all_stored") {c.fill(true);return c;}
-    c[0]=o.preset=="all" || (e[Json]>0.5 && e[Trigger]>0.5);
+    c[0]=o.mc || o.preset=="all" || (e[Json]>0.5 && e[Trigger]>0.5);
     c[1]=c[0] && validJets(e);
     c[2]=c[1] && (o.preset=="all" || (e[Id1]>0.5 && e[Id2]>0.5));
     c[3]=c[2] && (o.preset=="all" || (e[Pt1]>o.minPt && e[Pt2]>o.minPt));
@@ -649,10 +664,13 @@ struct Reader {
         if(!file || file->IsZombie())throw std::runtime_error("Cannot open ROOT file: "+path);
         tree=file->Get<TTree>(o.tree.c_str());
         if(!tree)throw std::runtime_error("Missing tree "+o.tree+" in "+path);
+        if(o.mc) for(const char* name:{"genWeight","Generator_weight","LHEWeight_originalXWGTUP"})
+            if(tree->GetBranch(name)) throw std::runtime_error(path+": generator-weight branch "+name+" requires weighted-generator normalization; this reducer supports unit-weight QCD only");
         tree->SetBranchStatus("*",0);
         tree->SetCacheSize(o.cacheMB*1024*1024);
         tree->SetCacheEntryRange(begin,end<0?tree->GetEntries():end);
         for(int i=0;i<NFields;++i) {
+            if(o.mc && (i==Run || i==Lumi || i==EventId || i==Json || i==Trigger)) continue;
             auto* leaf=tree->GetLeaf(branches[i]);
             if(!leaf || std::string(leaf->GetTypeName())!="Double_t" || leaf->GetLenStatic()!=1 || leaf->GetLeafCount())
                 throw std::runtime_error(path+": expected scalar Double_t branch "+branches[i]);
@@ -746,6 +764,191 @@ template<class F> void parallel(std::size_t size,unsigned threads,F fn) {
     if(error)std::rethrow_exception(error);
 }
 
+struct MCFile {
+    std::string path;
+    Count generated=0;
+    long long entries=0;
+    std::vector<long long> starts;
+};
+struct MCComponent {
+    std::string source;
+    double xsec=0,efficiency=1,weight=0;
+    Count generated=0,stored=0;
+    std::vector<MCFile> files;
+    Summary summary;
+};
+
+void expandMCInput(const std::string& value,std::vector<std::string>& out,unsigned depth=0) {
+    if(depth>8) throw std::runtime_error("MC input list recursion exceeds eight levels");
+    if(value.empty()) throw std::runtime_error("Empty MC input path");
+    if(value[0]=='@' || (fs::is_regular_file(value) && fs::path(value).extension()==".txt")) {
+        const fs::path path=value[0]=='@'?value.substr(1):value;
+        std::ifstream stream(path);
+        if(!stream) throw std::runtime_error("Cannot open MC input list: "+path.string());
+        std::string line;
+        while(std::getline(stream,line)) {
+            line=trim(line);
+            if(line.empty() || line[0]=='#') continue;
+            const bool nested=line[0]=='@';
+            fs::path relative=nested?line.substr(1):line;
+            if(line.find("://")==std::string::npos && relative.is_relative())
+                line=(nested?"@":"")+(path.parent_path()/relative).string();
+            expandMCInput(line,out,depth+1);
+        }
+    } else if(eos_utils::parse_xrootd_path(value)) {
+        const auto expanded=eos_utils::expand_remote_input(value);
+        out.insert(out.end(),expanded.begin(),expanded.end());
+    } else expandInput(value,out,depth);
+}
+
+std::string inputIdentity(const std::string& path) {
+    if(const auto remote=eos_utils::parse_xrootd_path(path)) return remote->path;
+    if(path.find("://")!=std::string::npos) return path;
+    return fs::weakly_canonical(path).string();
+}
+
+std::vector<MCComponent> loadMCComponents(const Options& o) {
+    if(o.mcLists.empty()) return {};
+    std::set<std::string> seen;
+    for(const auto* paths:{&o.input,&o.oldInput,&o.newInput})
+        for(const auto& path:*paths) seen.insert(inputIdentity(path));
+    std::vector<MCComponent> components;
+    for(const auto& list:o.mcLists) {
+        const fs::path path=fs::absolute(list);
+        std::ifstream stream(path);
+        if(!stream) throw std::runtime_error("Cannot read MC list: "+path.string());
+        std::string line;
+        unsigned row=0;
+        while(std::getline(stream,line)) {
+            ++row;line=trim(line);
+            if(line.empty() || line[0]=='#') continue;
+            const std::string location=path.string()+":"+std::to_string(row);
+            std::istringstream fields(line);
+            MCComponent component;
+            if(!(fields>>std::quoted(component.source)>>component.xsec))
+                throw std::runtime_error(location+": expected path_or_glob xsec_pb [filter_efficiency]");
+            fields>>std::ws;
+            if(fields.peek()!=std::char_traits<char>::eof() && fields.peek()!='#') {
+                if(!(fields>>component.efficiency)) throw std::runtime_error(location+": invalid generator filter efficiency");
+                fields>>std::ws;
+            }
+            if(fields.peek()!=std::char_traits<char>::eof() && fields.peek()!='#')
+                throw std::runtime_error(location+": unexpected extra MC list column");
+            if(!std::isfinite(component.xsec) || component.xsec<=0 || !std::isfinite(component.efficiency) ||
+               component.efficiency<=0 || component.efficiency>1)
+                throw std::runtime_error(location+": cross section must be positive and filter efficiency must be in (0,1]");
+            const bool nested=!component.source.empty() && component.source[0]=='@';
+            fs::path relative=nested?component.source.substr(1):component.source;
+            if(component.source.find("://")==std::string::npos && relative.is_relative())
+                component.source=(nested?"@":"")+(path.parent_path()/relative).string();
+            std::vector<std::string> expanded;
+            expandMCInput(component.source,expanded);
+            if(expanded.empty()) throw std::runtime_error(location+": no MC ROOT files");
+            for(const auto& file:expanded) {
+                if(!seen.insert(inputIdentity(file)).second)
+                    throw std::runtime_error("MC file repeated across components or reused as data: "+file);
+                MCFile info;info.path=file;component.files.push_back(std::move(info));
+            }
+            components.push_back(std::move(component));
+        }
+    }
+    if(!o.mcLists.empty() && components.empty()) throw std::runtime_error("MC lists contain no components");
+    return components;
+}
+
+bool countParameter(TFile& file,const char* name,Count& result) {
+    TObject* object=file.Get(name);
+    if(!object) return false;
+    long double value=-1;
+    if(const auto* p=dynamic_cast<TParameter<Long64_t>*>(object)) value=p->GetVal();
+    else if(const auto* p=dynamic_cast<TParameter<Long_t>*>(object)) value=p->GetVal();
+    else if(const auto* p=dynamic_cast<TParameter<int>*>(object)) value=p->GetVal();
+    else if(const auto* p=dynamic_cast<TParameter<double>*>(object)) value=p->GetVal();
+    if(!std::isfinite(value) || value<0 || std::floor(value)!=value || value>std::numeric_limits<Long64_t>::max())
+        throw std::runtime_error(std::string(file.GetName())+": invalid integer counter "+name);
+    result=static_cast<Count>(value);
+    return true;
+}
+
+Count generatedEvents(TFile& file,long long entries) {
+    const std::string path=file.GetName();
+    if(entries<0 || file.TestBit(TFile::kRecovered)) throw std::runtime_error("Invalid or recovered MC ROOT file: "+path);
+    Count expected=0,processed=0,actual=0;
+    const bool hasExpected=countParameter(file,"metaData/expectedEvents",expected);
+    const bool hasProcessed=countParameter(file,"metaData/processedEvents",processed);
+    const bool hasActual=countParameter(file,"metaData/actualEvents",actual);
+    if(hasExpected && hasProcessed && expected!=processed)
+        throw std::runtime_error(path+": incomplete MC processing (processedEvents != expectedEvents)");
+    if(hasActual && actual!=Count(entries)) throw std::runtime_error(path+": actualEvents does not match stored tree entries");
+    const bool metadata=hasExpected || hasProcessed;
+    Count generated=hasExpected?expected:processed;
+    auto* object=file.Get("DijetFilter/EventCount/EventCounter");
+    auto* counter=dynamic_cast<TH1*>(object);
+    if(object && (!counter || counter->GetNbinsX()<3)) throw std::runtime_error(path+": invalid EventCounter histogram");
+    const bool overflow=counter && metadata && counter->IsA()==TH1I::Class() &&
+        generated>Count(std::numeric_limits<int>::max()) && counter->GetBinContent(2)!=static_cast<double>(generated);
+    if(counter && !overflow) {
+        std::array<Count,3> counts{};
+        for(int i=0;i<3;++i) {
+            const double n=counter->GetBinContent(i+1);
+            if(!std::isfinite(n) || n<0 || std::floor(n)!=n || n>=9007199254740992.0)
+                throw std::runtime_error(path+": invalid EventCounter value");
+            counts[i]=static_cast<Count>(n);
+        }
+        if(counts[0]<counts[1] || counts[1]<Count(entries) || counts[2]!=Count(entries) ||
+           (metadata && counts[1]!=generated)) throw std::runtime_error(path+": inconsistent MC event counters");
+        generated=counts[0];
+    } else if(!metadata) throw std::runtime_error(path+": missing generated-event normalization metadata");
+    if(generated<Count(entries)) throw std::runtime_error(path+": generated count is smaller than stored entries");
+    return generated;
+}
+
+Count reduceMC(std::vector<MCComponent>& components,const Options& dataOptions,unsigned& workers) {
+    if(components.empty()) return 0;
+    Options o=dataOptions;o.mc=true;o.requirePassJSON=false;o.certification=Certification{};
+    std::vector<std::pair<std::size_t,std::size_t>> files;
+    for(std::size_t c=0;c<components.size();++c)
+        for(std::size_t f=0;f<components[c].files.size();++f) files.emplace_back(c,f);
+    std::cout<<"QCD: "<<components.size()<<" components, "<<files.size()<<" files; unit generator weights; JSON and HLT cuts disabled"<<std::endl;
+    std::atomic<Count> validated{0};Progress validation("Validate QCD",files.size(),"files");
+    withProgress(validation,validated,[&]{parallel(files.size(),o.threads,[&](std::size_t i,unsigned){
+        auto& file=components[files[i].first].files[files[i].second];
+        Reader reader(file.path,o);file.entries=reader.tree->GetEntries();file.generated=generatedEvents(*reader.file,file.entries);
+        auto clusters=reader.tree->GetClusterIterator(0);long long last=0,next;
+        file.starts.push_back(0);
+        while((next=clusters())<file.entries) if(next-last>=o.chunk) {file.starts.push_back(next);last=next;}
+        if(file.entries>0) file.starts.push_back(file.entries);
+        ++validated;
+    });});
+    std::vector<Task> tasks;Count total=0;
+    for(std::size_t i=0;i<files.size();++i) {
+        auto& component=components[files[i].first];const auto& file=component.files[files[i].second];
+        if(file.generated>std::numeric_limits<Count>::max()-component.generated) throw std::runtime_error("MC generated counter overflow");
+        component.generated+=file.generated;component.stored+=file.entries;total+=file.entries;
+        for(std::size_t j=1;j<file.starts.size();++j) tasks.push_back({i,file.starts[j-1],file.starts[j]});
+    }
+    for(auto& component:components) {
+        if(!component.generated) throw std::runtime_error("MC component has zero generated events: "+component.source);
+        component.weight=component.xsec*component.efficiency/component.generated;
+        if(!std::isfinite(component.weight) || component.weight<=0 ||
+           !std::isfinite(component.weight*component.weight*component.stored))
+            throw std::runtime_error("Invalid MC component weight or variance: "+component.source);
+    }
+    workers=static_cast<unsigned>(std::min<std::size_t>(o.threads,tasks.size()));
+    std::atomic<Count> processed{0};std::mutex mutex;Progress scan("Scan QCD",total,"entries");
+    withProgress(scan,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t i,unsigned){
+        const auto& task=tasks[i];const auto id=files[task.file];auto& component=components[id.first];
+        Reader reader(component.files[id.second].path,o,task.begin,task.end);Summary summary;Count pending=0;
+        for(long long entry=task.begin;entry<task.end;++entry) {
+            summary.fill(reader.read(entry),o,{static_cast<Count>(entry),0,0});
+            if(++pending>=50000) {processed+=pending;pending=0;}
+        }
+        processed+=pending;
+        std::lock_guard<std::mutex> lock(mutex);component.summary.merge(summary);
+    });});
+    return processed.load();
+}
+
 std::string quote(const std::string& s) {
     std::ostringstream out;out << '"';
     for(unsigned char c:s){if(c=='"' || c=='\\')out << '\\' << c;else if(c=='\n')out << "\\n";
@@ -765,6 +968,47 @@ void histJSON(std::ostream& out,const std::vector<Hist>& h) {
     out<<'{';bool first=true;for(const auto& v:h){if(!first)out<<',';first=false;
         out<<quote(v.name)<<":{\"label\":"<<quote(v.label)<<",\"edges\":";arrayJSON(out,v.edges);
         out<<",\"counts\":";arrayJSON(out,v.counts);out<<",\"invalid\":"<<v.invalid<<",\"unavailable\":"<<v.unavailable<<'}';}out<<'}';
+}
+void configJSON(std::ostream& out,const Options& o,bool data=true) {
+    out<<"{\"preset\":"<<quote(o.preset)<<",\"mjj_min\":"<<o.minMass<<",\"pt_min\":"<<o.minPt
+       <<",\"eta_max\":"<<o.maxEta<<",\"deta_max\":"<<o.maxDEta<<",\"balance_alpha_max\":"<<o.balanceAlpha
+       <<",\"jet_match_dr\":"<<o.jetDR;
+    if(data && o.certification.active()) out<<",\"certification_mask\":"<<o.certification.canonical;
+    if(data && o.requirePassJSON) out<<",\"require_pass_json\":true";
+    out<<'}';
+}
+void mcJSON(std::ostream& out,const std::vector<MCComponent>& components,const Options& o) {
+    out<<"{\"config\":";configJSON(out,o,false);
+    out<<",\"tree\":"<<quote(o.tree)<<",\"normalization\":\"cross_section_pb\",\"weight_convention\":\"unit\""
+       <<",\"selection\":\"preset kinematics without data certification, PassJSON or HLT; generated counters before skim cuts\""
+       <<",\"partial\":false,\"components\":[";
+    double selected=0,variance=0;
+    for(std::size_t i=0;i<components.size();++i) {
+        if(i) out<<',';
+        const auto& c=components[i];
+        selected+=c.summary.cuts.back()*c.weight;variance+=c.summary.cuts.back()*c.weight*c.weight;
+        out<<"{\"source\":"<<quote(c.source)<<",\"xsec_pb\":"<<c.xsec<<",\"filter_efficiency\":"<<c.efficiency
+           <<",\"generated_events\":"<<c.generated<<",\"stored_entries\":"<<c.stored
+           <<",\"selected_entries\":"<<c.summary.cuts.back()<<",\"weight_pb\":"<<c.weight<<",\"files\":[";
+        for(std::size_t j=0;j<c.files.size();++j) {
+            if(j) out<<',';
+            const auto& f=c.files[j];out<<"{\"path\":"<<quote(f.path)<<",\"entries\":"<<f.entries<<",\"generated_events\":"<<f.generated<<'}';
+        }
+        out<<"],\"histograms\":";histJSON(out,c.summary.h);out<<'}';
+    }
+    out<<"],\"selected_sumw\":"<<selected<<",\"selected_sumw2\":"<<variance<<",\"histograms\":{";
+    const auto h=makeHists();
+    for(std::size_t i=0;i<h.size();++i) {
+        if(i) out<<',';
+        std::vector<double> sumw(h[i].counts.size()),sumw2(sumw.size());
+        for(const auto& c:components) for(std::size_t j=0;j<sumw.size();++j) {
+            sumw[j]+=c.summary.h[i].counts[j]*c.weight;
+            sumw2[j]+=c.summary.h[i].counts[j]*c.weight*c.weight;
+        }
+        out<<quote(h[i].name)<<":{\"label\":"<<quote(h[i].label)<<",\"edges\":";arrayJSON(out,h[i].edges);
+        out<<",\"sumw\":";arrayJSON(out,sumw);out<<",\"sumw2\":";arrayJSON(out,sumw2);out<<'}';
+    }
+    out<<"}}";
 }
 void profileJSON(std::ostream& out,const std::vector<Profile>& p) {
     out<<'{';bool first=true;for(const auto& v:p){if(!first)out<<',';first=false;
@@ -806,17 +1050,20 @@ int main(int argc,char** argv) {
         const Options o=parse(argc,argv);
         ROOT::EnableThreadSafety();
         const auto started=Clock::now();
-        std::cout<<"Preset: "<<o.preset<<"; PassJSON cut: "
+        const bool mcOnly=!o.paired && o.input.empty();
+        auto components=loadMCComponents(o);
+        if(!mcOnly) std::cout<<"Preset: "<<o.preset<<"; PassJSON cut: "
                  <<(o.requirePassJSON || o.preset=="dijet" || o.preset=="loose"?"enabled (PassJSON > 0.5)":"disabled")
                  <<"; external run/LS mask: "<<(o.certification.active()?"enabled":"disabled")<<std::endl;
-        if(o.certification.active()) std::cout<<"Run/LS certification filter: "<<o.certification.source<<" ("<<o.certification.ranges.size()<<" runs)"<<std::endl;
+        if(!mcOnly && o.certification.active()) std::cout<<"Run/LS certification filter: "<<o.certification.source<<" ("<<o.certification.ranges.size()<<" runs)"<<std::endl;
         std::vector<FileInfo> files;
         const auto& paths=o.paired?o.oldInput:o.input;
         for(std::size_t i=0;i<paths.size();++i)if(i%o.shards==o.shard) {
             FileInfo f;f.oldPath=paths[i];if(o.paired)f.newPath=o.newInput[i];files.push_back(std::move(f));
         }
-        if(files.empty())throw std::runtime_error("This shard has no files");
-        std::cout<<"Validating "<<files.size()<<" file"<<(o.paired?" pairs":"s")<<" using "<<o.threads<<" threads"<<std::endl;
+        if(files.empty() && !mcOnly)throw std::runtime_error("This shard has no files");
+        if(!mcOnly) std::cout<<"Validating "<<files.size()<<" file"<<(o.paired?" pairs":"s")<<" using "<<o.threads<<" threads"<<std::endl;
+        if(!mcOnly) {
         std::atomic<Count> validated{0};Progress validation("Validate",files.size(),o.paired?"pairs":"files");
         withProgress(validation,validated,[&]{parallel(files.size(),o.threads,[&](std::size_t i,unsigned){
             auto& f=files[i];Reader a(f.oldPath,o);f.oldEntries=a.tree->GetEntries();
@@ -829,6 +1076,7 @@ int main(int argc,char** argv) {
             if(f.oldLimit>0)f.starts.push_back(f.oldLimit);
             validated.fetch_add(1,std::memory_order_relaxed);
         });});
+        }
         std::vector<Task> tasks;
         for(std::size_t i=0;i<files.size();++i){const auto& f=files[i];
             if(o.paired && o.match=="keyed")tasks.push_back({i,0,f.oldLimit});
@@ -837,8 +1085,9 @@ int main(int argc,char** argv) {
         std::vector<Summary> olds(workers),news(o.paired?workers:0);std::vector<Paired> pairs(o.paired?workers:0);
         std::atomic<Count> processed{0};
         Count total=0;for(const auto& f:files)total+=f.oldLimit+(o.paired?f.newLimit:0);
-        std::cout<<"Scanning "<<total<<" entries in "<<tasks.size()<<" tasks; only "<<NFields<<" scalar branches are read"<<std::endl;
+        if(!mcOnly) std::cout<<"Scanning "<<total<<" entries in "<<tasks.size()<<" tasks; only "<<NFields<<" scalar branches are read"<<std::endl;
         if(o.paired && o.match=="keyed")std::cout<<"Keyed matching caches old events per active file pair; budget about 3 GB per 7.25 million events per worker"<<std::endl;
+        if(!mcOnly) {
         Progress scanning("Scan",total,"entries");
         withProgress(scanning,processed,[&]{parallel(tasks.size(),workers,[&](std::size_t ti,unsigned slot){
             const auto& task=tasks[ti];const auto& f=files[task.file];
@@ -874,9 +1123,10 @@ int main(int argc,char** argv) {
             }
             processed+=pending;
         });});
+        }
         Summary old,next;Paired pair;
         for(unsigned i=0;i<workers;++i){old.merge(olds[i]);if(o.paired){next.merge(news[i]);pair.merge(pairs[i]);}}
-        if(o.certification.active() || o.requirePassJSON) {
+        if(!mcOnly && (o.certification.active() || o.requirePassJSON)) {
             auto accounting=[&](const std::string& label,const Summary& s) {
                 if(s.inputEntries!=s.cuts[0]+s.certificationRejected+s.passJSONRejected) throw std::runtime_error("Inconsistent event-filter accounting");
                 std::cout<<label<<": read="<<s.inputEntries<<", retained="<<s.cuts[0]<<", rejected by run/LS mask="<<s.certificationRejected
@@ -884,7 +1134,7 @@ int main(int argc,char** argv) {
             };
             accounting(o.paired?"old":o.jec,old);if(o.paired) accounting("new",next);
         }
-        if(o.preset=="all" || o.preset=="all_stored") {
+        if(!mcOnly && (o.preset=="all" || o.preset=="all_stored")) {
             if(o.preset=="all_stored") std::cout<<"All-stored preset: "
                 <<(o.certification.active() || o.requirePassJSON?"stored events passing explicitly requested JSON filters":"every stored event")
                 <<" retained; no trigger, jet-ID or kinematic cuts; jet observables use their own available quantities"<<std::endl;
@@ -896,30 +1146,30 @@ int main(int argc,char** argv) {
             };
             validity(o.paired?"old":o.jec,old);if(o.paired)validity("new",next);
         }
+        unsigned mcWorkers=0;
+        processed+=reduceMC(components,o,mcWorkers);
         const double seconds=std::chrono::duration<double>(Clock::now()-started).count();
         const fs::path output=fs::absolute(o.output);if(output.has_parent_path())fs::create_directories(output.parent_path());
         const fs::path temp=output.string()+".tmp."+std::to_string(Clock::now().time_since_epoch().count());
         std::ofstream out(temp);if(!out)throw std::runtime_error("Cannot create output: "+temp.string());
         out<<std::setprecision(17)<<"{\"schema_version\":1,\"dataset\":"<<quote(o.dataset)<<",\"tree\":"<<quote(o.tree)
-           <<",\"mode\":"<<quote(o.paired?o.match:"single")<<",\"partial\":"<<(o.maxEntries>=0?"true":"false")
-           <<",\"config\":{\"preset\":"<<quote(o.preset)<<",\"mjj_min\":"<<o.minMass<<",\"pt_min\":"<<o.minPt
-           <<",\"eta_max\":"<<o.maxEta<<",\"deta_max\":"<<o.maxDEta<<",\"balance_alpha_max\":"<<o.balanceAlpha
-           <<",\"jet_match_dr\":"<<o.jetDR;
-        if(o.certification.active()) out<<",\"certification_mask\":"<<o.certification.canonical;
-        if(o.requirePassJSON) out<<",\"require_pass_json\":true";
-        out<<"},\"thresholds\":";arrayJSON(out,thresholds);
-        if(o.certification.active()) out<<",\"certification_source\":"<<quote(o.certification.source);
+           <<",\"mode\":"<<quote(mcOnly?"mc":o.paired?o.match:"single")<<",\"partial\":"<<(o.maxEntries>=0?"true":"false")
+           <<",\"config\":";configJSON(out,o,!mcOnly);
+        out<<",\"thresholds\":";arrayJSON(out,thresholds);
+        if(!mcOnly && o.certification.active()) out<<",\"certification_source\":"<<quote(o.certification.source);
         if(o.preset=="all_stored") out<<",\"cutflow_labels\":[\"Stored\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\",\"Retained\"]";
         else out<<",\"cutflow_labels\":[\"Stored\",\"JSON and HLT\",\"Valid dijet\",\"Tight IDs\",\"pT\",\"eta\",\"delta eta\",\"Mass\"]";
         out<<",\"files\":{";
         auto writeFiles=[&](const std::string& label,bool isNew){out<<quote(label)<<":[";for(std::size_t i=0;i<files.size();++i){if(i)out<<',';const auto& f=files[i];
             out<<"{\"path\":"<<quote(isNew?f.newPath:f.oldPath)<<",\"entries\":"<<(isNew?f.newEntries:f.oldEntries)
                <<",\"processed\":"<<(isNew?f.newLimit:f.oldLimit)<<'}';}out<<']';};
-        writeFiles(o.paired?"old":o.jec,false);if(o.paired){out<<',';writeFiles("new",true);}
-        out<<"},\"samples\":{"<<quote(o.paired?"old":o.jec)<<':';summaryJSON(out,old,o.preset=="all_stored");
+        if(!mcOnly) writeFiles(o.paired?"old":o.jec,false);if(o.paired){out<<',';writeFiles("new",true);}
+        out<<"},\"samples\":{";
+        if(!mcOnly) {out<<quote(o.paired?"old":o.jec)<<':';summaryJSON(out,old,o.preset=="all_stored");}
         if(o.paired){out<<",\"new\":";summaryJSON(out,next,o.preset=="all_stored");}out<<'}';
         if(o.paired){out<<",\"paired\":";pairedJSON(out,pair);}
-        out<<",\"elapsed_seconds\":"<<seconds<<",\"threads\":"<<workers<<",\"processed_entries\":"<<processed<<"}\n";
+        if(!components.empty()) {out<<",\"qcd\":";mcJSON(out,components,o);}
+        out<<",\"elapsed_seconds\":"<<seconds<<",\"threads\":"<<std::max(workers,mcWorkers)<<",\"processed_entries\":"<<processed<<"}\n";
         out.close();if(!out){fs::remove(temp);throw std::runtime_error("Failed to write summary");}
         if(fs::exists(output) && !o.force){fs::remove(temp);throw std::runtime_error("Output appeared during processing; refusing to replace it");}
         fs::rename(temp,output);

@@ -112,6 +112,11 @@ def root_output_main(arguments):
                  [[name,sum(h['counts']),h['invalid'],h.get('unavailable',0)] for name,h in sample['histograms'].items()])
             tree('raw_'+role+'_threshold_counts',['threshold_gev','count'],list(zip(d['thresholds'],sample['threshold_counts'])))
         paired = d.get('paired')
+        qcd = d.get('qcd')
+        if qcd:
+            for name, spec in qcd['histograms'].items():
+                histogram('raw_qcd_'+name, spec['edges'], spec['sumw'], spec['label'],
+                          [math.sqrt(value) for value in spec['sumw2']]).Write()
         if paired:
             migration = ROOT.TH2D('raw_matched_selection_migration','',2,-.5,1.5,2,-.5,1.5)
             migration.SetDirectory(0)
@@ -205,6 +210,8 @@ def root_output_main(arguments):
                 graph.SetLineWidth(0)
                 graph.Draw('F SAME')
                 keep.append(graph)
+                if polygon.get('label'):
+                    labelled[polygon['label']] = (graph, 'f')
             for k,mesh in enumerate(ax['meshes']):
                 h = ROOT.TH2D('draw_'+spec['name']+'_mesh'+str(i)+'_'+str(k),'',len(mesh['xedges'])-1,array('d',mesh['xedges']),
                               len(mesh['yedges'])-1,array('d',mesh['yedges']))
@@ -371,12 +378,13 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.colors import TwoSlopeNorm, to_rgba
 from matplotlib.container import ErrorbarContainer
+from matplotlib.collections import PolyCollection
 from matplotlib.lines import Line2D
 from matplotlib.patches import StepPatch
 from matplotlib.ticker import AutoMinorLocator, MaxNLocator
 
 
-COLORS = {"old": "#000000", "new": "#cc0000"}
+COLORS = {"old": "#000000", "new": "#cc0000", "qcd": "#497da8"}
 FRACTIONAL_CHANGE_LABEL = "(New - old) / old"
 ETA_ASYMMETRY_LABEL = r"$\frac{N_{(\eta)}-N_{(-\eta)}}{N_{(\eta)}+N_{(-\eta)}}$"
 DEFAULT_NORMTAG = Path("/cvmfs/cms-bril.cern.ch/cms-lumi-pog/Normtags/normtag_PHYSICS.json")
@@ -409,6 +417,9 @@ for index, position in ((1, "Leading"), (2, "Subleading")):
 def parser():
     p = argparse.ArgumentParser(description="Plot compact C++ JEC summaries; original ntuples are never reread.")
     p.add_argument("--inputs", nargs="+", required=True, help="Summary JSON files, directories or quoted globs.")
+    p.add_argument("--mc-input", help="One reusable QCD summary from reduce_jec_comparison --mc-list; shared by both JECs and every era.")
+    p.add_argument("--mc-label", default="QCD MC")
+    p.add_argument("--mc-scale", type=float, default=1.0, help="Explicit common multiplicative QCD scale; default 1 uses the supplied cross sections.")
     p.add_argument("--datasets", nargs="+", help="Dataset labels to include; default: all supplied datasets.")
     p.add_argument("--output-dir", default="jec_comparison_plots")
     p.add_argument("--lumi-csv", action="append", default=[], help="run,lumi_pb or run,ls,lumi_pb CSV; also accepts brilcalc CSV.")
@@ -595,22 +606,81 @@ def merge_document(a, b, combine_certification=False):
     a["partial"] = a["partial"] or b["partial"]
     a["processed_entries"] += b["processed_entries"]
     a["elapsed_seconds"] += b["elapsed_seconds"]
+    if b.get("qcd") is not None:
+        a["qcd"] = shared_qcd(a.get("qcd"), b["qcd"])
 
 
-def load_datasets(paths, requested, allow_partial):
+def shared_qcd(a, b):
+    if a is None:
+        return copy.deepcopy(b)
+    def identity(reference):
+        result = copy.deepcopy(reference)
+        for component in result["components"]:
+            component.pop("source", None)
+            component["files"] = sorted(component["files"], key=lambda row: row["path"])
+        result["components"].sort(key=lambda component: tuple(row["path"] for row in component["files"]))
+        return result
+    if identity(a) != identity(b):
+        raise ValueError("Different QCD references supplied; reduce the complete MC component list once and reuse that summary for every era")
+    return a
+
+
+def validate_qcd(qcd, d):
+    if qcd.get("partial") or qcd.get("normalization") != "cross_section_pb" or qcd.get("weight_convention") != "unit":
+        raise ValueError("QCD requires a complete reduction with cross-section normalization and unit generator weights")
+    config = {key: value for key, value in d["config"].items() if key not in ("certification_mask", "require_pass_json")}
+    if qcd.get("config") != config or qcd.get("tree") != d["tree"]:
+        raise ValueError(f"{d['dataset']}: QCD and data must use the same tree, preset and kinematic cuts")
+    if not qcd.get("components"):
+        raise ValueError("QCD summary contains no components")
+    files = set()
+    for component in qcd["components"]:
+        for key in ("xsec_pb", "generated_events", "weight_pb", "filter_efficiency"):
+            if not math.isfinite(component[key]) or component[key] <= 0:
+                raise ValueError(f"Invalid QCD normalization: {key}")
+        expected = component["xsec_pb"]*component["filter_efficiency"]/component["generated_events"]
+        if not math.isclose(expected, component["weight_pb"], rel_tol=1e-10):
+            raise ValueError("QCD component weight disagrees with its cross section and generated-event count")
+        for row in component["files"]:
+            if row["path"] in files:
+                raise ValueError("QCD input ROOT file counted twice: "+row["path"])
+            files.add(row["path"])
+    for role in ("old", "new"):
+        for name, hist in d["samples"][role]["histograms"].items():
+            reference = qcd["histograms"].get(name)
+            if reference is None or reference["edges"] != hist["edges"]:
+                raise ValueError(f"{d['dataset']}: incompatible QCD histogram bins for {name}")
+            for stat in ("sumw", "sumw2"):
+                if len(reference[stat]) != len(hist["counts"]) or any(not math.isfinite(x) or x < 0 for x in reference[stat]):
+                    raise ValueError(f"Invalid QCD {stat} for {name}")
+
+
+def load_datasets(paths, requested, allow_partial, mc_input=None):
     datasets = {}
     seen = set()
     paired_presence = {}
+    qcd = None
+    if mc_input:
+        with Path(mc_input).open() as stream:
+            document = json.load(stream)
+        if document.get("schema_version") != 1 or not document.get("qcd"):
+            raise ValueError("--mc-input must be a reduction summary containing QCD")
+        qcd = document["qcd"]
     for index, path in enumerate(paths, 1):
         progress(f"Loading summary {index}/{len(paths)}: {path}")
         with path.open() as stream:
             d = json.load(stream)
         if d.get("schema_version") != 1 or "samples" not in d:
             raise ValueError(f"Unsupported reduction summary: {path}")
+        if not d["samples"] and d.get("qcd"):
+            qcd = shared_qcd(qcd, d["qcd"])
+            continue
         name = d["dataset"]
         if requested and name not in requested:
             progress("Skipped: dataset was not requested", name)
             continue
+        if d.get("qcd"):
+            qcd = shared_qcd(qcd, d["qcd"])
         if d["partial"] and not allow_partial:
             raise ValueError(f"{path} is a partial debug scan; use full summaries or --allow-partial")
         paired_presence.setdefault(name, set()).add("paired" in d)
@@ -635,6 +705,9 @@ def load_datasets(paths, requested, allow_partial):
             raise ValueError(f"Dataset {name} needs both old and new summaries")
         if len(paired_presence[name]) != 1:
             raise ValueError(f"Dataset {name} mixes paired and independent reductions; correlated errors would be incomplete")
+        if qcd is not None:
+            validate_qcd(qcd, d)
+            d["qcd"] = qcd
         certified = certification_sections(d["config"].get("certification_mask"))
         for role, sample in d["samples"].items():
             read = sample.get("input_entries", sample["cutflow"][0])
@@ -1192,6 +1265,13 @@ def canvas_payload(fig, name):
                 values = np.asarray(collection.get_array()).reshape(coordinates.shape[0]-1, coordinates.shape[1]-1)
                 item["meshes"].append({"xedges": coordinates[0,:,0].tolist(), "yedges": coordinates[:,0,1].tolist(),
                                       "values": values.tolist()})
+            elif isinstance(collection, PolyCollection) and len(collection.get_facecolors()):
+                rgba = collection.get_facecolors()[0]
+                fill = to_hex(rgba[:3]*rgba[3]+1-rgba[3])
+                for path in collection.get_paths():
+                    xy = ax.transData.inverted().transform(collection.get_transform().transform(path.vertices))
+                    if len(xy) and np.isfinite(xy).all():
+                        item["polygons"].append({"xy": xy.tolist(), "color": fill, "label": collection.get_label()})
         for im in ax.images:
             values = np.asarray(im.get_array())
             low, high, bottom, top = im.get_extent()
@@ -1281,6 +1361,9 @@ class Plotter:
         self.total_lumi_pb = total_lumi if self.has_exposure else None
         self.dijet_lumi_mode = "LS-weighted estimate" if luminosity.get("estimated") else "recorded per-run luminosity" if self.has_lumi else None
         self.paired = d.get("paired")
+        self.qcd = d.get("qcd")
+        if self.qcd:
+            validate_qcd(self.qcd, d)
         if self.has_lumi:
             for role in ("old", "new"):
                 for run, r in self.run_maps[role].items():
@@ -1324,6 +1407,8 @@ class Plotter:
         return fig, ax, None
 
     def save(self, fig, name):
+        if any(ax.get_xlabel().startswith("Run Index") for ax in fig.axes):
+            self.decorate_run_eras(fig.axes[0], fig.axes[1] if len(fig.axes) > 1 else None)
         for ax in fig.axes:
             lines = list(ax.lines)
             if ax.get_legend():
@@ -1384,7 +1469,7 @@ class Plotter:
         era_map = dict(self.d.get("run_eras", []))
         return [re.sub(r"(?i)\s+mock\b", "", era_map.get(run, self.d["dataset"])) for run in self.runs]
 
-    def decorate_run_eras(self, top, bottom):
+    def decorate_run_eras(self, top, bottom=None):
         eras = self.run_era_labels()
         multiple_eras = len(set(eras)) > 1
         start = 0
@@ -1392,11 +1477,10 @@ class Plotter:
             if index < len(eras) and eras[index] == eras[start]:
                 continue
             if start and multiple_eras:
-                top.axvline(start-0.5, color="0.65", lw=0.8, zorder=0)
-                bottom.axvline(start-0.5, color="0.75", lw=0.8, zorder=0)
-            if multiple_eras:
-                top.axvspan(start-0.5, index-0.5, color="0.94" if start % 2 == 0 else "0.98", zorder=-2)
-            if index-start >= max(2, len(eras)//120):
+                for ax in (top, bottom):
+                    if ax is not None:
+                        ax.axvline(start-0.5, color="0.78", lw=0.9, ls="--", zorder=0)
+            if index > start:
                 top.text((start+index-1)/2, 0.96, eras[start], transform=top.get_xaxis_transform(),
                          ha="center", va="top", fontsize=8, color="0.32",
                          bbox={"facecolor": "white", "edgecolor": "none", "alpha": 0.8, "pad": 1.5})
@@ -1413,7 +1497,6 @@ class Plotter:
         fig, top, bottom = self.axes()
         fig.set_size_inches(max(8.2, min(14.0, 8.2 + len(x)/95)), 7.0)
         self.brand(top)
-        self.decorate_run_eras(top, bottom)
         values, errors, shown, reasons = {}, {}, {}, {}
         extents = []
         stride = max(1, math.ceil(len(x)/180))
@@ -1552,7 +1635,139 @@ class Plotter:
             self.table("spectrum_"+name, ["low", "high", "old_count", "new_count", "new_over_old", "fractional_change_stat_error", "display_low", "display_high", "display_unit", "fractional_change"],
                        zip(edges[:-1], edges[1:], raw["old"], raw["new"], r, err, display_edges[:-1], display_edges[1:], [unit]*len(raw["old"]), r-1))
             self.save(fig, "spectrum_" + name)
+            if self.qcd:
+                self.qcd_spectrum(name, "spectrum_"+name+"_data_qcd")
         self.table("histogram_flow_counts", ["histogram", "jec", "underflow", "overflow", "nonfinite"], flow_rows)
+
+    def qcd_ratio(self, ax, x, values, errors, reference, uncertainty, counts, minimum, edges=None):
+        reference, uncertainty = np.broadcast_arrays(np.asarray(reference, float), np.asarray(uncertainty, float))
+        valid_mc = np.isfinite(reference) & (reference > 0) & np.isfinite(uncertainty)
+        relative = np.divide(uncertainty, reference, out=np.full_like(reference, np.nan), where=valid_mc)
+        band_edges = np.asarray(edges) if edges is not None else np.r_[x-0.5, x[-1]+0.5]
+        ax.fill_between(np.repeat(band_edges, 2)[1:-1], np.repeat(1-relative, 2), np.repeat(1+relative, 2),
+                        color=COLORS["qcd"], alpha=0.22, label="QCD stat.")
+        ax.axhline(1, color="0.3", ls="--", lw=1)
+        result = {}
+        visible = []
+        for role in ("old", "new"):
+            ratios = np.divide(values[role], reference, out=np.full_like(reference, np.nan), where=valid_mc)
+            stat = np.divide(errors[role], reference, out=np.full_like(reference, np.nan), where=valid_mc)
+            total = np.hypot(stat, ratios*relative)
+            drawn = valid_mc & np.isfinite(ratios) & np.isfinite(stat) & (counts[role] >= minimum)
+            ax.errorbar(x[drawn], ratios[drawn], yerr=stat[drawn], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
+            result[role] = (ratios, stat, total, drawn)
+            visible.extend((ratios[drawn]-stat[drawn], ratios[drawn]+stat[drawn]))
+        visible.extend(((1-relative)[valid_mc], (1+relative)[valid_mc]))
+        finite = np.concatenate(visible)
+        finite = finite[np.isfinite(finite)]
+        low, high = (min(1, finite.min()), max(1, finite.max())) if finite.size else (0.5, 1.5)
+        padding = max(0.1, (high-low)*0.15)
+        ax.set_ylim(max(0, low-padding), high+padding)
+        ax.set_ylabel("Data / QCD")
+        return result
+
+    def qcd_spectrum(self, name, output_name, differential=False):
+        normalization = "xsec" if differential else self.args.normalization
+        if normalization != "shape" and not self.has_exposure:
+            progress("Skipping "+output_name+": QCD yield/cross-section comparison requires luminosity and complete data summaries", self.d["dataset"])
+            return
+        spec = self.qcd["histograms"][name]
+        edges = np.asarray(spec["edges"], float)
+        mass = name in ("mjj", "mjj_base", "ak4_mjj")
+        pt = (name.startswith("pt_") and name != "pt_asymmetry") or name.startswith("raw_pt")
+        ht = name in HT_BIN_EDGES
+        tev = mass or pt or ht
+        edges = edges/(1000 if tev else 1)
+        centers, widths = (edges[1:]+edges[:-1])/2, np.diff(edges)
+        raw = {role: np.asarray(self.d["samples"][role]["histograms"][name]["counts"], float) for role in ("old", "new")}
+        mc = np.asarray(spec["sumw"], float)*self.args.mc_scale
+        variance = np.asarray(spec["sumw2"], float)*self.args.mc_scale**2
+        values, errors = {}, {}
+        if normalization == "shape":
+            def shape(values, variance):
+                total = values.sum()
+                if total <= 0:
+                    return np.full_like(values, np.nan), np.full_like(values, np.nan)
+                fraction = values/total
+                error = np.sqrt(np.maximum(0, variance*(1-2*fraction)+fraction**2*variance.sum()))/total
+                return fraction, error
+            reference, uncertainty = shape(mc, variance)
+            for role in ("old", "new"):
+                values[role], errors[role] = shape(raw[role], raw[role])
+        else:
+            factor = self.total_lumi_pb if normalization == "yield" else 1.0
+            reference, uncertainty = mc*factor, np.sqrt(variance)*factor
+            denominator = 1.0 if normalization == "yield" else self.total_lumi_pb
+            for role in ("old", "new"):
+                values[role], errors[role] = raw[role]/denominator, np.sqrt(raw[role])/denominator
+        reference, uncertainty = reference[1:-1], uncertainty[1:-1]
+        for role in ("old", "new"):
+            values[role], errors[role] = values[role][1:-1], errors[role][1:-1]
+            raw[role] = raw[role][1:-1]
+        if differential:
+            reference, uncertainty = reference/widths, uncertainty/widths
+            for role in ("old", "new"):
+                values[role], errors[role] = values[role]/widths, errors[role]/widths
+        fig, top, bottom = self.axes()
+        self.brand(top)
+        top.stairs(reference, edges, color=COLORS["qcd"], lw=1.8, label=self.args.mc_label)
+        top.fill_between(edges, np.r_[reference-uncertainty, (reference-uncertainty)[-1]],
+                         np.r_[reference+uncertainty, (reference+uncertainty)[-1]], step="post", color=COLORS["qcd"], alpha=0.22)
+        for role in ("old", "new"):
+            drawn = np.isfinite(values[role]) & (raw[role] > 0)
+            top.errorbar(centers[drawn], values[role][drawn], yerr=errors[role][drawn], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
+        shown_range = self.mass_range if mass else self.ht_range if ht else None
+        visible = (edges[:-1] < shown_range[1]) & (edges[1:] > shown_range[0]) if shown_range else np.ones(len(centers), bool)
+        positive = np.concatenate([v[visible & np.isfinite(v) & (v > 0)] for v in [reference, *values.values()]])
+        top.set_yscale("log")
+        top.set_ylim(max(1e-12, positive.min()*0.4), positive.max()*5) if positive.size else top.set_ylim(0.5, 5)
+        top.set_ylabel(r"$d\sigma/dm_{jj}$ [pb/TeV]" if differential else
+                       {"yield": "Entries / bin", "shape": "Normalized entries / bin", "xsec": "Cross section / bin [pb]"}[normalization])
+        top.legend(frameon=False, loc="upper right")
+        ratios = self.qcd_ratio(bottom, centers, values, errors, reference, uncertainty, raw, self.args.ratio_min_count, edges)
+        label = CORE_LABELS.get(name, spec["label"])
+        bottom.set_xlabel(jet_label(label.replace("[GeV]", "[TeV]") if tev else label, name))
+        if shown_range:
+            bottom.set_xlim(*shown_range)
+        self.table(output_name, ["low", "high", "old_count", "new_count", "old_value", "new_value",
+                                 "old_stat_error", "new_stat_error", "qcd_value", "qcd_stat_error",
+                                 "old_over_qcd", "old_ratio_data_error", "old_ratio_total_error", "old_drawn",
+                                 "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn"],
+                   zip(edges[:-1], edges[1:], raw["old"], raw["new"], values["old"], values["new"], errors["old"], errors["new"],
+                       reference, uncertainty, *ratios["old"], *ratios["new"]))
+        self.save(fig, output_name)
+
+    def qcd_run_plot(self):
+        if not self.qcd or not self.has_lumi or not self.runs:
+            return
+        x = np.arange(len(self.runs))
+        counts = {role: np.asarray([self.run_maps[role].get(run, {}).get("moments", {"count": [0]})["count"][0]
+                                   if self.all_stored else self.run_maps[role].get(run, {}).get("selected", 0)
+                                   for run in self.runs], float) for role in ("old", "new")}
+        hist = self.qcd["histograms"]["mjj"]
+        reference = np.full(len(x), sum(hist["sumw"])*self.args.mc_scale)
+        uncertainty = np.full(len(x), math.sqrt(sum(hist["sumw2"]))*self.args.mc_scale)
+        fig, top, bottom = self.axes()
+        self.brand(top)
+        values, errors = {}, {}
+        top.plot([-0.7, max(0.7, len(x)-0.3)], [reference[0]]*2, color=COLORS["qcd"], label=self.args.mc_label)
+        top.fill_between([-0.7, max(0.7, len(x)-0.3)], reference[0]-uncertainty[0], reference[0]+uncertainty[0], color=COLORS["qcd"], alpha=0.22)
+        for role in ("old", "new"):
+            values[role], errors[role] = poisson_cross_section(counts[role], self.lumi)
+            mask = np.isfinite(values[role]) & (counts[role] >= self.args.min_count)
+            top.errorbar(x[mask], values[role][mask], yerr=errors[role][mask], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
+        top.set_ylabel("Dijet cross section [pb]")
+        top.set_ylim(bottom=0)
+        top.legend(frameon=False, loc="lower right")
+        ratios = self.qcd_ratio(bottom, x, values, errors, reference, uncertainty, counts, self.args.min_count)
+        self.run_axis(bottom)
+        self.table("run_index_data_qcd", ["run_index", "run", "dataset", "lumi_pb", "old_count", "new_count",
+                                         "old_xsec_pb", "new_xsec_pb", "old_stat_error_pb", "new_stat_error_pb", "qcd_xsec_pb", "qcd_stat_error_pb",
+                                         "old_over_qcd", "old_ratio_data_error", "old_ratio_total_error", "old_drawn",
+                                         "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn"],
+                   zip(x, self.runs, self.run_era_labels(), self.lumi, counts["old"], counts["new"], values["old"], values["new"],
+                       errors["old"], errors["new"], reference, uncertainty, *ratios["old"], *ratios["new"]))
+        self.save(fig, "run_index_data_qcd")
 
     def mass_cross_section_plot(self):
         if not self.has_exposure:
@@ -1588,9 +1803,12 @@ class Plotter:
                    zip(edges[:-1],edges[1:],widths,np.full(len(widths),self.total_lumi_pb),counts["old"],counts["new"],
                        values["old"],values["new"],errors["old"],errors["new"],r-1,err))
         self.save(fig,"dijet_mass_cross_section")
+        if self.qcd:
+            self.qcd_spectrum("mjj", "dijet_mass_data_qcd", differential=True)
 
     def run_plots(self):
         self.run_index_plot()
+        self.qcd_run_plot()
         x = np.arange(len(self.runs))
         for i, ylabel in enumerate(("Mean wide-dijet mass [TeV]", "Mean leading wide-jet pT [TeV]",
                                    "Mean subleading wide-jet pT [TeV]", "Mean leading AK4 JEC", "Mean subleading AK4 JEC")):
@@ -1905,6 +2123,18 @@ class Plotter:
                           "Stored-event fingerprints check input consistency probabilistically; they cannot recover events lost upstream."]}
         if self.paired:
             info["pairing"] = {k: self.paired[k] for k in ("matched", "only_old", "only_new", "jet_matched", "jet_unmatched", "reordered", "migration")}
+        if self.qcd:
+            info["qcd"] = {"label": self.args.mc_label, "scale": self.args.mc_scale,
+                           "normalization": self.qcd["normalization"], "weight_convention": self.qcd["weight_convention"],
+                           "selection": self.qcd["selection"],
+                           "components": [{key: value for key, value in component.items() if key != "histograms"}
+                                          for component in self.qcd["components"]]}
+            info["notes"].extend([
+                "One QCD prediction is shared by both JEC samples and all eras; combining eras never adds copies of the MC prediction. No normalization to data is applied unless shape normalization is requested; --mc-scale is common to both data comparisons.",
+                "QCD uses unit generator weights with component weight xsec_pb * filter_efficiency / generated_events. Supplied cross sections that already include the generator filter use filter_efficiency=1. Saved MC histograms contain cross sections in pb and statistical variances in pb^2.",
+                "Data/QCD point errors contain data statistics; the shaded band around one is the common QCD statistical uncertainty. ROOT tables also store quadrature total errors for individual ratios. The QCD uncertainty is correlated between the two data/QCD ratios and between run points; it cancels in their quotient. Existing new/old plots retain the appropriate data-only comparison.",
+                "MC skips data certification and HLT requirements and uses the same kinematic selection. No trigger-efficiency, pileup, luminosity, cross-section or JEC systematic uncertainties are included.",
+                "Normalized shape variances include the bin/total covariance and use all saved bins, including underflow and overflow. QCD run reference includes all selected mass bins, including underflow and overflow."])
         if self.mock:
             info["mock"] = self.mock
             info["notes"].insert(0, "Mock demonstration: the JEC differences are synthetic. Any supplied luminosity is artificial and the cross sections are illustrative.")
@@ -2042,12 +2272,14 @@ def main():
     args = parser().parse_args()
     if args.jobs < 1 or args.min_count < 1 or args.ratio_min_count < 1 or args.dpi < 1 or not math.isfinite(args.energy_tev) or args.energy_tev <= 0:
         raise ValueError("jobs, min-count, ratio-min-count, dpi and energy must be positive")
+    if not math.isfinite(args.mc_scale) or args.mc_scale <= 0:
+        raise ValueError("mc-scale must be finite and positive")
     for name, limits in (("mass-range", args.mass_range), ("ht-range", args.ht_range)):
         if limits and (not all(math.isfinite(value) for value in limits) or limits[0] < 0 or limits[1] <= limits[0]):
             raise ValueError(f"{name} must be two finite increasing values in TeV with MIN >= 0")
     paths = expand_inputs(args.inputs)
     progress(f"Found {len(paths)} summary files")
-    datasets = load_datasets(paths, args.datasets, args.allow_partial)
+    datasets = load_datasets(paths, args.datasets, args.allow_partial, args.mc_input)
     progress(f"Loaded {len(datasets)} datasets: {', '.join(sorted(datasets))}")
     if any(d["config"].get("certification_mask") for d in datasets.values()):
         configure_certification(datasets, args)
