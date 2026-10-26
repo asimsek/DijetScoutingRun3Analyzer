@@ -416,7 +416,7 @@ for index, position in ((1, "Leading"), (2, "Subleading")):
 
 def parser():
     p = argparse.ArgumentParser(description="Plot compact C++ JEC summaries; original ntuples are never reread.")
-    p.add_argument("--inputs", nargs="+", required=True, help="Summary JSON files, directories or quoted globs.")
+    p.add_argument("--inputs", nargs="+", required=True, help="Summary JSON files, directories or quoted globs; missing matches are skipped. Each loaded era still needs both JEC summaries.")
     p.add_argument("--mc-input", help="One reusable QCD summary from reduce_jec_comparison --mc-list; shared by both JECs and every era.")
     p.add_argument("--mc-label", default="QCD MC")
     p.add_argument("--mc-scale", type=float, default=1.0, help="Explicit common multiplicative QCD scale; default 1 uses the supplied cross sections.")
@@ -474,8 +474,11 @@ def expand_inputs(values):
         else:
             found = [Path(x) for x in sorted(glob.glob(value))]
         if not found:
-            raise ValueError(f"No summaries match {value}")
+            progress(f"[WARN] Skipping input: no summaries match {value}")
+            continue
         paths.extend(x.resolve() for x in found)
+    if not paths:
+        raise ValueError("No summary files found in --inputs")
     if len(paths) != len(set(paths)):
         raise ValueError("Repeated summary paths")
     return paths

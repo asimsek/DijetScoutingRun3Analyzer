@@ -310,9 +310,22 @@ c++ -O3 -march=native -DNDEBUG $(root-config --cflags) reduce_jec_comparison.cpp
 ## nTuples with new JECs:
 ./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16  --output summaries/2024H_new_selected.json
 
+## QCD MC nTuples
 ./reduce_jec_comparison --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --dataset QCD --preset dijet --threads 16 --output summaries/QCD_selected.json
 
-python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --datasets 2024H --mc-input summaries/QCD_selected.json --lumi_pb 5487.977984 --output-dir summaries/plots/jec
+## Plotter
+python3 plot_jec_comparison.py \
+  --inputs summaries/2024{C,D,E,F,G,H,I}_{old,new}_selected.json \
+  --mc-input summaries/QCD_selected.json \
+  --lumi_pb "2024C:7261.429260" \
+            "2024D:7974.648075" \
+            "2024E:11427.488702" \
+            "2024F:27093.899763" \
+            "2024G:38060.092930" \
+            "2024H:5487.977984" \
+            "2024I:11451.783064" \
+  --per-dataset \
+  --output-dir summaries/plots/jec
 ```
 
 > [!TIP]
@@ -325,9 +338,22 @@ python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --data
 ## nTuples with new JECs (no cut):
 ./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16 --output summaries/2024H_new_all_stored.json --preset all_stored
 
+## QCD MC nTuples (no cut):
 ./reduce_jec_comparison --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --dataset QCD --preset all_stored --threads 16 --output summaries/QCD_all_stored.json
 
-python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_all_stored.json' --datasets 2024H --mc-input summaries/QCD_all_stored.json --lumi_pb 5487.977984 --output-dir summaries/plots/jec_all
+## Plotter
+python3 plot_jec_comparison.py \
+  --inputs summaries/2024{C,D,E,F,G,H,I}_{old,new}_all_stored.json \
+  --mc-input summaries/QCD_all_stored.json \
+  --lumi_pb "2024C:7261.429260" \
+            "2024D:7974.648075" \
+            "2024E:11427.488702" \
+            "2024F:27093.899763" \
+            "2024G:38060.092930" \
+            "2024H:5487.977984" \
+            "2024I:11451.783064" \
+  --per-dataset \
+  --output-dir summaries/plots/jec_all
 ```
 
 **Prepare QCD MC List:**
