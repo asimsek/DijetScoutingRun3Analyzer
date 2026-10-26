@@ -617,6 +617,8 @@ def shared_qcd(a, b):
         result = copy.deepcopy(reference)
         for component in result["components"]:
             component.pop("source", None)
+            if component.get("filter_efficiency") == 1:
+                component.pop("filter_efficiency")
             component["files"] = sorted(component["files"], key=lambda row: row["path"])
         result["components"].sort(key=lambda component: tuple(row["path"] for row in component["files"]))
         return result
@@ -635,10 +637,13 @@ def validate_qcd(qcd, d):
         raise ValueError("QCD summary contains no components")
     files = set()
     for component in qcd["components"]:
-        for key in ("xsec_pb", "generated_events", "weight_pb", "filter_efficiency"):
+        for key in ("xsec_pb", "generated_events", "weight_pb"):
             if not math.isfinite(component[key]) or component[key] <= 0:
                 raise ValueError(f"Invalid QCD normalization: {key}")
-        expected = component["xsec_pb"]*component["filter_efficiency"]/component["generated_events"]
+        legacy_efficiency = component.get("filter_efficiency", 1.0)
+        if not math.isfinite(legacy_efficiency) or not 0 < legacy_efficiency <= 1:
+            raise ValueError("Invalid legacy QCD filter efficiency")
+        expected = component["xsec_pb"]*legacy_efficiency/component["generated_events"]
         if not math.isclose(expected, component["weight_pb"], rel_tol=1e-10):
             raise ValueError("QCD component weight disagrees with its cross section and generated-event count")
         for row in component["files"]:
@@ -2131,7 +2136,7 @@ class Plotter:
                                           for component in self.qcd["components"]]}
             info["notes"].extend([
                 "One QCD prediction is shared by both JEC samples and all eras; combining eras never adds copies of the MC prediction. No normalization to data is applied unless shape normalization is requested; --mc-scale is common to both data comparisons.",
-                "QCD uses unit generator weights with component weight xsec_pb * filter_efficiency / generated_events. Supplied cross sections that already include the generator filter use filter_efficiency=1. Saved MC histograms contain cross sections in pb and statistical variances in pb^2.",
+                "QCD inputs contain path and sample cross section in pb. Unit generator weights give component weight xsec_pb / generated_events; the supplied cross section includes any generator filtering. Existing summaries with an explicit filter_efficiency retain their recorded normalization. Saved MC histograms contain cross sections in pb and statistical variances in pb^2.",
                 "Data/QCD point errors contain data statistics; the shaded band around one is the common QCD statistical uncertainty. ROOT tables also store quadrature total errors for individual ratios. The QCD uncertainty is correlated between the two data/QCD ratios and between run points; it cancels in their quotient. Existing new/old plots retain the appropriate data-only comparison.",
                 "MC skips data certification and HLT requirements and uses the same kinematic selection. No trigger-efficiency, pileup, luminosity, cross-section or JEC systematic uncertainties are included.",
                 "Normalized shape variances include the bin/total covariance and use all saved bins, including underflow and overflow. QCD run reference includes all selected mass bins, including underflow and overflow."])

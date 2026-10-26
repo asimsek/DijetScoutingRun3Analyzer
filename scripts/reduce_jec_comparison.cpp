@@ -191,10 +191,11 @@ Options parse(int argc, char** argv) {
                       << "Paired: reduce_jec_comparison --old PATH --new PATH --dataset ERA --output FILE.json\n"
                       << "QCD: reduce_jec_comparison --mc-list FILE --dataset QCD --output qcd.json\n"
                       << "--mc-list FILE may also accompany data inputs and may be repeated.\n"
-                      << "Each MC list row: path_or_glob xsec_pb [filter_efficiency]; one complete QCD component per row.\n"
+                      << "Each MC list row: path_or_glob xsec_pb; one complete QCD component per row.\n"
                       << "MC paths may be EOS paths, directories, globs, ROOT URLs or @filelists, relative to the MC list.\n"
                       << "QCD uses unit generator weights, skips data JSON and HLT cuts, and keeps the other preset cuts.\n"
-                      << "MC normalization uses generated-event counters before skim cuts; filter efficiency defaults to 1.\n"
+                      << "Supply the sample cross section in pb, including any generator-filter efficiency already in that cross section.\n"
+                      << "MC normalization is xsec_pb / generated_events, using counters before analysis skim cuts.\n"
                       << "Generator-weight branches, MC sharding and MC --max-entries are unsupported. Reduce QCD once and reuse its JSON.\n"
                       << "PATH: ROOT file, directory, quoted glob, @filelist.txt, or explicit root:// URL. Repeat input flags.\n"
                       << "--threads N (0=all), --cache-mb N (per reader), --chunk-entries N\n"
@@ -772,7 +773,7 @@ struct MCFile {
 };
 struct MCComponent {
     std::string source;
-    double xsec=0,efficiency=1,weight=0;
+    double xsec=0,weight=0;
     Count generated=0,stored=0;
     std::vector<MCFile> files;
     Summary summary;
@@ -826,17 +827,12 @@ std::vector<MCComponent> loadMCComponents(const Options& o) {
             std::istringstream fields(line);
             MCComponent component;
             if(!(fields>>std::quoted(component.source)>>component.xsec))
-                throw std::runtime_error(location+": expected path_or_glob xsec_pb [filter_efficiency]");
+                throw std::runtime_error(location+": expected path_or_glob xsec_pb");
             fields>>std::ws;
-            if(fields.peek()!=std::char_traits<char>::eof() && fields.peek()!='#') {
-                if(!(fields>>component.efficiency)) throw std::runtime_error(location+": invalid generator filter efficiency");
-                fields>>std::ws;
-            }
             if(fields.peek()!=std::char_traits<char>::eof() && fields.peek()!='#')
-                throw std::runtime_error(location+": unexpected extra MC list column");
-            if(!std::isfinite(component.xsec) || component.xsec<=0 || !std::isfinite(component.efficiency) ||
-               component.efficiency<=0 || component.efficiency>1)
-                throw std::runtime_error(location+": cross section must be positive and filter efficiency must be in (0,1]");
+                throw std::runtime_error(location+": expected only path_or_glob xsec_pb; include any generator filter in xsec_pb");
+            if(!std::isfinite(component.xsec) || component.xsec<=0)
+                throw std::runtime_error(location+": cross section must be finite and positive");
             const bool nested=!component.source.empty() && component.source[0]=='@';
             fs::path relative=nested?component.source.substr(1):component.source;
             if(component.source.find("://")==std::string::npos && relative.is_relative())
@@ -929,7 +925,7 @@ Count reduceMC(std::vector<MCComponent>& components,const Options& dataOptions,u
     }
     for(auto& component:components) {
         if(!component.generated) throw std::runtime_error("MC component has zero generated events: "+component.source);
-        component.weight=component.xsec*component.efficiency/component.generated;
+        component.weight=component.xsec/component.generated;
         if(!std::isfinite(component.weight) || component.weight<=0 ||
            !std::isfinite(component.weight*component.weight*component.stored))
             throw std::runtime_error("Invalid MC component weight or variance: "+component.source);
@@ -987,7 +983,7 @@ void mcJSON(std::ostream& out,const std::vector<MCComponent>& components,const O
         if(i) out<<',';
         const auto& c=components[i];
         selected+=c.summary.cuts.back()*c.weight;variance+=c.summary.cuts.back()*c.weight*c.weight;
-        out<<"{\"source\":"<<quote(c.source)<<",\"xsec_pb\":"<<c.xsec<<",\"filter_efficiency\":"<<c.efficiency
+        out<<"{\"source\":"<<quote(c.source)<<",\"xsec_pb\":"<<c.xsec
            <<",\"generated_events\":"<<c.generated<<",\"stored_entries\":"<<c.stored
            <<",\"selected_entries\":"<<c.summary.cuts.back()<<",\"weight_pb\":"<<c.weight<<",\"files\":[";
         for(std::size_t j=0;j<c.files.size();++j) {

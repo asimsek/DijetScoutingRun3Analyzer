@@ -298,7 +298,7 @@ python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 11451.7830
 **Compile the reducer script:**
 
 ```bash
-c++ -O3 -march=native -DNDEBUG $(root-config --cflags)   reduce_jec_comparison.cpp -o reduce_jec_comparison   $(root-config --libs)
+c++ -O3 -march=native -DNDEBUG $(root-config --cflags) reduce_jec_comparison.cpp -o reduce_jec_comparison $(root-config --libs)
 ```
 
 
@@ -310,7 +310,9 @@ c++ -O3 -march=native -DNDEBUG $(root-config --cflags)   reduce_jec_comparison.c
 ## nTuples with new JECs:
 ./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16  --output summaries/2024H_new_selected.json
 
-python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --datasets 2024H --lumi_pb 5487.977984 --output-dir summaries/plots/jec
+./reduce_jec_comparison --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --dataset QCD --preset dijet --threads 16 --output summaries/QCD_selected.json
+
+python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --datasets 2024H --mc-input summaries/QCD_selected.json --lumi_pb 5487.977984 --output-dir summaries/plots/jec
 ```
 
 > [!TIP]
@@ -323,10 +325,36 @@ python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_selected.json' --data
 ## nTuples with new JECs (no cut):
 ./reduce_jec_comparison --input /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024H_ScoutNano_v1 --jec new --dataset 2024H --threads 16 --output summaries/2024H_new_all_stored.json --preset all_stored
 
-python3 ./plot_jec_comparison.py --inputs 'summaries/2024H_*_all_stored.json' --datasets 2024H --lumi_pb 5487.977984 --output-dir summaries/plots/jec_all
+./reduce_jec_comparison --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --dataset QCD --preset all_stored --threads 16 --output summaries/QCD_all_stored.json
+
+python3 plot_jec_comparison.py --inputs 'summaries/2024H_*_all_stored.json' --datasets 2024H --mc-input summaries/QCD_all_stored.json --lumi_pb 5487.977984 --output-dir summaries/plots/jec_all
+```
+
+**Prepare QCD MC List:**
+
+```bash
+mkdir -p ../lists/reducedNtuple_lists &&
+while read -r pt xsec; do
+    printf '/eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples_QCD/2024/merged/QCD_Bin-PT-%s_TuneCP5_13p6TeV_pythia8_NANOAODSIM_reduced_skim.root %s\n' "$pt" "$xsec"
+done > ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt <<'EOF'
+50to80 16730000.0
+80to120 2506000.0
+120to170 439800.0
+170to300 113300.0
+300to470 7581.0
+470to600 623.3
+600to800 178.7
+800to1000 30.62
+1000to1500 9.306
+1500to2000 0.5015
+2000to2500 0.04264
+2500to3000 0.004454
+3000 0.0005539
+EOF
 ```
 
 
 
 ---
 ---
+
