@@ -440,6 +440,7 @@ def parser():
     p.add_argument("--lumi-json", action="append", default=[], help="Recorded run/LS luminosity JSON saved by --brilcalc.")
     p.add_argument("--brilcalc", action="store_true", help="Force a calibrated recorded-luminosity query, including when --lumi_pb supplies an era total; saves reusable recorded_luminosity.json.")
     p.add_argument("--no-auto-lumi", action="store_true", help="Disable automatic BRIL queries and recorded-luminosity cache reuse.")
+    p.add_argument("--skip-missing-lumi", action="store_true", help="Omit entire runs with counted LS lacking positive recorded luminosity from run cross sections and their ratios. Mass spectra retain all events and require supplied era totals when runs are omitted.")
     p.add_argument("--brilcalc-bin", default="brilcalc", help="Path to the brilcalc executable.")
     p.add_argument("--brilcalc-connection", default="web", help="BRIL connection passed with -c; default: web for access outside CERN.")
     p.add_argument("--brilcalc-work-dir", help="Keep BRIL input masks, CSVs and logs here, including on failure; default: OUTPUT_DIR/brilcalc.")
@@ -920,6 +921,27 @@ def add_luminosity_values(luminosity, values):
     return combined
 
 
+def check_counted_luminosity(d, luminosity, skip_missing=False):
+    missing_runs, missing_ls = set(), set()
+    for sample in d["samples"].values():
+        for row in sample["runs"]:
+            value = luminosity["runs"].get(row["run"], math.nan)
+            if row["selected"] and (not math.isfinite(value) or value <= 0):
+                missing_runs.add(row["run"])
+        if luminosity["lumisections"]:
+            for row in sample["lumisections"]:
+                value = luminosity["lumisections"].get(tuple(row[:2]), math.nan)
+                if row[4] and (not math.isfinite(value) or value <= 0):
+                    missing_ls.add(tuple(row[:2]))
+    missing_runs.update(run for run, ls in missing_ls)
+    if missing_runs and not skip_missing:
+        detail = f"counted run/LS {list(min(missing_ls))}" if missing_ls else f"counted run {min(missing_runs)}"
+        raise ValueError(f"{d['dataset']}: no positive recorded luminosity for {detail}. "
+                         "Use --skip-missing-lumi to omit affected runs from run cross sections, "
+                         "or --no-auto-lumi with era totals to plot without querying BRIL")
+    return {"runs": sorted(missing_runs), "lumisections": [list(key) for key in sorted(missing_ls)]}
+
+
 def moments(m):
     n = np.asarray(m["count"], dtype=float)
     total = np.asarray(m["sum"], dtype=float)
@@ -1090,11 +1112,11 @@ def fetch_bril_luminosity(datasets, args, certified):
         exposure = certification_sections(mask)
         if not luminosity["lumisections"] or set(luminosity["lumisections"])-exposure:
             raise ValueError(f"brilcalc did not return per-LS values matching the requested exposure; inspect {csv_path} and {log_path}")
-        for d in datasets.values():
-            for sample in d["samples"].values():
-                for row in sample["lumisections"]:
-                    if row[4] and (not math.isfinite(luminosity["runs"].get(row[0],math.nan)) or luminosity["runs"][row[0]] <= 0 or luminosity["lumisections"].get(tuple(row[:2]),0) <= 0):
-                        raise ValueError(f"brilcalc returned no positive recorded luminosity for counted run/LS {row[:2]}; inspect {csv_path} and {log_path}")
+        try:
+            for d in datasets.values():
+                check_counted_luminosity(d, luminosity, args.skip_missing_lumi)
+        except ValueError as exc:
+            raise ValueError(f"{exc}; inspect {csv_path} and {log_path}") from exc
         provenance = {"source": "brilcalc", "normtag": str(Path(args.normtag).resolve()),
                       "normtag_sha256": hashlib.sha256(Path(args.normtag).read_bytes()).hexdigest(),
                       "connection": args.brilcalc_connection or "configured default", "beam_status": "STABLE BEAMS",
@@ -1418,8 +1440,15 @@ class Plotter:
         self.runs = sorted({r["run"] for s in d["samples"].values() for r in s["runs"]})
         self.run_positions = {run: index for index, run in enumerate(self.runs)}
         self.run_maps = {role: {r["run"]: r for r in s["runs"]} for role, s in d["samples"].items()}
+        self.lumi_exclusions = check_counted_luminosity(d, luminosity, args.skip_missing_lumi) if luminosity["runs"] and not d["partial"] else {"runs": [], "lumisections": []}
+        excluded_runs = set(self.lumi_exclusions["runs"])
         self.lumi = np.asarray([luminosity["runs"].get(run, np.nan) for run in self.runs])
-        self.has_lumi = bool(luminosity["runs"]) and not d["partial"]
+        if excluded_runs:
+            self.lumi = np.where([run in excluded_runs for run in self.runs], np.nan, self.lumi)
+            preview = ", ".join(map(str, self.lumi_exclusions["runs"][:10]))
+            progress(f"[WARN] Omitting {len(excluded_runs)} runs from run cross sections and ratios because counted luminosity is missing: {preview}" +
+                     (", ..." if len(excluded_runs) > 10 else "") + "; full run/LS exclusions are saved in ROOT metadata", d["dataset"])
+        self.has_lumi = bool(np.any(np.isfinite(self.lumi) & (self.lumi > 0))) and not d["partial"]
         dataset_lumi = luminosity.get("datasets_pb", {})
         members = d.get("dataset_members", [d["dataset"]])
         if dataset_lumi:
@@ -1429,6 +1458,9 @@ class Plotter:
             total_lumi = sum(dataset_lumi[name] for name in members)
         elif luminosity.get("total_pb") is not None:
             total_lumi = luminosity["total_pb"]
+        elif excluded_runs:
+            total_lumi = math.nan
+            progress("[WARN] Full-sample mass cross sections and QCD spectra need --lumi_pb era totals; incomplete run luminosity cannot normalize the unchanged histograms", d["dataset"])
         else:
             total_lumi = float(np.nansum(self.lumi))
         self.has_exposure = not d["partial"] and math.isfinite(total_lumi) and total_lumi > 0
@@ -1438,15 +1470,6 @@ class Plotter:
         self.qcd = d.get("qcd")
         if self.qcd:
             validate_qcd(self.qcd, d)
-        if self.has_lumi:
-            for role in ("old", "new"):
-                for run, r in self.run_maps[role].items():
-                    if r["selected"] and (not math.isfinite(luminosity["runs"].get(run, math.nan)) or luminosity["runs"][run] <= 0):
-                        raise ValueError(f"{d['dataset']}: positive recorded luminosity missing for selected run {run}")
-                if luminosity["lumisections"]:
-                    for row in d["samples"][role]["lumisections"]:
-                        if row[4] and luminosity["lumisections"].get(tuple(row[:2]),0) <= 0:
-                            raise ValueError(f"Counted run/LS {row[:2]} has no positive recorded luminosity")
         if args.normalization == "xsec" and not self.has_exposure:
             raise ValueError("--normalization xsec requires luminosity and complete summaries")
         plt.rcParams.update({"font.family": "sans-serif", "font.sans-serif": ["DejaVu Sans"],
@@ -1610,7 +1633,8 @@ class Plotter:
             mask = (counts[role] >= self.args.min_count) & np.isfinite(values[role])
             shown[role] = mask
             reasons[role] = ["; ".join(reason for condition, reason in
-                                     ((not math.isfinite(denominator[i]) or denominator[i] <= 0, "no positive luminosity"),
+                                     ((not math.isfinite(denominator[i]) or denominator[i] <= 0,
+                                       "incomplete recorded run/LS luminosity" if self.runs[i] in self.lumi_exclusions["runs"] else "no positive luminosity"),
                                       (n < self.args.min_count, f"fewer than {self.args.min_count} dijets")) if condition)
                              for i, n in enumerate(counts[role])]
             top.plot(x[mask], values[role][mask], "o", ms=6.0,
@@ -1635,7 +1659,9 @@ class Plotter:
         top.legend(frameon=False, loc="lower right" if self.all_stored else "upper left")
         paired_runs = {row[0]: row[3] for row in self.paired["runs"]} if self.paired and not self.all_stored else None
         overlap = np.asarray([paired_runs.get(run, 0) for run in self.runs], float) if paired_runs is not None else None
-        r, err = self.draw_ratio(bottom, x, counts["new"], counts["old"], overlap)
+        valid_lumi = np.isfinite(denominator) & (denominator > 0)
+        r, err = self.draw_ratio(bottom, x, np.where(valid_lumi, counts["new"], np.nan),
+                                 np.where(valid_lumi, counts["old"], np.nan), overlap)
         self.run_axis(bottom)
         self.table("run_index_cross_section", ["run_index", "run", "dataset", "normalization",
                                                     "normalization_lumi_pb", "old_dijets", "new_dijets", "old_xsec_pb", "new_xsec_pb",
@@ -1907,7 +1933,7 @@ class Plotter:
             padding = max(0.2*(high-low), 0.05*high)
             top.set_ylim(max(0, low-padding), high+padding)
         top.legend(frameon=False, loc="lower right")
-        ratios = self.qcd_ratio(bottom, x, values, ratio_errors, references, uncertainties, counts, self.args.min_count)
+        ratios = self.qcd_ratio(bottom, x, values, ratio_errors, references, uncertainties, counts, self.args.min_count, visible=valid_lumi)
         self.run_axis(bottom)
         self.table("run_index_data_qcd", ["run_index", "run", "dataset", "lumi_pb", "old_count", "new_count",
                                          "old_xsec_pb", "new_xsec_pb", "old_stat_error_pb", "new_stat_error_pb",
@@ -2227,8 +2253,10 @@ class Plotter:
                 "coverage": coverage(self.d), "normalization": self.args.normalization,
                 "run_stability": self.dijet_lumi_mode if self.has_lumi else "cross section unavailable without run luminosity",
                 "luminosity_pb": self.total_lumi_pb,
-                "mass_luminosity_source": "supplied era total" if self.luminosity.get("datasets_pb") or self.luminosity.get("total_pb") is not None else "sum of per-run luminosities",
+                "mass_luminosity_source": "supplied era total" if self.luminosity.get("datasets_pb") or self.luminosity.get("total_pb") is not None else
+                                          "unavailable: incomplete run/LS luminosity" if self.lumi_exclusions["runs"] else "sum of per-run luminosities",
                 "run_integrated_luminosity_pb": float(np.nansum(self.lumi)) if self.has_lumi else None,
+                "run_luminosity_exclusions": self.lumi_exclusions,
                 "luminosity_estimated": bool(self.luminosity.get("estimated")),
                 "luminosity_estimation": self.luminosity.get("estimation", []),
                 "luminosity_sources": self.luminosity.get("sources", []),

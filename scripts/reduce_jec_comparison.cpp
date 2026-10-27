@@ -124,7 +124,7 @@ struct Options {
     std::string match = "ordered";
     unsigned threads = std::max(1u, std::thread::hardware_concurrency());
     unsigned shard = 0, shards = 1;
-    double minMass = 1181, minPt = 30, maxEta = 2.5, maxDEta = 1.3;
+    double minMass = 500, minPt = 30, maxEta = 2.5, maxDEta = 1.3;
     double balanceAlpha = 0.3, jetDR = 0.02;
     long long cacheMB = 32, chunk = 1000000, maxEntries = -1;
     bool force = false, resume = false, paired = false, requirePassJSON = false, mc = false;
@@ -237,7 +237,7 @@ Options parse(int argc, char** argv) {
                       << "--threads N (0=all), --cache-mb N (per reader), --chunk-entries N\n"
                       << "--preset dijet|loose|all configures the selected summary; default: dijet.\n"
                       << "--mjj-min GeV, --pt-min GeV, --eta-max X, --deta-max X\n"
-                      << "Default dijet preset requires PassJSON > 0.5 and the existing analysis cuts.\n"
+                      << "Default dijet preset requires mjj > 500 GeV, PassJSON > 0.5 and the other analysis cuts.\n"
                       << "The all_stored summary is always produced, with no event cuts by default.\n"
                       << "Legacy --preset all_stored is accepted as an alias for the default dual output.\n"
                       << "--require-pass-json explicitly requires saved PassJSON > 0.5 for all_stored only.\n"

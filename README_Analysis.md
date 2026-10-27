@@ -327,7 +327,8 @@ python3 plot_jec_comparison.py \
   --output-dir summaries/plots/jec
 ```
 
-`--resume` continues from saved checkpoints; `--force` discards saved progress and regenerates both summaries from scratch.
+`--resume` continues from saved checkpoints; `--force` discards saved progress and regenerates both summaries from scratch.<br>
+`--skip-missing-lumi` omits runs with missing or zero recorded luminosity from luminosity-dependent run plots; mass spectra remain unchanged.
 
 
 **Instead, you can split into separate jobs submit to condor for faster processing:**
