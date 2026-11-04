@@ -430,7 +430,9 @@ def mc_scale(value):
 
 def parser():
     p = argparse.ArgumentParser(description="Plot compact C++ JEC summaries; original ntuples are never reread.")
-    p.add_argument("--inputs", nargs="+", required=True, help="Summary JSON files, directories or quoted globs; selected and all_stored summaries are plotted separately when both are supplied. Missing matches are skipped; each loaded era needs both JECs within each selection.")
+    mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--organize-existing", metavar="OUTPUT_DIR", help="Reorganize a previous run's indexed figures without reading input JSONs or rerendering.")
+    mode.add_argument("--inputs", nargs="+", help="Summary JSON files, directories or quoted globs; selected and all_stored summaries are plotted separately when both are supplied. Missing matches are skipped; each loaded era needs both JECs within each selection.")
     p.add_argument("--mc-input", nargs="+", help="Reusable QCD summary files or quoted globs, matched to data by selection. Supply selected and all_stored QCD summaries when plotting both; each is shared by both JECs and every era.")
     p.add_argument("--mc-label", default="QCD MC")
     p.add_argument("--mc-scale", type=mc_scale, default=1.0, metavar="k",
@@ -441,7 +443,7 @@ def parser():
     p.add_argument("--lumi-json", action="append", default=[], help="Recorded run/LS luminosity JSON saved by --brilcalc.")
     p.add_argument("--brilcalc", action="store_true", help="Force a calibrated recorded-luminosity query, including when --lumi_pb supplies an era total; saves reusable recorded_luminosity.json.")
     p.add_argument("--no-auto-lumi", action="store_true", help="Disable automatic BRIL queries and recorded-luminosity cache reuse.")
-    p.add_argument("--skip-missing-lumi", action="store_true", help="Omit entire runs with counted LS lacking positive recorded luminosity from run cross sections and their ratios. Mass spectra retain all events and require supplied era totals when runs are omitted.")
+    p.add_argument("--skip-missing-lumi", action="store_true", help="Omit entire runs with negative per-LS CSV luminosity or counted LS lacking positive exposure from run cross sections and ratios. Mass spectra retain all events and require supplied era totals when runs are omitted.")
     p.add_argument("--brilcalc-bin", default="brilcalc", help="Path to the brilcalc executable.")
     p.add_argument("--brilcalc-connection", default="web", help="BRIL connection passed with -c; default: web for access outside CERN.")
     p.add_argument("--brilcalc-work-dir", help="Keep BRIL input masks, CSVs and logs here, including on failure; default: OUTPUT_DIR/brilcalc.")
@@ -797,8 +799,8 @@ def assemble_datasets(documents, requested, allow_partial, qcd=None):
     return datasets
 
 
-def load_luminosity(paths, unit):
-    per_run, per_ls = {}, {}
+def load_luminosity(paths, unit, skip_missing=False):
+    per_run, per_ls, negative_ls = {}, {}, {}
     sources = []
     scale = {"pb": 1.0, "fb": 1000.0, "nb": 0.001, "ub": 0.000001}
     for path in paths:
@@ -809,7 +811,18 @@ def load_luminosity(paths, unit):
             if unit not in ("auto", "pb"):
                 raise ValueError(f"--lumi-unit {unit} conflicts with JSON unit pb^-1")
             rows = data.get("lumisections")
-            if not isinstance(rows, list) or not rows:
+            provenance = data.get("provenance", {})
+            skipped = provenance.get("negative_lumisections", [])
+            if skipped and not skip_missing:
+                raise ValueError(f"{path}: cached luminosity excludes negative LS readings; use --skip-missing-lumi or supply complete recorded luminosity")
+            for run, ls, value in skipped:
+                if (not isinstance(run, int) or not isinstance(ls, int) or run < 1 or ls < 1
+                        or not math.isfinite(value) or value >= 0):
+                    raise ValueError(f"{path}: malformed negative-luminosity provenance")
+                if (run,ls) in negative_ls or (run,ls) in per_ls:
+                    raise ValueError(f"Duplicate luminosity row: {(run,ls)}")
+                negative_ls[run,ls] = value
+            if not isinstance(rows, list) or (not rows and not skipped):
                 raise ValueError(f"{path}: expected recorded luminosity JSON with lumisections [run, LS, lumi_pb]")
             totals = {}
             for row in rows:
@@ -818,7 +831,7 @@ def load_luminosity(paths, unit):
                 run, ls, value = row
                 if not isinstance(run, int) or not isinstance(ls, int) or run < 1 or ls < 1 or not isinstance(value, (int,float)) or not math.isfinite(value) or value < 0:
                     raise ValueError(f"{path}: invalid recorded luminosity row")
-                if (run,ls) in per_ls:
+                if (run,ls) in per_ls or (run,ls) in negative_ls:
                     raise ValueError(f"Duplicate luminosity row: {(run,ls)}")
                 per_ls[(run,ls)] = float(value)
                 totals[run] = totals.get(run,0)+value
@@ -858,7 +871,7 @@ def load_luminosity(paths, unit):
         if unit != "auto" and inferred and unit != inferred:
             raise ValueError(f"--lumi-unit {unit} conflicts with column {lumi_field}")
         factor = scale[inferred or unit]
-        invalid = []
+        invalid, skipped = [], []
         for row in reader:
             line_number = line_numbers[reader.line_num-1]
             try:
@@ -869,27 +882,38 @@ def load_luminosity(paths, unit):
                 raise ValueError(f"Malformed luminosity row in {path}, line {line_number}: {row}") from exc
             if run < 1 or (ls is not None and ls < 1):
                 raise ValueError(f"Invalid run/LS in {path}, line {line_number}: run={run}, LS={ls}")
+            target, k = (per_ls, (run, ls)) if ls is not None else (per_run, run)
+            if k in target or k in negative_ls:
+                raise ValueError(f"Duplicate luminosity row: {k}; luminosity must be counted once")
+            if skip_missing and ls is not None and math.isfinite(value) and value < 0:
+                negative_ls[k] = value
+                skipped.append([run, ls, value])
+                continue
             if not math.isfinite(value) or value < 0:
                 context = ", ".join(f"{field}={row[field]!r}" for field in fields
                                     if field.lower().startswith("delivered(") or field.lower() in ("beamstatus", "source"))
                 invalid.append(f"line {line_number}: run={run}, LS={ls}, {lumi_field}={row[lumi_field]!r}" +
                                (f", {context}" if context else ""))
                 continue
-            target, k = (per_ls, (run, ls)) if ls is not None else (per_run, run)
-            if k in target:
-                raise ValueError(f"Duplicate luminosity row: {k}; luminosity must be counted once")
             target[k] = value
         if invalid:
             details = "; ".join(invalid[:5])
             extra = f"; {len(invalid)-5} more invalid rows in the saved CSV" if len(invalid) > 5 else ""
             raise ValueError(f"Invalid recorded luminosity in {path}: {len(invalid)} row(s); {details}{extra}. "
                              "Recorded luminosity must be finite and nonnegative; these values were not replaced or used")
-    ls_runs = {run for run, ls in per_ls}
+        if skipped:
+            sources.append({"input": str(Path(path).resolve()), "negative_lumisections": skipped})
+    excluded = {run for run, ls in negative_ls}
+    ls_runs = {run for run, ls in per_ls} | excluded
     if ls_runs & per_run.keys():
         raise ValueError("Luminosity input mixes run totals and lumisection rows for the same run")
     for (run, ls), value in per_ls.items():
-        per_run[run] = per_run.get(run, 0.0) + value
-    return {"runs": per_run, "lumisections": per_ls, "sources": sources}
+        if run not in excluded:
+            per_run[run] = per_run.get(run, 0.0) + value
+    if negative_ls:
+        progress(f"[WARN] Negative recorded luminosity in {len(negative_ls)} LS. Excluding {len(excluded)} entire runs from run cross sections: " +
+                 ", ".join(map(str, sorted(excluded))))
+    return {"runs": per_run, "lumisections": per_ls, "sources": sources, "negative_lumisections": negative_ls}
 
 
 def add_luminosity_values(luminosity, values):
@@ -923,7 +947,7 @@ def add_luminosity_values(luminosity, values):
         combined.update({"datasets_pb": datasets, "total_pb": total})
         return combined
     combined = copy.deepcopy(luminosity)
-    ls_runs = {run for run, ls in combined["lumisections"]}
+    ls_runs = {run for run, ls in combined["lumisections"]} | {run for run, ls in combined.get("negative_lumisections", {})}
     for run, value in runs.items():
         if run in combined["runs"] or run in ls_runs:
             raise ValueError(f"Luminosity counted twice for run {run}")
@@ -932,7 +956,9 @@ def add_luminosity_values(luminosity, values):
 
 
 def check_counted_luminosity(d, luminosity, skip_missing=False):
-    missing_runs, missing_ls = set(), set()
+    dataset_runs = {row["run"] for s in d["samples"].values() for row in s["runs"]}
+    missing_ls = {key for key in luminosity.get("negative_lumisections", {}) if key[0] in dataset_runs}
+    missing_runs = set()
     for sample in d["samples"].values():
         for row in sample["runs"]:
             value = luminosity["runs"].get(row["run"], math.nan)
@@ -1057,7 +1083,7 @@ def estimate_luminosity(datasets, luminosity, certified):
 
 
 class BrilQueryUnavailable(ValueError):
-    """The optional external query could not deliver a luminosity file."""
+    """ """
 
 
 def fetch_bril_luminosity(datasets, args, certified):
@@ -1120,11 +1146,13 @@ def fetch_bril_luminosity(datasets, args, certified):
         if status or not csv_path.is_file():
             raise BrilQueryUnavailable(f"brilcalc query failed; input, CSV (if written) and log retained in {work}. "+log_path.read_text()[-3000:])
         try:
-            luminosity = load_luminosity([csv_path],"pb")
+            luminosity = load_luminosity([csv_path], "pb", args.skip_missing_lumi)
         except (ValueError, OSError) as exc:
             raise ValueError(f"{exc}\nBRIL input, CSV and log retained in {work}; inspect {log_path}") from exc
         exposure = certification_sections(mask)
-        if not luminosity["lumisections"] or set(luminosity["lumisections"])-exposure:
+        negative_ls = luminosity["negative_lumisections"]
+        returned_ls = luminosity["lumisections"].keys() | negative_ls.keys()
+        if not returned_ls or returned_ls - exposure:
             raise ValueError(f"brilcalc did not return per-LS values matching the requested exposure; inspect {csv_path} and {log_path}")
         try:
             for d in datasets.values():
@@ -1137,6 +1165,7 @@ def fetch_bril_luminosity(datasets, args, certified):
                       "compatibility_library": compatibility_library,
                       "query_directory": str(work),
                       "requested_lumisections": json.loads(mask.read_text()),
+                      "negative_lumisections": [[run, ls, value] for (run, ls), value in sorted(negative_ls.items())],
                       "missing_lumisections": [list(key) for key in sorted(exposure-set(luminosity["lumisections"]))],
                       "query_log": log_path.read_text()}
         data = {"schema_version": 1,"unit": "pb^-1","provenance": provenance,
@@ -1201,6 +1230,9 @@ def luminosity_cache_matches(path, datasets, args):
     data = json.loads(path.read_text())
     requested = Path(args.normtag) if args.normtag else DEFAULT_NORMTAG
     provenance = data.get("provenance", {})
+    if provenance.get("negative_lumisections") and not args.skip_missing_lumi:
+        progress("Cached luminosity excludes negative LS readings; requesting fresh exposure for strict mode")
+        return False
     if requested.is_file():
         if provenance.get("normtag_sha256") != hashlib.sha256(requested.read_bytes()).hexdigest():
             progress("Recorded luminosity cache has a different normtag calibration; querying again")
@@ -1399,6 +1431,36 @@ def canvas_payload(fig, name):
     return result
 
 
+def same_render(left, right):
+    if not left.is_file() or left.is_symlink() or not right.is_file() or right.is_symlink():
+        return False
+    a, b = left.read_bytes(), right.read_bytes()
+    if a == b:
+        return True
+    if left.suffix != ".pdf" or right.suffix != ".pdf":
+        return False
+    stamp = rb"/(CreationDate|ModDate) \(D:\d{14}(?:Z|[+-]\d{2}'\d{2}')?\)"
+    return re.sub(stamp, rb"/\1()", a) == re.sub(stamp, rb"/\1()", b)
+
+
+def summary_names(available):
+    angular = ("eta_wj_j1", "eta_wj_j2", "phi_wj_j1", "phi_wj_j2", "delta_eta", "delta_phi")
+    choices = [
+        ("era_dijet_cross_section",), ("dijet_mass_cross_section", "spectrum_mjj"), ("spectrum_ak4_mjj",),
+        *((f"spectrum_{name}",) for name in angular),
+        ("run_index_cross_section",), ("run_mean_3", "spectrum_jec_j1"), ("run_mean_4", "spectrum_jec_j2"),
+        ("run_index_data_qcd",), ("spectrum_ak4_mjj_data_qcd",), ("dijet_mass_data_qcd", "spectrum_mjj_data_qcd"),
+    ]
+    choices.extend((f"spectrum_{name}_data_qcd",) for name in angular)
+    result = []
+    for candidates in choices:
+        for name in candidates:
+            if name in available:
+                result.append(name)
+                break
+    return result
+
+
 class Plotter:
     def __init__(self, d, luminosity, args, output, root_part=None):
         self.d, self.luminosity, self.args = d, luminosity, args
@@ -1454,7 +1516,8 @@ class Plotter:
         self.runs = sorted({r["run"] for s in d["samples"].values() for r in s["runs"]})
         self.run_positions = {run: index for index, run in enumerate(self.runs)}
         self.run_maps = {role: {r["run"]: r for r in s["runs"]} for role, s in d["samples"].items()}
-        self.lumi_exclusions = check_counted_luminosity(d, luminosity, args.skip_missing_lumi) if luminosity["runs"] and not d["partial"] else {"runs": [], "lumisections": []}
+        has_run_input = bool(luminosity["runs"] or luminosity.get("negative_lumisections"))
+        self.lumi_exclusions = check_counted_luminosity(d, luminosity, args.skip_missing_lumi) if has_run_input and not d["partial"] else {"runs": [], "lumisections": []}
         excluded_runs = set(self.lumi_exclusions["runs"])
         self.lumi = np.asarray([luminosity["runs"].get(run, np.nan) for run in self.runs])
         if excluded_runs:
@@ -1551,31 +1614,26 @@ class Plotter:
         return "data_qcd" if name.endswith("_data_qcd") else "data_comparison"
 
     def prepare_summary(self):
-        choices = [("era_dijet_cross_section",), ("dijet_mass_cross_section", "spectrum_mjj"), ("spectrum_ak4_mjj",),
-                   ("run_index_cross_section",), ("run_mean_3", "spectrum_jec_j1"),
-                   ("run_mean_4", "spectrum_jec_j2"),
-                   ("dijet_mass_data_qcd", "spectrum_mjj_data_qcd"),
-                   ("spectrum_ak4_mjj_data_qcd",), ("run_index_data_qcd",)]
-        for candidates in choices:
-            for name in candidates:
-                category = self.plot_category(name)
-                for fmt in ("pdf", "png", "svg"):
-                    stale = self.output/"summary"/category/fmt/f"{name}.{fmt}"
-                    if stale.is_file():
-                        stale.unlink()
-            name = next((candidate for candidate in candidates if candidate in self.figures), None)
-            if name is None:
-                continue
-            category = self.plot_category(name)
-            for fmt in dict.fromkeys(self.args.formats):
-                destination = self.output/"summary"/category/fmt
-                destination.mkdir(parents=True, exist_ok=True)
-                shutil.copyfile(self.output/"details"/category/fmt/f"{name}.{fmt}", destination/f"{name}.{fmt}")
-            self.summary_figures.append(name)
-        paths = [f"{self.plot_category(name)}/{fmt}/{name}.{fmt}" for name in self.summary_figures
-                 for fmt in dict.fromkeys(self.args.formats)]
+        self.summary_figures = summary_names(self.figures)
+        self.figure_paths = {}
+        formats = tuple(dict.fromkeys(self.args.formats))
+        central = Path(self.args.summary_dir) / self.output.name
+        curated, detail = [], []
+        for name in self.summary_figures + [n for n in self.figures if n not in self.summary_figures]:
+            is_curated = name in self.summary_figures
+            parent = central if is_curated else self.output/"details"
+            paths = []
+            for fmt in formats:
+                relative = f"{self.plot_category(name)}/{fmt}/{name}.{fmt}"
+                (curated if is_curated else detail).append(relative)
+                paths.append(os.path.relpath(parent/relative, self.output))
+            self.figure_paths[name] = paths
         index = {"dataset": self.d["dataset"], "members": self.d.get("dataset_members", [self.d["dataset"]]),
-                 "luminosity_pb": self.total_lumi_pb if self.has_exposure else None, "files": paths}
+                 "luminosity_pb": self.total_lumi_pb if self.has_exposure else None,
+                 "figure_root": os.path.relpath(central, self.output/"summary"),
+                 "files": curated, "detail_figures": detail}
+        if self.qcd and "run" in self.groups and not self.has_lumi:
+            index["omitted"] = {"run_index_data_qcd": "No usable per-run luminosity."}
         directory = self.output/"summary"
         directory.mkdir(exist_ok=True)
         (directory/"figure_index.json").write_text(json.dumps(index, indent=2)+"\n", encoding="utf-8")
@@ -1715,6 +1773,24 @@ class Plotter:
             names = old if self.args.all_spectra else [name for name in CORE_SPECTRA if name in old]
             if "ht_50gev" not in old:
                 progress("Skipping 50 GeV HT spectrum: regenerate both summaries with the updated reducer; coarse saved bins cannot be split exactly", self.d["dataset"])
+            if self.all_stored and "mjj" in names and "mjj_base" in names:
+                inputs = [old, new]
+                if self.qcd:
+                    inputs.append(self.qcd["histograms"])
+                if self.paired:
+                    inputs.append(self.paired["overlap"])
+                if all(h["mjj_base"] == h["mjj"] for h in inputs):
+                    names = [name for name in names if name != "mjj_base"]
+                    for suffix in ("", "_data_qcd"):
+                        alias = "spectrum_mjj_base" + suffix
+                        for fmt in ("pdf", "png", "svg"):
+                            relative = Path(self.plot_category(alias))/fmt
+                            old_file = self.output/"details"/relative/(alias+"."+fmt)
+                            peer = relative/("spectrum_mjj"+suffix+"."+fmt)
+                            roots = (self.output/"details", Path(self.args.summary_dir)/self.output.name)
+                            if any(same_render(old_file, root/peer) for root in roots):
+                                old_file.unlink()
+                    progress("Omitting duplicate spectrum_mjj_base; using spectrum_mjj", self.d["dataset"])
         for name in names:
             a, b = old[name], new[name]
             if name in UNIFORM_PT_HISTOGRAMS and self.pt_binning[name] != "uniform 100 GeV":
@@ -2008,7 +2084,6 @@ class Plotter:
             self.era_cross_section_plot()
 
     def era_cross_section_plot(self):
-        """Use each era's own exposure and include all mass bins, including flows."""
         rows = self.d["era_dijet_counts"]
         eras = [row[0] for row in rows]
         lumi = np.asarray([self.luminosity["datasets_pb"][era] for era in eras])
@@ -2025,8 +2100,6 @@ class Plotter:
         top.text(.03, .06, "All stored events with a wide-dijet mass" if self.all_stored else
                  f"Dijet selection, $m_{{jj}} > {self.d['config']['mjj_min']:g}$ GeV",
                  transform=top.transAxes, fontsize=10, bbox=dict(facecolor="white", edgecolor="none", alpha=.85))
-        # These summaries do not supply the covariance of the two integrated mass counts.
-        # Show the measured net change without assigning independent-Poisson errors to it.
         bottom.axhline(0, ls="--", color="0.3", lw=1)
         delta = fractional_change(new, old)
         bottom.plot(x, delta, "o", color=COLORS["old"])
@@ -2413,10 +2486,8 @@ class Plotter:
                      s.get("certification_rejected", 0)+s.get("pass_json_rejected", 0),
                      s.get("certification_rejected", 0), s.get("pass_json_rejected", 0)]
                     for role, s in self.d["samples"].items()))
-        info["figures"] = [f"details/{self.plot_category(name)}/{fmt}/{name}.{fmt}"
-                           for name in self.figures for fmt in dict.fromkeys(self.args.formats)]
-        info["summary_figures"] = [f"summary/{self.plot_category(name)}/{fmt}/{name}.{fmt}"
-                                   for name in self.summary_figures for fmt in dict.fromkeys(self.args.formats)]
+        info["figures"] = [path for name in self.figures for path in self.figure_paths[name]]
+        info["summary_figures"] = [path for name in self.summary_figures for path in self.figure_paths[name]]
         if self.root_part is not None:
             info["root_file"] = str(self.args.root_file)
             info["root_directory"] = self.output.name
@@ -2485,8 +2556,6 @@ class Plotter:
             progress("Writing editable ROOT histograms/canvases and metadata", name)
             self.write_root()
         else:
-            # Keep the figure inventory, counts, luminosities and MC normalizations.
-            # Notes describing ROOT tables apply only to the optional binary export.
             self.report_data["notes"] = [note for note in self.report_data["notes"]
                                          if not any(word in note.lower() for word in ("root", "table_", "saved using"))]
             with (self.output/"report.json").open("w") as stream:
@@ -2504,7 +2573,6 @@ def plot_job(job):
 
 
 def plot_staged_job(path):
-    # Only this process's own private temporary job files are deserialized.
     with path.open("rb") as stream:
         job = pickle.load(stream)
     return plot_job(job)
@@ -2550,14 +2618,14 @@ def plot_selection(datasets, args):
     if args.brilcalc and args.no_auto_lumi:
         raise ValueError("Choose --brilcalc or --no-auto-lumi")
     groups = set(args.plots or ["spectra", "xsec", "run", "eta", "selection"])
-    luminosity = add_luminosity_values(load_luminosity(args.lumi_csv+args.lumi_json, args.lumi_unit), args.lumi_pb)
+    luminosity = add_luminosity_values(load_luminosity(args.lumi_csv+args.lumi_json, args.lumi_unit, args.skip_missing_lumi), args.lumi_pb)
     unused = set(luminosity.get("datasets_pb", {})) - datasets.keys()
     if unused:
         progress("[WARN] No loaded data for these supplied era luminosities: " + ", ".join(sorted(unused)) +
                  ". They are excluded from combined exposure.")
     if args.brilcalc and luminosity["runs"]:
         raise ValueError("--brilcalc may be combined with an era total, but not with RUN:LUMI values")
-    automatic_query = (not args.brilcalc and not args.no_auto_lumi and not luminosity["runs"]
+    automatic_query = (not args.brilcalc and not args.no_auto_lumi and not luminosity["runs"] and not luminosity["negative_lumisections"]
                        and not args.estimate_run_lumi and not args.export_only
                        and ({"xsec", "run"} & groups or args.normalization == "xsec"))
     optional = automatic_query and args.skip_missing_lumi and (luminosity.get("total_pb") is not None
@@ -2566,7 +2634,7 @@ def plot_selection(datasets, args):
         cache = Path(args.output_dir)/"recorded_luminosity.json"
         if cache.is_file() and luminosity_cache_matches(cache, datasets, args):
             args.lumi_json.append(str(cache))
-            luminosity = add_luminosity_values(load_luminosity(args.lumi_csv+args.lumi_json, args.lumi_unit), args.lumi_pb)
+            luminosity = add_luminosity_values(load_luminosity(args.lumi_csv+args.lumi_json, args.lumi_unit, args.skip_missing_lumi), args.lumi_pb)
             progress(f"Reusing recorded luminosity: {cache}")
         elif any(d["partial"] for d in datasets.values()):
             progress("Partial summaries cannot produce cross sections; skipping the automatic BRIL query")
@@ -2639,8 +2707,6 @@ def plot_selection(datasets, args):
         jobs = [job+(None if args.no_root else str(Path(temporary)/f"part_{i}.root"),) for i,job in enumerate(jobs)]
         if len(jobs) > 1 and args.jobs > 1:
             progress(f"Generating {len(jobs)} plot sets with {min(args.jobs, len(jobs))} parallel jobs")
-            # Sending an all-era document through a process queue makes another
-            # full serialized copy. Stream jobs to private files one at a time.
             staged = []
             for index in range(len(jobs)):
                 path = Path(temporary) / f"job_{index}.pkl"
@@ -2668,7 +2734,6 @@ def plot_selection(datasets, args):
 
 
 def publish_summary(output_dir, selections, failures=()):
-    """Mirror this run's curated figures; preserve unrelated and user-edited files."""
     root = Path(output_dir).resolve()/"summary"
     root.mkdir(parents=True, exist_ok=True)
     manifest = root/"figure_index.json"
@@ -2680,17 +2745,29 @@ def publish_summary(output_dir, selections, failures=()):
             raise ValueError(f"Unrecognized index at {manifest}; choose a fresh output directory")
         previous = {**saved.get("retained_from_previous", {}), **saved["sha256"]}
 
-    datasets, sources = [], {}
+    datasets, sources, old_copies = [], {}, {}
     for selection, local_root, names in selections:
         for name in names:
-            local = Path(local_root)/name/"summary"
+            scope = Path(local_root).resolve()/name
+            local = scope/"summary"
             info = json.loads((local/"figure_index.json").read_text(encoding="utf-8"))
             files = []
             for path in info["files"]:
                 key = (Path(selection)/name/path).as_posix()
-                sources[key] = local/path
+                dest, detail, legacy = root/key, scope/"details"/path, local/path
+                if (root not in dest.resolve().parents or scope not in detail.resolve().parents
+                        or scope not in legacy.resolve().parents):
+                    raise ValueError(f"Figure index references a path outside its plot tree: {key}")
+                sources[key] = detail if detail.is_file() else dest if dest.is_file() else legacy
+                old_copies[key] = legacy
                 files.append(key)
-            datasets.append({**info, "selection": selection, "folder": name, "files": files})
+            record = {field: value for field, value in info.items() if field not in ("figure_root", "detail_figures")}
+            datasets.append({**record, "selection": selection, "folder": name, "files": files})
+            for key in previous:
+                if key.startswith(f"{selection}/{name}/"):
+                    legacy = local/Path(*Path(key).parts[2:])
+                    if scope in legacy.resolve().parents:
+                        old_copies.setdefault(key, legacy)
 
     def digest(path):
         return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -2705,7 +2782,11 @@ def publish_summary(output_dir, selections, failures=()):
     for key, source in sources.items():
         dest = root/key
         dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copyfile(source, dest)
+        if source != dest:
+            shutil.move(str(source), str(dest))
+    for key, legacy in old_copies.items():
+        if legacy.is_file() and not legacy.is_symlink() and digest(legacy) in (previous.get(key), hashes.get(key)):
+            legacy.unlink()
     retained = {}
     for key in previous.keys() - sources.keys():
         dest = root/key
@@ -2728,8 +2809,137 @@ def publish_summary(output_dir, selections, failures=()):
     progress(f"Curated summary: {len(sources)} figure files in {root}")
 
 
+def legacy_root_inventory(scope, selection, index):
+    path = scope.parent/"jec_comparison.root"
+    if not path.is_file():
+        return None
+    try:
+        import ROOT
+        handle = ROOT.TFile.Open(str(path), "READ")
+        if not handle or handle.IsZombie():
+            return None
+        try:
+            obj = handle.Get(f"{scope.name}/report_json")
+            if not obj:
+                return None
+            info = json.loads(str(obj.GetString().Data()))
+        finally:
+            handle.Close()
+        kind = "all_stored" if info["config"]["preset"] == "all_stored" else "selected"
+        curated = {p.removeprefix("summary/") for p in info["summary_figures"]}
+        if (info["dataset"] == index["dataset"] and kind == selection and
+                info.get("luminosity_pb") == index.get("luminosity_pb") and
+                curated == set(index["files"])):
+            return info["figures"]
+    except (ImportError, OSError, RuntimeError, AttributeError, ValueError, KeyError):
+        pass
+    return None
+
+
+def organize_existing(directory):
+    root = Path(directory).resolve()
+    manifest = root/"summary"/"figure_index.json"
+    if not manifest.is_file():
+        raise ValueError(f"No summary index at {manifest}; use the plotter output directory containing summary/")
+    saved = json.loads(manifest.read_text(encoding="utf-8"))
+    if saved.get("schema") != "jec-summary-v1":
+        raise ValueError(f"Unrecognized summary index at {manifest}")
+
+    sets, updates, aliases = {}, [], {}
+    for entry in saved["datasets"]:
+        selection, name = entry["selection"], entry["folder"]
+        if selection not in ("selected", "all_stored") or name != safe_name(name):
+            raise ValueError(f"Invalid indexed plot scope: {selection}/{name}")
+        prefix = Path(selection)/name
+        scopes = [base/name for base in (root/selection, root)
+                  if (base/name/"summary"/"figure_index.json").is_file()]
+        if len(scopes) != 1:
+            raise ValueError(f"Cannot uniquely locate the indexed scope {prefix} under {root}")
+        scope, central = scopes[0], root/"summary"/prefix
+        index_path = scope/"summary"/"figure_index.json"
+        if root not in index_path.resolve().parents:
+            raise ValueError(f"Local summary index points outside the output directory: {index_path}")
+        index = json.loads(index_path.read_text(encoding="utf-8"))
+        previous = {Path(rel) for rel in index["files"]}
+        if {str(prefix/p) for p in previous} != set(entry["files"]):
+            raise ValueError(f"Local and central inventories disagree for {prefix}; rerun the plotted selection")
+        report_path = scope/"report.json"
+        report = json.loads(report_path.read_text(encoding="utf-8")) if report_path.is_file() else None
+        inventory = report["figures"] if report is not None else None
+        if inventory is None and "detail_figures" not in index:
+            inventory = legacy_root_inventory(scope, selection, index)
+        if "detail_figures" in index:
+            details = {Path(rel) for rel in index["detail_figures"]}
+        elif inventory is not None:
+            details = {Path(rel).relative_to("details") for rel in inventory if Path(rel).parts[:1] == ("details",)}
+        else:
+            progress(f"[WARN] {prefix}: exact detail inventory unavailable; promoting only verifiable local figures.")
+            details = set()
+            for fmt in {p.suffix[1:] for p in previous}:
+                anchors = [scope/"details"/p for p in previous if p.suffix == "."+fmt]
+                timestamps = [p.stat().st_mtime_ns for p in anchors if p.is_file()]
+                if not timestamps:
+                    continue
+                for path in (scope/"details").glob(f"*/{fmt}/*.{fmt}"):
+                    if min(timestamps) <= path.stat().st_mtime_ns <= index_path.stat().st_mtime_ns:
+                        details.add(path.relative_to(scope/"details"))
+        available = previous | details
+        for rel in available:
+            if (len(rel.parts) != 3 or rel.parts[0] not in ("data_comparison", "data_qcd")
+                    or rel.parts[1] not in ("pdf", "png", "svg") or rel.suffix != "."+rel.parts[1]):
+                raise ValueError(f"Unexpected figure path in {index_path}: {rel}")
+        if selection == "all_stored":
+            for rel in sorted(details):
+                if rel.stem not in ("spectrum_mjj_base", "spectrum_mjj_base_data_qcd"):
+                    continue
+                peer = rel.with_name(rel.name.replace("_mjj_base", "_mjj", 1))
+                if peer not in available:
+                    continue
+                alias = scope/"details"/rel
+                identical = scope/"details"/peer
+                if not identical.is_file():
+                    identical = central/peer
+                if (scope in alias.resolve().parents and root in identical.resolve().parents
+                        and same_render(alias, identical)):
+                    aliases[alias] = hashlib.sha256(alias.read_bytes()).digest()
+                    available.remove(rel)
+        chosen = []
+        for fmt in sorted({p.suffix for p in available}):
+            by_name = {p.stem:p for p in available if p.suffix == fmt}
+            chosen.extend(by_name[n] for n in summary_names(by_name))
+        curated = set(chosen)
+        detail_paths = sorted(available-curated)
+        updated = {**index, "files": [p.as_posix() for p in chosen],
+                   "detail_figures": [p.as_posix() for p in detail_paths],
+                   "figure_root": os.path.relpath(central, index_path.parent)}
+        if report is not None:
+            relative = Path(os.path.relpath(central, scope))
+            summary_files = [(relative/p).as_posix() for p in chosen]
+            report["summary_figures"] = summary_files
+            report["figures"] = [(Path("details")/p).as_posix() for p in detail_paths] + summary_files
+        updates.append((index_path, index, updated, report_path, report))
+        sets.setdefault((selection, scope.parent), []).append(name)
+    try:
+        for path, old, new, _, _ in updates:
+            path.write_text(json.dumps(new, indent=2)+"\n", encoding="utf-8")
+        publish_summary(root, [(sel, base, names) for (sel, base), names in sets.items()], saved.get("failures", []))
+    except Exception:
+        for path, old, _, _, _ in updates:
+            path.write_text(json.dumps(old, indent=2)+"\n", encoding="utf-8")
+        raise
+    for path, digest in aliases.items():
+        if path.is_file() and not path.is_symlink() and hashlib.sha256(path.read_bytes()).digest() == digest:
+            path.unlink()
+    for _, _, _, path, report in updates:
+        if report is not None:
+            path.write_text(json.dumps(report, indent=2)+"\n", encoding="utf-8")
+    if saved.get("failures"):
+        progress("[WARN] The earlier run was incomplete. Only its completed plot sets have been organized.")
+
+
 def selection_arguments(args, selection, multiple):
     result = copy.deepcopy(args)
+    result.summary_dir = str(Path(args.output_dir).resolve()/"summary"/selection)
     if multiple:
         result.output_dir = str(Path(args.output_dir)/selection)
         for field in ("root_file", "export_lumisections"):
@@ -2744,6 +2954,9 @@ def selection_arguments(args, selection, multiple):
 def main():
     started = time.monotonic()
     args = parser().parse_args()
+    if args.organize_existing:
+        organize_existing(args.organize_existing)
+        return
     if args.jobs < 1 or args.min_count < 1 or args.ratio_min_count < 1 or args.dpi < 1 or not math.isfinite(args.energy_tev) or args.energy_tev <= 0:
         raise ValueError("jobs, min-count, ratio-min-count, dpi and energy must be positive")
     if args.mc_scale != "k" and (not math.isfinite(args.mc_scale) or args.mc_scale <= 0):
