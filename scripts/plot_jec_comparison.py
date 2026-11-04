@@ -431,6 +431,7 @@ def mc_scale(value):
 def parser():
     p = argparse.ArgumentParser(description="Plot compact C++ JEC summaries; original ntuples are never reread.")
     mode = p.add_mutually_exclusive_group(required=True)
+    mode.add_argument("--audit-duplicates", metavar="OUTPUT_DIR", help="List matching PNG pixels, timestamp-normalized PDFs, and identical SVG files without changing the plot tree.")
     mode.add_argument("--organize-existing", metavar="OUTPUT_DIR", help="Reorganize a previous run's indexed figures without reading input JSONs or rerendering.")
     mode.add_argument("--inputs", nargs="+", help="Summary JSON files, directories or quoted globs; selected and all_stored summaries are plotted separately when both are supplied. Missing matches are skipped; each loaded era needs both JECs within each selection.")
     p.add_argument("--mc-input", nargs="+", help="Reusable QCD summary files or quoted globs, matched to data by selection. Supply selected and all_stored QCD summaries when plotting both; each is shared by both JECs and every era.")
@@ -1431,16 +1432,41 @@ def canvas_payload(fig, name):
     return result
 
 
+def pdf_content(data):
+    stamp = rb"/(CreationDate|ModDate) \(D:\d{14}(?:Z|[+-]\d{2}'\d{2}')?\)"
+    return re.sub(stamp, rb"/\1()", data)
+
+
 def same_render(left, right):
     if not left.is_file() or left.is_symlink() or not right.is_file() or right.is_symlink():
         return False
     a, b = left.read_bytes(), right.read_bytes()
-    if a == b:
-        return True
-    if left.suffix != ".pdf" or right.suffix != ".pdf":
-        return False
-    stamp = rb"/(CreationDate|ModDate) \(D:\d{14}(?:Z|[+-]\d{2}'\d{2}')?\)"
-    return re.sub(stamp, rb"/\1()", a) == re.sub(stamp, rb"/\1()", b)
+    return a == b or (left.suffix == right.suffix == ".pdf" and pdf_content(a) == pdf_content(b))
+
+
+def audit_duplicates(directory):
+    from PIL import Image
+    root = Path(directory).resolve()
+    if not root.is_dir():
+        raise ValueError(f"No plot directory at {root}")
+    matches = {}
+    for path in sorted(root.rglob("*")):
+        ext = path.suffix.lower()
+        if ext not in (".pdf", ".png", ".svg") or path.is_symlink() or not path.is_file():
+            continue
+        if ext == ".png":
+            with Image.open(path) as image:
+                digest = hashlib.sha256(str(image.size).encode())
+                digest.update(image.convert("RGBA").tobytes())
+        else:
+            data = path.read_bytes()
+            digest = hashlib.sha256(pdf_content(data) if ext == ".pdf" else data)
+        matches.setdefault((ext, digest.digest()), []).append(path.relative_to(root))
+    groups = [paths for paths in matches.values() if len(paths) > 1]
+    count = sum(len(paths) for paths in matches.values())
+    progress(f"Duplicate audit: {count} figure files, {len(groups)} same-format groups with matching content")
+    for paths in groups:
+        print("  " + "\n  ".join(str(path) for path in paths) + "\n")
 
 
 def summary_names(available):
@@ -1448,6 +1474,7 @@ def summary_names(available):
     choices = [
         ("era_dijet_cross_section",), ("dijet_mass_cross_section", "spectrum_mjj"), ("spectrum_ak4_mjj",),
         *((f"spectrum_{name}",) for name in angular),
+        *((f"eta_asymmetry_{variable}_j{jet}",) for variable in ("eta", "pt", "run") for jet in (1, 2)),
         ("run_index_cross_section",), ("run_mean_3", "spectrum_jec_j1"), ("run_mean_4", "spectrum_jec_j2"),
         ("run_index_data_qcd",), ("spectrum_ak4_mjj_data_qcd",), ("dijet_mass_data_qcd", "spectrum_mjj_data_qcd"),
     ]
@@ -1596,10 +1623,6 @@ class Plotter:
             directory = self.output/"details"/self.plot_category(name)/fmt
             directory.mkdir(parents=True, exist_ok=True)
             fig.savefig(directory/f"{name}.{fmt}", dpi=self.args.dpi)
-            for folder in (self.output, self.output/fmt):
-                legacy = folder/f"{name}.{fmt}"
-                if legacy.is_file():
-                    legacy.unlink()
         self.figures.append(name)
         if self.root_part is not None:
             self.canvases.append(canvas_payload(fig, name))
@@ -1773,24 +1796,24 @@ class Plotter:
             names = old if self.args.all_spectra else [name for name in CORE_SPECTRA if name in old]
             if "ht_50gev" not in old:
                 progress("Skipping 50 GeV HT spectrum: regenerate both summaries with the updated reducer; coarse saved bins cannot be split exactly", self.d["dataset"])
-            if self.all_stored and "mjj" in names and "mjj_base" in names:
-                inputs = [old, new]
-                if self.qcd:
-                    inputs.append(self.qcd["histograms"])
-                if self.paired:
-                    inputs.append(self.paired["overlap"])
-                if all(h["mjj_base"] == h["mjj"] for h in inputs):
-                    names = [name for name in names if name != "mjj_base"]
-                    for suffix in ("", "_data_qcd"):
-                        alias = "spectrum_mjj_base" + suffix
-                        for fmt in ("pdf", "png", "svg"):
-                            relative = Path(self.plot_category(alias))/fmt
-                            old_file = self.output/"details"/relative/(alias+"."+fmt)
-                            peer = relative/("spectrum_mjj"+suffix+"."+fmt)
-                            roots = (self.output/"details", Path(self.args.summary_dir)/self.output.name)
-                            if any(same_render(old_file, root/peer) for root in roots):
-                                old_file.unlink()
-                    progress("Omitting duplicate spectrum_mjj_base; using spectrum_mjj", self.d["dataset"])
+        if self.all_stored and "mjj" in names and "mjj_base" in names:
+            inputs = [old, new]
+            if self.qcd:
+                inputs.append(self.qcd["histograms"])
+            if self.paired:
+                inputs.append(self.paired["overlap"])
+            if all(h["mjj_base"] == h["mjj"] for h in inputs):
+                names = [name for name in names if name != "mjj_base"]
+                for suffix in ("", "_data_qcd"):
+                    alias = "spectrum_mjj_base" + suffix
+                    for fmt in ("pdf", "png", "svg"):
+                        relative = Path(self.plot_category(alias))/fmt
+                        old_file = self.output/"details"/relative/(alias+"."+fmt)
+                        peer = relative/("spectrum_mjj"+suffix+"."+fmt)
+                        roots = (self.output/"details", Path(self.args.summary_dir)/self.output.name)
+                        if any(same_render(old_file, root/peer) for root in roots):
+                            old_file.unlink()
+                progress("Omitting duplicate spectrum_mjj_base; using spectrum_mjj", self.d["dataset"])
         for name in names:
             a, b = old[name], new[name]
             if name in UNIFORM_PT_HISTOGRAMS and self.pt_binning[name] != "uniform 100 GeV":
@@ -2745,12 +2768,13 @@ def publish_summary(output_dir, selections, failures=()):
             raise ValueError(f"Unrecognized index at {manifest}; choose a fresh output directory")
         previous = {**saved.get("retained_from_previous", {}), **saved["sha256"]}
 
-    datasets, sources, old_copies = [], {}, {}
+    datasets, sources, old_copies, scopes = [], {}, {}, []
     for selection, local_root, names in selections:
         for name in names:
             scope = Path(local_root).resolve()/name
             local = scope/"summary"
             info = json.loads((local/"figure_index.json").read_text(encoding="utf-8"))
+            scopes.append((scope, root/selection/name, info))
             files = []
             for path in info["files"]:
                 key = (Path(selection)/name/path).as_posix()
@@ -2787,6 +2811,23 @@ def publish_summary(output_dir, selections, failures=()):
     for key, legacy in old_copies.items():
         if legacy.is_file() and not legacy.is_symlink() and digest(legacy) in (previous.get(key), hashes.get(key)):
             legacy.unlink()
+    removed = 0
+    for scope, central, info in scopes:
+        for folder, paths in ((central, info["files"]), (scope/"details", info.get("detail_figures", []))):
+            for text in paths:
+                rel = Path(text)
+                if (len(rel.parts) != 3 or rel.parts[0] not in ("data_comparison", "data_qcd")
+                        or rel.parts[1] not in ("pdf", "png", "svg") or rel.suffix != "." + rel.parts[1]):
+                    raise ValueError(f"Invalid indexed figure path: {text}")
+                canonical = folder/rel
+                if folder.resolve() not in canonical.resolve().parents:
+                    raise ValueError(f"Indexed figure is outside {folder}: {rel}")
+                for old in (scope/rel.name, scope/rel.parts[1]/rel.name, scope/"summary"/rel):
+                    if scope in old.resolve().parents and same_render(old, canonical):
+                        old.unlink()
+                        removed += 1
+    if removed:
+        progress(f"Removed {removed} verified duplicate figure files from older layouts")
     retained = {}
     for key in previous.keys() - sources.keys():
         dest = root/key
@@ -2954,6 +2995,9 @@ def selection_arguments(args, selection, multiple):
 def main():
     started = time.monotonic()
     args = parser().parse_args()
+    if args.audit_duplicates:
+        audit_duplicates(args.audit_duplicates)
+        return
     if args.organize_existing:
         organize_existing(args.organize_existing)
         return
