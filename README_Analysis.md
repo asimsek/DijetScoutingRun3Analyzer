@@ -324,6 +324,7 @@ python3 plot_jec_comparison.py \
             "2024I:11451.783064" \
   --per-dataset \
   --mc-scale k  \
+  --skip-missing-lumi \
   --output-dir summaries/plots/jec
 ```
 

@@ -8,6 +8,7 @@ import hashlib
 import json
 import math
 import os
+import pickle
 import re
 import shlex
 import shutil
@@ -454,7 +455,8 @@ def parser():
     p.add_argument("--cert-json", metavar="JSON", help="Certification for BRIL/exported exposure. Histograms must already use this event coverage; apply masks with the reducer's --cert-json. Certified summaries provide their mask automatically.")
     p.add_argument("--export-only", action="store_true", help="Only export run/LS coverage; do not generate figures or ROOT output.")
     p.add_argument("--root-file", help="ROOT output for all datasets of one selection; default: OUTPUT_DIR/jec_comparison.root. Dual-selection runs add _selected and _all_stored to an explicit filename.")
-    p.add_argument("--root-python", default=sys.executable, help="Python interpreter with PyROOT; default: the plotting interpreter.")
+    p.add_argument("--no-root", action="store_true", help="Write figures and their JSON reports without an editable ROOT file.")
+    p.add_argument("--root-python", help="Python interpreter with PyROOT; default: the plotting interpreter.")
     p.add_argument("--normalization", choices=["yield", "shape", "xsec"], default="yield")
     p.add_argument("--old-label", default="Old JEC")
     p.add_argument("--new-label", default="New JEC")
@@ -692,12 +694,18 @@ def summary_selection(document):
     return "all_stored" if document["config"]["preset"] == "all_stored" else "selected"
 
 
-def load_plot_selections(paths, requested, allow_partial, mc_inputs=None):
+def index_plot_selections(paths, requested, mc_inputs=None):
     groups = {}
+    with_data = set()
+    with_embedded_qcd = set()
     references = {}
     for path, document in read_summaries(paths):
         selection = summary_selection(document)
-        groups.setdefault(selection, []).append((path, document))
+        groups.setdefault(selection, []).append(path)
+        if document["samples"]:
+            with_data.add(selection)
+        if document.get("qcd") and (not document["samples"] or not requested or document["dataset"] in requested):
+            with_embedded_qcd.add(selection)
     if mc_inputs:
         for path, document in read_summaries(expand_inputs(mc_inputs)):
             if not document.get("qcd"):
@@ -706,18 +714,20 @@ def load_plot_selections(paths, requested, allow_partial, mc_inputs=None):
             references[selection] = shared_qcd(references.get(selection), document["qcd"])
     selections = {}
     for selection in ("selected", "all_stored"):
-        documents = groups.get(selection, [])
-        if not any(document["samples"] for path, document in documents):
+        if selection not in with_data:
             continue
         qcd = references.get(selection)
-        has_embedded_qcd = any(document.get("qcd") and (not document["samples"] or not requested or document["dataset"] in requested)
-                               for path, document in documents)
-        if mc_inputs and qcd is None and not has_embedded_qcd:
+        if mc_inputs and qcd is None and selection not in with_embedded_qcd:
             raise ValueError(f"No {selection} QCD summary supplied; provide the matching --mc-input for each data selection")
-        selections[selection] = assemble_datasets(documents, requested, allow_partial, qcd)
+        selections[selection] = (groups[selection], qcd)
     if not selections:
         raise ValueError("No selected datasets")
     return selections
+
+
+def load_plot_selections(paths, requested, allow_partial, mc_inputs=None):
+    return {selection: assemble_datasets(read_summaries(files), requested, allow_partial, qcd)
+            for selection, (files, qcd) in index_plot_selections(paths, requested, mc_inputs).items()}
 
 
 def load_datasets(paths, requested, allow_partial, mc_input=None):
@@ -1046,6 +1056,10 @@ def estimate_luminosity(datasets, luminosity, certified):
     return result
 
 
+class BrilQueryUnavailable(ValueError):
+    """The optional external query could not deliver a luminosity file."""
+
+
 def fetch_bril_luminosity(datasets, args, certified):
     if not args.normtag or not Path(args.normtag).is_file():
         raise ValueError("--brilcalc requires --normtag pointing to the official readable normtag JSON")
@@ -1083,7 +1097,7 @@ def fetch_bril_luminosity(datasets, args, certified):
                     while process.poll() is None:
                         now = time.monotonic()
                         if now-started > 300:
-                            raise ValueError(f"brilcalc query exceeded 300 seconds; BRIL input and log retained in {work}")
+                            raise BrilQueryUnavailable(f"brilcalc query exceeded 300 seconds; BRIL input and log retained in {work}")
                         if now-announced >= 20:
                             progress(f"brilcalc query in progress ({now-started:.0f} s)")
                             announced = now
@@ -1104,7 +1118,7 @@ def fetch_bril_luminosity(datasets, args, certified):
             progress("Retrying BRIL with the CMS EL8 libnsl compatibility library in a temporary directory")
             status = query(environment)
         if status or not csv_path.is_file():
-            raise ValueError(f"brilcalc query failed; input, CSV (if written) and log retained in {work}. "+log_path.read_text()[-3000:])
+            raise BrilQueryUnavailable(f"brilcalc query failed; input, CSV (if written) and log retained in {work}. "+log_path.read_text()[-3000:])
         try:
             luminosity = load_luminosity([csv_path],"pb")
         except (ValueError, OSError) as exc:
@@ -1524,18 +1538,20 @@ class Plotter:
                 if legacy.is_file():
                     legacy.unlink()
         self.figures.append(name)
-        self.canvases.append(canvas_payload(fig, name))
+        if self.root_part is not None:
+            self.canvases.append(canvas_payload(fig, name))
         plt.close(fig)
         progress(f"Saved plot {len(self.figures)}: {name} ({', '.join(dict.fromkeys(self.args.formats))})", self.d["dataset"])
 
     def table(self, name, header, rows):
-        self.tables[name] = {"columns": header, "rows": [list(row) for row in rows]}
+        if self.root_part is not None or name == "era_dijet_cross_section":
+            self.tables[name] = {"columns": header, "rows": [list(row) for row in rows]}
 
     def plot_category(self, name):
         return "data_qcd" if name.endswith("_data_qcd") else "data_comparison"
 
     def prepare_summary(self):
-        choices = [("dijet_mass_cross_section", "spectrum_mjj"), ("spectrum_ak4_mjj",),
+        choices = [("era_dijet_cross_section",), ("dijet_mass_cross_section", "spectrum_mjj"), ("spectrum_ak4_mjj",),
                    ("run_index_cross_section",), ("run_mean_3", "spectrum_jec_j1"),
                    ("run_mean_4", "spectrum_jec_j2"),
                    ("dijet_mass_data_qcd", "spectrum_mjj_data_qcd"),
@@ -1556,6 +1572,13 @@ class Plotter:
                 destination.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(self.output/"details"/category/fmt/f"{name}.{fmt}", destination/f"{name}.{fmt}")
             self.summary_figures.append(name)
+        paths = [f"{self.plot_category(name)}/{fmt}/{name}.{fmt}" for name in self.summary_figures
+                 for fmt in dict.fromkeys(self.args.formats)]
+        index = {"dataset": self.d["dataset"], "members": self.d.get("dataset_members", [self.d["dataset"]]),
+                 "luminosity_pb": self.total_lumi_pb if self.has_exposure else None, "files": paths}
+        directory = self.output/"summary"
+        directory.mkdir(exist_ok=True)
+        (directory/"figure_index.json").write_text(json.dumps(index, indent=2)+"\n", encoding="utf-8")
 
     def remove_saved_plot(self, name):
         folders = [self.output]+[self.output/fmt for fmt in ("pdf", "png", "svg")]
@@ -1981,6 +2004,41 @@ class Plotter:
         self.save(fig,"dijet_mass_cross_section")
         if self.qcd:
             self.qcd_spectrum("mjj", "dijet_mass_data_qcd", differential=True)
+        if self.d.get("era_dijet_counts") and self.luminosity.get("datasets_pb"):
+            self.era_cross_section_plot()
+
+    def era_cross_section_plot(self):
+        """Use each era's own exposure and include all mass bins, including flows."""
+        rows = self.d["era_dijet_counts"]
+        eras = [row[0] for row in rows]
+        lumi = np.asarray([self.luminosity["datasets_pb"][era] for era in eras])
+        x = np.arange(len(eras))
+        fig, top, bottom = self.axes()
+        self.brand(top)
+        old, new = (np.asarray([row[i] for row in rows], dtype=float) for i in (1, 2))
+        for role, counts in (("old", old), ("new", new)):
+            top.errorbar(x, counts/lumi, yerr=np.sqrt(counts)/lumi, fmt="o",
+                         color=COLORS[role], label=self.args.old_label if role == "old" else self.args.new_label)
+        top.margins(y=0.23)
+        top.legend(frameon=False)
+        top.set_ylabel("Wide-dijet cross section [pb]")
+        top.text(.03, .06, "All stored events with a wide-dijet mass" if self.all_stored else
+                 f"Dijet selection, $m_{{jj}} > {self.d['config']['mjj_min']:g}$ GeV",
+                 transform=top.transAxes, fontsize=10, bbox=dict(facecolor="white", edgecolor="none", alpha=.85))
+        # These summaries do not supply the covariance of the two integrated mass counts.
+        # Show the measured net change without assigning independent-Poisson errors to it.
+        bottom.axhline(0, ls="--", color="0.3", lw=1)
+        delta = fractional_change(new, old)
+        bottom.plot(x, delta, "o", color=COLORS["old"])
+        bottom.set_ylabel(FRACTIONAL_CHANGE_LABEL)
+        bottom.set_xticks(x)
+        bottom.set_xticklabels(eras)
+        bottom.set_xlabel("Data-taking period")
+        bottom.set_xlim(-.45, len(eras)-.55)
+        self.table("era_dijet_cross_section", ["era", "lumi_pb", "old_count", "new_count",
+                   "old_xsec_pb", "new_xsec_pb", "fractional_change"],
+                   zip(eras, lumi, old, new, old/lumi, new/lumi, delta))
+        self.save(fig, "era_dijet_cross_section")
 
     def run_plots(self):
         self.run_index_plot()
@@ -2359,14 +2417,19 @@ class Plotter:
                            for name in self.figures for fmt in dict.fromkeys(self.args.formats)]
         info["summary_figures"] = [f"summary/{self.plot_category(name)}/{fmt}/{name}.{fmt}"
                                    for name in self.summary_figures for fmt in dict.fromkeys(self.args.formats)]
-        info["root_file"] = str(self.args.root_file)
-        info["root_directory"] = self.output.name
-        info["root_tables"] = ["table_"+name for name in self.tables]
+        if self.root_part is not None:
+            info["root_file"] = str(self.args.root_file)
+            info["root_directory"] = self.output.name
+            info["root_tables"] = ["table_"+name for name in self.tables]
         info["notes"].append("Run dijet cross sections use recorded luminosity per run when supplied. Dataset totals produce LS-weighted estimates only with --estimate-run-lumi. N_run/L_era contribution points are no longer produced.")
         info["notes"].append("LS-weighted estimates assign L_run = L_dataset * N_distinct_LS_run/N_distinct_LS_dataset. Equal luminosity per LS is an unverified assumption; this does not constitute measured run luminosity or a validated run-stability result.")
         info["notes"].append("The dedicated standard-binned mass cross-section plot shows d sigma/d m in pb/TeV, with N/(bin_width_TeV * luminosity_pb). It is skipped for legacy mass bins because aggregate counts cannot be split exactly.")
         info["notes"].append("Eta-asymmetry lower panels display New - Old with dark-gray open circles and no error bars. Other old/new comparison lower panels display (New-old)/old with capped vertical statistical errors. Asymmetry-difference uncertainties are saved using the uncorrelated approximation because old/new covariance is not stored.")
-        info["notes"].append("Markers use ROOT size 1.0 and Matplotlib diameter 6.0 points. Old JEC markers are dark-gray open circles; new JEC markers are muted-orange open downward triangles. QCD uses muted blue. Histogram lines have no error-bar overlays. Metadata is stored only inside ROOT.")
+        info["notes"].append("Markers use ROOT size 1.0 and Matplotlib diameter 6.0 points. Old JEC markers are dark-gray open circles; new JEC markers are muted-orange open downward triangles. QCD uses muted blue. Histogram lines have no error-bar overlays.")
+        if "era_dijet_cross_section" in self.tables:
+            info["era_dijet_cross_section"] = self.tables["era_dijet_cross_section"]
+            info["notes"].append("The era comparison divides all available wide-dijet mass counts by each era's exposure. "
+                                 "Its lower panel shows the measured fractional change; the integrated-count covariance is unavailable.")
         self.report_data = info
 
     def write_root(self):
@@ -2417,16 +2480,34 @@ class Plotter:
             progress(f"Plot group {index}/{len(plan)}: {group}", name)
             action()
         self.prepare_summary()
-        progress("Writing editable ROOT histograms/canvases and metadata", name)
         self.report()
-        self.write_root()
-        progress(f"Completed {len(self.figures)} plots and {len(self.tables)} ROOT tables in {time.monotonic()-started:.1f} s: {self.output}", name)
-        return str(self.root_part), len(self.figures)
+        if self.root_part is not None:
+            progress("Writing editable ROOT histograms/canvases and metadata", name)
+            self.write_root()
+        else:
+            # Keep the figure inventory, counts, luminosities and MC normalizations.
+            # Notes describing ROOT tables apply only to the optional binary export.
+            self.report_data["notes"] = [note for note in self.report_data["notes"]
+                                         if not any(word in note.lower() for word in ("root", "table_", "saved using"))]
+            with (self.output/"report.json").open("w") as stream:
+                json.dump(self.report_data, stream, indent=2, allow_nan=False)
+        progress(f"Completed {len(self.figures)} plots in {time.monotonic()-started:.1f} s: {self.output}", name)
+        return self.root_part, len(self.figures)
 
 
 def plot_job(job):
     d, luminosity, args, output, root_part = job
-    return Plotter(d, luminosity, args, output, root_part).run()
+    try:
+        return Plotter(d, luminosity, args, output, root_part).run()
+    except Exception as exc:
+        raise ValueError(f"{d['config']['preset']} / {d['dataset']}: plot job failed in {output}: {exc}") from exc
+
+
+def plot_staged_job(path):
+    # Only this process's own private temporary job files are deserialized.
+    with path.open("rb") as stream:
+        job = pickle.load(stream)
+    return plot_job(job)
 
 
 def combine(datasets):
@@ -2451,6 +2532,8 @@ def combine(datasets):
     merged["run_eras"] = [[run, ", ".join(sorted(labels))] for run, labels in sorted(membership.items())]
     merged["run_era_members"] = [[run, sorted(labels)] for run, labels in sorted(membership.items())]
     merged["dataset_members"] = names
+    merged["era_dijet_counts"] = [[name, *[sum(datasets[name]["samples"][role]["histograms"]["mjj"]["counts"])
+                                          for role in ("old", "new")]] for name in names]
     merged["dataset"] = ", ".join(names)
     return merged
 
@@ -2468,11 +2551,17 @@ def plot_selection(datasets, args):
         raise ValueError("Choose --brilcalc or --no-auto-lumi")
     groups = set(args.plots or ["spectra", "xsec", "run", "eta", "selection"])
     luminosity = add_luminosity_values(load_luminosity(args.lumi_csv+args.lumi_json, args.lumi_unit), args.lumi_pb)
+    unused = set(luminosity.get("datasets_pb", {})) - datasets.keys()
+    if unused:
+        progress("[WARN] No loaded data for these supplied era luminosities: " + ", ".join(sorted(unused)) +
+                 ". They are excluded from combined exposure.")
     if args.brilcalc and luminosity["runs"]:
         raise ValueError("--brilcalc may be combined with an era total, but not with RUN:LUMI values")
     automatic_query = (not args.brilcalc and not args.no_auto_lumi and not luminosity["runs"]
                        and not args.estimate_run_lumi and not args.export_only
                        and ({"xsec", "run"} & groups or args.normalization == "xsec"))
+    optional = automatic_query and args.skip_missing_lumi and (luminosity.get("total_pb") is not None
+               or datasets.keys() <= luminosity.get("datasets_pb", {}).keys())
     if automatic_query:
         cache = Path(args.output_dir)/"recorded_luminosity.json"
         if cache.is_file() and luminosity_cache_matches(cache, datasets, args):
@@ -2482,12 +2571,14 @@ def plot_selection(datasets, args):
         elif any(d["partial"] for d in datasets.values()):
             progress("Partial summaries cannot produce cross sections; skipping the automatic BRIL query")
         else:
-            if not shutil.which(args.brilcalc_bin):
+            if not shutil.which(args.brilcalc_bin) and not optional:
                 raise ValueError("Automatic per-run luminosity requires brilcalc on PATH or --brilcalc-bin PATH. Supply recorded luminosity with --lumi-json/--lumi-csv, or use --no-auto-lumi to explicitly plot without a BRIL query")
-            progress("Per-run luminosity is missing; preparing an automatic calibrated BRIL query" +
-                     ("; the supplied era total remains the mass-spectrum normalization" if args.lumi_pb else ""))
-            configure_bril(datasets, args)
-            args.brilcalc = True
+            if shutil.which(args.brilcalc_bin) and configure_bril(datasets, args, automatic=optional):
+                progress("Per-run luminosity is missing; preparing an automatic calibrated BRIL query")
+                args.brilcalc = True
+            else:
+                progress("[WARN] Per-run luminosity unavailable. Using the supplied exposure for mass spectra "
+                         "and omitting run cross sections (--skip-missing-lumi).")
     if args.brilcalc:
         configure_bril(datasets, args)
     if luminosity.get("total_pb") is not None and len(datasets) > 1 and args.per_dataset:
@@ -2498,13 +2589,18 @@ def plot_selection(datasets, args):
     if args.export_only:
         if not args.export_lumisections:
             raise ValueError("--export-only requires --export-lumisections JSON")
-        return
+        return [], []
     if args.estimate_run_lumi and args.no_estimate_run_lumi:
         raise ValueError("Choose either --estimate-run-lumi or --no-estimate-run-lumi")
     if args.estimate_run_lumi:
         luminosity = estimate_luminosity(datasets,luminosity,certified)
     if args.brilcalc:
-        luminosity = add_luminosity_values(fetch_bril_luminosity(datasets,args,certified), args.lumi_pb)
+        try:
+            luminosity = add_luminosity_values(fetch_bril_luminosity(datasets,args,certified), args.lumi_pb)
+        except BrilQueryUnavailable as exc:
+            if not optional:
+                raise
+            progress(f"[WARN] {exc}. Continuing with supplied era totals; run cross sections are omitted.")
     if args.lumi_csv or args.lumi_json:
         progress(f"Loaded recorded luminosity for {len(luminosity['runs'])} runs from {len(args.lumi_csv)+len(args.lumi_json)} input files")
     if args.lumi_pb and not luminosity.get("estimated"):
@@ -2517,29 +2613,119 @@ def plot_selection(datasets, args):
             progress(f"Loaded recorded luminosity for {len(luminosity['runs'])} runs")
     output = Path(args.output_dir).resolve()
     args.root_file = str(Path(args.root_file).resolve() if args.root_file else output/"jec_comparison.root")
-    jobs = []
+    jobs, failures = [], []
     if len(datasets) > 1:
-        jobs.append((combine(datasets), luminosity, args, output / "combined"))
+        try:
+            jobs.append((combine(datasets), luminosity, args, output / "combined"))
+        except (ValueError, OSError, KeyError) as exc:
+            failures.append(f"combined ({', '.join(sorted(datasets))}): {exc}")
         if args.per_dataset:
             jobs.extend((d, luminosity, args, output / safe_name(name)) for name, d in sorted(datasets.items()))
     else:
         name, d = next(iter(datasets.items()))
         jobs.append((d, luminosity, args, output / safe_name(name)))
+    folders = [job[3].name for job in jobs]
+    results, completed = [], []
+    def collect(folder, action, *arguments):
+        try:
+            results.append(action(*arguments))
+        except Exception as exc:
+            failures.append(f"{folder}: {exc}")
+            progress(f"[ERROR] {folder}: {exc}")
+        else:
+            completed.append(folder)
+
     with tempfile.TemporaryDirectory(prefix="jec_root_") as temporary:
-        jobs = [job+(str(Path(temporary)/f"part_{i}.root"),) for i,job in enumerate(jobs)]
+        jobs = [job+(None if args.no_root else str(Path(temporary)/f"part_{i}.root"),) for i,job in enumerate(jobs)]
         if len(jobs) > 1 and args.jobs > 1:
             progress(f"Generating {len(jobs)} plot sets with {min(args.jobs, len(jobs))} parallel jobs")
-            with ProcessPoolExecutor(max_workers=min(args.jobs, len(jobs))) as executor:
-                results = list(executor.map(plot_job, jobs))
+            # Sending an all-era document through a process queue makes another
+            # full serialized copy. Stream jobs to private files one at a time.
+            staged = []
+            for index in range(len(jobs)):
+                path = Path(temporary) / f"job_{index}.pkl"
+                with path.open("wb") as stream:
+                    pickle.dump(jobs[index], stream, protocol=pickle.HIGHEST_PROTOCOL)
+                jobs[index] = None
+                staged.append(path)
+            with ProcessPoolExecutor(max_workers=min(args.jobs, len(staged))) as executor:
+                futures = [executor.submit(plot_staged_job, path) for path in staged]
+                for folder, future in zip(folders, futures):
+                    collect(folder, future.result)
         else:
             progress(f"Generating {len(jobs)} plot sets sequentially")
-            results = [plot_job(job) for job in jobs]
-        helper = Path(__file__).resolve()
-        merged = subprocess.run([args.root_python,str(helper),"--root-merge"]+[path for path,count in results]+["--output",args.root_file],capture_output=True,text=True)
-        if merged.returncode:
-            raise ValueError("ROOT output merge failed: "+merged.stderr[-3000:])
-        progress(f"Saved all dataset histograms, graphs, tables and canvases: {args.root_file}")
+            for folder, job in zip(folders, jobs):
+                collect(folder, plot_job, job)
+        if not args.no_root and not failures:
+            helper = Path(__file__).resolve()
+            merged = subprocess.run([args.root_python,str(helper),"--root-merge"]+[path for path,count in results]+["--output",args.root_file],capture_output=True,text=True)
+            if merged.returncode:
+                failures.append("ROOT output merge failed: "+merged.stderr[-3000:])
+            else:
+                progress(f"Saved all dataset histograms, graphs, tables and canvases: {args.root_file}")
     progress(f"Finished: {sum(count for path, count in results)} plots in {time.monotonic()-started:.1f} s")
+    return completed, failures
+
+
+def publish_summary(output_dir, selections, failures=()):
+    """Mirror this run's curated figures; preserve unrelated and user-edited files."""
+    root = Path(output_dir).resolve()/"summary"
+    root.mkdir(parents=True, exist_ok=True)
+    manifest = root/"figure_index.json"
+    schema = "jec-summary-v1"
+    previous = {}
+    if manifest.exists():
+        saved = json.loads(manifest.read_text(encoding="utf-8"))
+        if saved.get("schema") != schema:
+            raise ValueError(f"Unrecognized index at {manifest}; choose a fresh output directory")
+        previous = {**saved.get("retained_from_previous", {}), **saved["sha256"]}
+
+    datasets, sources = [], {}
+    for selection, local_root, names in selections:
+        for name in names:
+            local = Path(local_root)/name/"summary"
+            info = json.loads((local/"figure_index.json").read_text(encoding="utf-8"))
+            files = []
+            for path in info["files"]:
+                key = (Path(selection)/name/path).as_posix()
+                sources[key] = local/path
+                files.append(key)
+            datasets.append({**info, "selection": selection, "folder": name, "files": files})
+
+    def digest(path):
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+
+    hashes = {key: digest(source) for key, source in sources.items()}
+    for key in previous.keys() | sources.keys():
+        dest = root/key
+        if root not in dest.resolve().parents:
+            raise ValueError(f"Summary path outside {root}: {key}")
+        if key in sources and dest.exists() and digest(dest) not in (previous.get(key), hashes[key]):
+            raise ValueError(f"Existing summary figure differs from the generated copy: {dest}; use a fresh output directory")
+    for key, source in sources.items():
+        dest = root/key
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(source, dest)
+    retained = {}
+    for key in previous.keys() - sources.keys():
+        dest = root/key
+        if dest.is_file() and digest(dest) == previous[key]:
+            if failures:
+                retained[key] = previous[key]
+                continue
+            dest.unlink()
+            for directory in dest.parents:
+                if directory == root:
+                    break
+                try:
+                    directory.rmdir()
+                except OSError:
+                    break
+    index = {"schema": schema, "datasets": datasets, "sha256": hashes}
+    if failures:
+        index.update(status="incomplete", failures=failures, retained_from_previous=retained)
+    manifest.write_text(json.dumps(index, indent=2)+"\n", encoding="utf-8")
+    progress(f"Curated summary: {len(sources)} figure files in {root}")
 
 
 def selection_arguments(args, selection, multiple):
@@ -2567,15 +2753,39 @@ def main():
             raise ValueError(f"{name} must be two finite increasing values in TeV with MIN >= 0")
     paths = expand_inputs(args.inputs)
     progress(f"Found {len(paths)} summary files")
-    selections = load_plot_selections(paths, args.datasets, args.allow_partial, args.mc_input)
-    if not args.export_only:
+    selections = index_plot_selections(paths, args.datasets, args.mc_input)
+    if args.no_root and (args.root_file or args.root_python):
+        raise ValueError("--no-root conflicts with --root-file and --root-python")
+    if not args.export_only and not args.no_root:
+        required = bool(args.root_file or args.root_python)
+        args.root_python = args.root_python or sys.executable
         preflight = subprocess.run([args.root_python,"-c","import ROOT; ROOT.gROOT.SetBatch(True)"],capture_output=True,text=True)
         if preflight.returncode:
-            raise ValueError("ROOT output requires a Python interpreter with working PyROOT. Run cmsenv, or pass --root-python PATH. "+preflight.stderr[-1000:])
-    for selection, datasets in selections.items():
+            if required:
+                raise ValueError("Requested ROOT output requires working PyROOT. Run cmsenv or pass --root-python PATH. "+preflight.stderr[-1000:])
+            args.no_root = True
+            progress("PyROOT is unavailable; writing figures and JSON reports without ROOT export.")
+    summary_sets, failures = [], []
+    for selection, (files, qcd) in selections.items():
         selection_args = selection_arguments(args, selection, len(selections) > 1)
         progress(f"Plotting {selection} summaries in {selection_args.output_dir}")
-        plot_selection(datasets, selection_args)
+        try:
+            datasets = assemble_datasets(read_summaries(files), args.datasets, args.allow_partial, qcd)
+            try:
+                completed, errors = plot_selection(datasets, selection_args)
+            finally:
+                del datasets
+        except (ValueError, OSError, KeyError) as exc:
+            failures.append(f"{selection}: {exc}")
+            progress(f"[ERROR] {selection}: {exc}")
+            continue
+        failures.extend(f"{selection} / {message}" for message in errors)
+        if completed:
+            summary_sets.append((selection, selection_args.output_dir, completed))
+    if not args.export_only:
+        publish_summary(args.output_dir, summary_sets, failures)
+    if failures:
+        raise ValueError("Incomplete comparison:\n" + "\n".join(f"  {message}" for message in failures))
     if len(selections) > 1:
         progress(f"Completed selected and all_stored in {time.monotonic()-started:.1f} s")
 
