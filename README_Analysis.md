@@ -325,6 +325,7 @@ python3 plot_jec_comparison.py \
   --per-dataset \
   --mc-scale k  \
   --skip-missing-lumi \
+  --formats pdf \
   --output-dir summaries/plots/jec
 ```
 

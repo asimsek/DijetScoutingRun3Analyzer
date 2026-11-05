@@ -387,7 +387,8 @@ from matplotlib.ticker import AutoMinorLocator, MaxNLocator
 
 
 COLORS = {"old": "#404040", "new": "#d99a56", "qcd": "#6d7891"}
-FRACTIONAL_CHANGE_LABEL = "(New - old) / old"
+FRACTIONAL_CHANGE_LABEL = "(New - Old) / Old"
+QCD_RESIDUAL_LABEL = "(Data - QCD) / QCD"
 ETA_ASYMMETRY_LABEL = r"$\frac{N_{(\eta)}-N_{(-\eta)}}{N_{(\eta)}+N_{(-\eta)}}$"
 DEFAULT_NORMTAG = Path("/cvmfs/cms-bril.cern.ch/cms-lumi-pog/Normtags/normtag_PHYSICS.json")
 DIJET_MASS_BINS = (1, 3, 6, 10, 16, 23, 31, 40, 50, 61, 74, 88, 103, 119, 137, 156, 176, 197, 220,
@@ -1687,12 +1688,12 @@ class Plotter:
         ax.errorbar(np.asarray(x)[shown], displayed[shown], yerr=err[shown], fmt="o", color=COLORS["old"], ms=6.0, lw=1, capsize=3)
         valid = np.isfinite(err) & shown
         ax.axhline(0, color="0.3", lw=1, ls="--")
-        visible = r[shown & np.isfinite(r)]
+        visible = displayed[shown & np.isfinite(displayed)]
         if fixed_range:
             ax.set_ylim(*fixed_range)
         elif visible.size:
-            extremes = np.concatenate((visible, r[valid]-err[valid], r[valid]+err[valid]))
-            half = max(0.05, 1.15*np.max(np.abs(extremes-1)))
+            extremes = np.concatenate((visible, displayed[valid]-err[valid], displayed[valid]+err[valid]))
+            half = max(0.05, 1.15*np.max(np.abs(extremes)))
             ax.set_ylim(-half, half)
         ax.set_ylabel(FRACTIONAL_CHANGE_LABEL)
         return r, err
@@ -1922,9 +1923,9 @@ class Plotter:
         band = np.where(band_mask, relative, np.nan)
         band_edges = np.asarray(edges) if edges is not None else np.r_[x-0.5, x[-1]+0.5]
         if np.any(band[band_mask] > 0):
-            ax.fill_between(np.repeat(band_edges, 2)[1:-1], np.repeat(1-band, 2), np.repeat(1+band, 2),
+            ax.fill_between(np.repeat(band_edges, 2)[1:-1], np.repeat(-band, 2), np.repeat(band, 2),
                             color=COLORS["qcd"], alpha=0.22, label="QCD stat.")
-        ax.axhline(1, color="0.3", ls="--", lw=1)
+        ax.axhline(0, color="0.3", ls="--", lw=1)
         result = {}
         extents = []
         for role in ("old", "new"):
@@ -1933,17 +1934,18 @@ class Plotter:
             ratios = np.divide(values[role], reference, out=np.full_like(reference, np.nan), where=valid_mc)
             stat = np.divide(errors[role], reference, out=np.full_like(reference, np.nan), where=valid_mc)
             total = np.hypot(stat, ratios*relative)
+            residuals = ratios-1
             drawn = valid_mc & np.isfinite(ratios) & np.isfinite(stat) & (counts[role] >= minimum) & display
-            ax.errorbar(x[drawn], ratios[drawn], yerr=stat[drawn], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
+            ax.errorbar(x[drawn], residuals[drawn], yerr=stat[drawn], fmt="o", ms=6, color=COLORS[role], label=self.labels[role])
             result[role] = (ratios, stat, total, drawn)
-            extents.extend((ratios[drawn]-stat[drawn], ratios[drawn]+stat[drawn]))
-        extents.extend(((1-relative)[band_mask], (1+relative)[band_mask]))
+            extents.extend((residuals[drawn]-stat[drawn], residuals[drawn]+stat[drawn]))
+        extents.extend((-relative[band_mask], relative[band_mask]))
         finite = np.concatenate(extents)
         finite = finite[np.isfinite(finite)]
-        low, high = (min(1, finite.min()), max(1, finite.max())) if finite.size else (0.5, 1.5)
+        low, high = (min(0, finite.min()), max(0, finite.max())) if finite.size else (-0.5, 0.5)
         padding = max(0.1, (high-low)*0.15)
-        ax.set_ylim(max(0, low-padding), high+padding)
-        ax.set_ylabel("Data / QCD")
+        ax.set_ylim(max(-1, low-padding), high+padding)
+        ax.set_ylabel(QCD_RESIDUAL_LABEL)
         return result
 
     def qcd_spectrum(self, name, output_name, differential=False):
@@ -2009,9 +2011,11 @@ class Plotter:
                                  "old_stat_error", "new_stat_error", "qcd_old_value", "qcd_new_value",
                                  "qcd_old_stat_error", "qcd_new_stat_error",
                                  "old_over_qcd", "old_ratio_data_error", "old_ratio_total_error", "old_drawn",
-                                 "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn"],
+                                 "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn",
+                                 "old_fractional_residual", "new_fractional_residual"],
                    zip(edges[:-1], edges[1:], raw["old"], raw["new"], values["old"], values["new"], errors["old"], errors["new"],
-                       references["old"], references["new"], uncertainties["old"], uncertainties["new"], *ratios["old"], *ratios["new"]))
+                       references["old"], references["new"], uncertainties["old"], uncertainties["new"], *ratios["old"], *ratios["new"],
+                       ratios["old"][0]-1, ratios["new"][0]-1))
         self.save(fig, output_name)
 
     def qcd_run_plot(self):
@@ -2061,10 +2065,11 @@ class Plotter:
                                          "old_xsec_pb", "new_xsec_pb", "old_stat_error_pb", "new_stat_error_pb",
                                          "qcd_old_xsec_pb", "qcd_new_xsec_pb", "qcd_old_stat_error_pb", "qcd_new_stat_error_pb",
                                          "old_over_qcd", "old_ratio_data_error", "old_ratio_total_error", "old_drawn",
-                                         "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn"],
+                                         "new_over_qcd", "new_ratio_data_error", "new_ratio_total_error", "new_drawn",
+                                         "old_fractional_residual", "new_fractional_residual"],
                    zip(x, self.runs, self.run_era_labels(), self.lumi, counts["old"], counts["new"], values["old"], values["new"],
                        errors["old"], errors["new"], references["old"], references["new"], uncertainties["old"], uncertainties["new"],
-                       *ratios["old"], *ratios["new"]))
+                       *ratios["old"], *ratios["new"], ratios["old"][0]-1, ratios["new"][0]-1))
         self.save(fig, "run_index_data_qcd")
 
     def mass_cross_section_plot(self):
@@ -2308,7 +2313,7 @@ class Plotter:
                 matrices["change"] = np.divide(100*(b-a), a, out=np.full_like(a, np.nan), where=a != 0)
             for role in roles:
                 fig, ax, _ = self.axes(False)
-                self.brand(ax, "Matched AK4 jets" if paired else self.labels.get(role, "100 (new / old - 1)"))
+                self.brand(ax, "Matched AK4 jets" if paired else self.labels.get(role, "100 (New - Old) / Old"))
                 matrix = matrices[role]
                 kwargs = {"cmap": "viridis"}
                 if role in ("matched", "change"):
@@ -2352,8 +2357,8 @@ class Plotter:
         overlap = np.asarray(self.paired["threshold_migration"])[:, 3] if self.paired else None
         r, err = self.draw_ratio(bottom, x, self.d["samples"]["new"]["threshold_counts"], self.d["samples"]["old"]["threshold_counts"], overlap)
         bottom.set_xlabel(r"$m_{\mathrm{cut}}$ [TeV]")
-        self.table("mass_thresholds", ["threshold_gev", "old_count", "new_count", "new_over_old", "fractional_change_stat_error", "threshold_tev"],
-                   zip(self.d["thresholds"], self.d["samples"]["old"]["threshold_counts"], self.d["samples"]["new"]["threshold_counts"], r, err, x))
+        self.table("mass_thresholds", ["threshold_gev", "old_count", "new_count", "new_over_old", "fractional_change_stat_error", "threshold_tev", "fractional_change"],
+                   zip(self.d["thresholds"], self.d["samples"]["old"]["threshold_counts"], self.d["samples"]["new"]["threshold_counts"], r, err, x, r-1))
         self.save(fig, "mass_thresholds")
 
     def paired_plots(self):
@@ -2465,7 +2470,7 @@ class Plotter:
             info["notes"].extend([
                 "One QCD reduction is reused without duplication when combining eras. --mc-scale k fits separate old/new factors to each observable's data yield, including underflow and overflow, independently for each plotted dataset or combination. Numeric --mc-scale values apply a common fixed factor. Unit-area shape normalization takes precedence for spectrum plots when requested.",
                 "QCD inputs contain path and sample cross section in pb. Unit generator weights give component weight xsec_pb / generated_events; the supplied cross section includes any generator filtering. Existing summaries with an explicit filter_efficiency retain their recorded normalization. Saved MC histograms contain cross sections in pb and statistical variances in pb^2.",
-                "Data/QCD upper panels show only data; each lower-panel curve uses its corresponding QCD normalization. The band around one represents shared MC statistics. Fitted-yield spectrum ratios include bin/total covariance for both data and MC. ROOT tables store each scaled reference and quadrature total ratio errors; these errors are correlated across bins and JEC versions, not independent measurements.",
+                "Data/QCD upper panels show only data; lower panels display (Data-QCD)/QCD using the corresponding JEC normalization and a zero reference line. The band around zero represents shared MC statistics. Fitted-yield residuals include bin/total covariance for both data and MC. Subtracting one leaves ratio uncertainties unchanged. ROOT tables retain the original ratios and add old_fractional_residual and new_fractional_residual, with the same data and total errors; these errors are correlated across bins and JEC versions, not independent measurements.",
                 "MC skips data certification and HLT requirements and uses the same kinematic selection. No trigger-efficiency, pileup, luminosity, cross-section or JEC systematic uncertainties are included.",
                 "Normalized shape variances include the bin/total covariance and use all saved bins, including underflow and overflow. QCD run reference includes all selected mass bins, including underflow and overflow.",
                 "With --mc-scale k, run plots fit one factor per JEC to the total yield over runs with recorded luminosity, never one factor per run. The common MC rate cancels after this fit; run ratios have no residual MC normalization uncertainty and data errors include their covariance with the fitted total. Data-only cross sections remain absolute."])
@@ -2518,7 +2523,7 @@ class Plotter:
         info["notes"].append("Run dijet cross sections use recorded luminosity per run when supplied. Dataset totals produce LS-weighted estimates only with --estimate-run-lumi. N_run/L_era contribution points are no longer produced.")
         info["notes"].append("LS-weighted estimates assign L_run = L_dataset * N_distinct_LS_run/N_distinct_LS_dataset. Equal luminosity per LS is an unverified assumption; this does not constitute measured run luminosity or a validated run-stability result.")
         info["notes"].append("The dedicated standard-binned mass cross-section plot shows d sigma/d m in pb/TeV, with N/(bin_width_TeV * luminosity_pb). It is skipped for legacy mass bins because aggregate counts cannot be split exactly.")
-        info["notes"].append("Eta-asymmetry lower panels display New - Old with dark-gray open circles and no error bars. Other old/new comparison lower panels display (New-old)/old with capped vertical statistical errors. Asymmetry-difference uncertainties are saved using the uncorrelated approximation because old/new covariance is not stored.")
+        info["notes"].append("Eta-asymmetry lower panels display New - Old with dark-gray open circles and no error bars. Other old/new comparison lower panels display (New-Old)/Old with capped vertical statistical errors and a zero reference line. ROOT comparison tables retain the original ratios alongside fractional_change. Asymmetry-difference uncertainties are saved using the uncorrelated approximation because old/new covariance is not stored.")
         info["notes"].append("Markers use ROOT size 1.0 and Matplotlib diameter 6.0 points. Old JEC markers are dark-gray open circles; new JEC markers are muted-orange open downward triangles. QCD uses muted blue. Histogram lines have no error-bar overlays.")
         if "era_dijet_cross_section" in self.tables:
             info["era_dijet_cross_section"] = self.tables["era_dijet_cross_section"]
