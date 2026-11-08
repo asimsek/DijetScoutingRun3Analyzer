@@ -131,47 +131,72 @@ c++ -std=c++17 -O3 -o plot_trigger_efficiency plot_trigger_efficiency.cpp $(root
 
 ## Kinematic Plots
 
-#### Plot a Single Variable
+Run from `scripts/` after `cmsenv`, with an active VOMS proxy.
+
+#### Reduce nTuples Locally (Kinematics)
 
 ```bash
-## Build once
-c++ -std=c++17 -O3 -o plot_kinematics plot_kinematics.cpp $(root-config --cflags --libs)
+c++ -O3 -DNDEBUG $(root-config --cflags) reduce_kinematics.cpp -o reduce_kinematics $(root-config --libs)
+```
 
-## Run kinematics separately on your local machine
-mkdir -p logs
+Reduce each era and QCD once:
 
-## 2024I
-./plot_kinematics --plot all --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 11451.783064 --output-dir kinematics_plots_deta1p3_2024I --output-prefix dataVsQCD_
-
-## Full 2024
-./plot_kinematics --plot all --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024_ALL_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 108757.319778 --output-dir kinematics_plots_deta1p3_2024 --output-prefix dataVsQCD_
+```bash
+./reduce_kinematics --input ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --dataset 2024I --jec new --threads 16 --output kinematics
+./reduce_kinematics --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --dataset QCD_2024 --threads 16 --output kinematics
 ```
 
 > [!TIP]
-> *Built-in plot names are:* `mjj`, `Dijet_MassAK4PF`, `pTWJ_j1`, `pTWJ_j2`, `etaWJ_j1`, `etaWJ_j2`, `deltaETAjj`, `phiWJ_j1`, `phiWJ_j2`, `deltaPHIjj`<br>
-> `--plot all`: to process all kinematics at once.
-
-
-> [!IMPORTANT]
-> For the MC list entries use:<br>
-> `mc_path xsec_pb`<br>
-
-
-**Luminosity information is available on the [PdmV Twiki Page](https://twiki.cern.ch/twiki/bin/viewauth/CMS/PdmVRun3Analysis#2024_Analysis_Summary_Table).**
+> Reducer: `--resume` continues saved progress; `--force` restarts. MC list format: `mc_path xsec_pb`.
 
 
 ---
 
 
-#### Submit Plot Jobs to Condor (Needs to be fixed!)
+#### Submit Condor Jobs (Kinematics)
+
+Instead of local reduction, build and submit disjoint file splits automatically:
 
 ```bash
-python3 condor_submit_kinematics.py --data-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024_ALL_reduced.txt --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --lumi-pb 108757.319778 --cmssw-base "$CMSSW_BASE" --output-prefix dataVsQCD_
+python3 condor_submit_kinematics_reduction.py --input ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced.txt --dataset 2024I --jec new --jobs 64 --threads 4 --output kinematics --workdir kinematics/condor_kinematics_2024I_new
+
+python3 condor_submit_kinematics_reduction.py --mc-list ../lists/reducedNtuple_lists/QCDMC_2024_reduced.txt --dataset QCD_2024 --jobs 64 --threads 4 --output kinematics --workdir kinematics/condor_kinematics_QCD_2024
+```
+
+Merge completed splits:
+
+```bash
+python3 condor_submit_kinematics_reduction.py --merge kinematics/condor_kinematics_2024I_new
+python3 condor_submit_kinematics_reduction.py --merge kinematics/condor_kinematics_QCD_2024
 ```
 
 > [!TIP]
-> Use `--no-submit` for a dryRun.<br>
-> Use `--plots mjj,pTWJ_j1,deltaETAjj` to submit only a subset of the built-in plot specs (default=`all`).
+> `--no-submit` prepares jobs; `--submit WORKDIR` submits prepared jobs; `--retry-failed WORKDIR` retries missing/invalid splits while skipping queued jobs.
+
+
+---
+
+
+#### Plot Kinematics from JSON
+
+```bash
+python3 plot_kinematics_from_json.py --data-input kinematics/2024I_new.json --mc-input kinematics/QCD_2024.json --plot mjj --lumi-pb 11451.783064 --output-dir kinematics/plots/2024I_new
+```
+
+> [!TIP]
+> Plot names: `mjj`, `Dijet_MassAK4PF`, `pTWJ_j1`, `pTWJ_j2`, `etaWJ_j1`, `etaWJ_j2`, `deltaETAjj`, `phiWJ_j1`, `phiWJ_j2`, `deltaPHIjj`.<br>
+> Use `--plot all` for all PDFs and `all_plots.root`.
+
+
+**Combine reduced eras and plot with their summed luminosity:**
+
+```bash
+python3 plot_kinematics_from_json.py --merge-json kinematics/2024{F,G,H,I}_new.json --dataset 2024F-I --output kinematics/2024F-I_new.json
+
+python3 plot_kinematics_from_json.py --data-input kinematics/2024F-I_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 82093.753741 --output-dir kinematics/plots/2024F-I_new
+```
+
+Luminosity information is available on the **[PdmV Twiki Page](https://twiki.cern.ch/twiki/bin/viewauth/CMS/PdmVRun3Analysis#2024_Analysis_Summary_Table)**.
 
 
 ---
