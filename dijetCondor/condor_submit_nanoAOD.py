@@ -21,6 +21,8 @@ DEFAULT_CMSSW_VER = "CMSSW_15_0_6"
 DEFAULT_SCRAM_ARCH = "el9_amd64_gcc12"
 DEFAULT_TREE_NAME = "Events"
 DEFAULT_EOS_PATH = "/store/group/lpcjj/Run3PFScouting/nanoAODnTuples"
+#DEFAULT_EOS_PATH = "/store/group/lpcjj/Run3PFScouting/nanoAODnTuples_QCD"
+#DEFAULT_EOS_PATH = "/store/group/lpcjj/Run3PFScouting/nanoAODnTuples_Muon"
 DEFAULT_CUT_FILE = "config/cutFile_mainDijetPFScoutingSelection_Run3.txt"
 DEFAULT_REQUEST_MEMORY_MB = 4096
 DEFAULT_SUBMIT_WORKERS = 8
@@ -375,11 +377,32 @@ def write_chunk_lists(
     return rel_paths
 
 
-def build_cmssw_tarball(cmssw_base: Path, condor_folder: Path) -> str:
+def build_cmssw_tarball(
+    cmssw_base: Path,
+    condor_folder: Path,
+    repo_root: Path,
+    job_list_dir: Path,
+) -> str:
     cmssw_ver = cmssw_base.name
     tar_file = condor_folder / f"{cmssw_ver}.tar.gz"
-    analyzer_rel = f"{cmssw_ver}/src/DijetScoutingRun3Analyzer"
+    lists_root = repo_root / "lists"
+    list_parts = job_list_dir.relative_to(lists_root).parts
+    if not list_parts or not job_list_dir.is_dir():
+        raise RuntimeError(f"Production list directory not found: {job_list_dir}")
+
+    excluded_lists = []
+    parent = lists_root
+    for part in list_parts:
+        for sibling in parent.iterdir():
+            if sibling.name != part:
+                relative_path = sibling.relative_to(cmssw_base.parent).as_posix()
+                if "\n" in relative_path or "\r" in relative_path:
+                    raise RuntimeError(f"Cannot archive a list path containing a newline: {sibling!s}")
+                excluded_lists.append(re.sub(r"([\\*?\[\]])", r"\\\1", relative_path))
+        parent = parent / part
+
     log_info(f"Creating tarball: {tar_file}")
+    log_info(f"Including only production lists: {job_list_dir.relative_to(repo_root)}")
     run_cmd(
         [
             "tar",
@@ -394,10 +417,12 @@ def build_cmssw_tarball(cmssw_base: Path, condor_folder: Path) -> str:
             "--exclude=*.root",
             "--exclude=*.tar.gz",
             f"--exclude=cjobs_*",
+            "--exclude-from=/dev/stdin",
             "-C",
             str(cmssw_base.parent),
             cmssw_ver,
-        ]
+        ],
+        input_text="".join(f"{path}\n" for path in excluded_lists),
     )
     return cmssw_ver
 
@@ -666,7 +691,8 @@ def main() -> None:
     chunks = split_into_chunks(input_files, cfg.interval)
     condor_folder, date_time = create_condor_folder(script_dir, name_token)
     list_rel_paths = write_chunk_lists(repo_root, chunks, name_token, info, date_time)
-    cmssw_ver = build_cmssw_tarball(cmssw_base, condor_folder)
+    job_list_dir = repo_root / Path(list_rel_paths[0]).parent
+    cmssw_ver = build_cmssw_tarball(cmssw_base, condor_folder, repo_root, job_list_dir)
     cms_connect_requirements = build_cms_connect_requirements(args.scram_arch)
 
     create_condor_job_files(

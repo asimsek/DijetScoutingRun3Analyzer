@@ -72,7 +72,7 @@ const std::array<const char*, 30> kNanoInputBranchesData = {
     "DST_PFScouting_JetHT",
     "DST_PFScouting_SingleMuon"};
 
-const std::array<const char*, 27> kNanoInputBranchesMC = {
+const std::array<const char*, 29> kNanoInputBranchesMC = {
     "run",
     "luminosityBlock",
     "event",
@@ -99,7 +99,9 @@ const std::array<const char*, 27> kNanoInputBranchesMC = {
     "Jet_rawFactor",
     "Jet_hfEmEF",
     "DST_PFScouting_JetHT",
-    "DST_PFScouting_SingleMuon"};
+    "DST_PFScouting_SingleMuon",
+    "Pileup_pthatmax",
+    "Generator_binvar"};
 
 const std::array<const char*, 24> kNanoInputBranchesMonitoring = {
     "run",
@@ -157,7 +159,7 @@ constexpr size_t kNRequiredNanoBranchesData = kNanoInputBranchesData.size() - kN
 static_assert(kNanoInputBranchesData.size() >= kNOptionalNanoBranchesData,
               "kNanoInputBranchesData must include optional trailing branches.");
 
-constexpr size_t kNOptionalNanoBranchesMC = 4;
+constexpr size_t kNOptionalNanoBranchesMC = 6;
 constexpr size_t kNRequiredNanoBranchesMC = kNanoInputBranchesMC.size() - kNOptionalNanoBranchesMC;
 static_assert(kNanoInputBranchesMC.size() >= kNOptionalNanoBranchesMC,
               "kNanoInputBranchesMC must include optional trailing branches.");
@@ -488,6 +490,8 @@ void analysisClass::Loop() {
   std::unique_ptr<TTreeReaderArray<UChar_t>> neHadMultMC;
   std::unique_ptr<TTreeReaderArray<Short_t>> jetGenJetIdxMC;
   std::unique_ptr<TTreeReaderArray<Float_t>> genJetPtMC;
+  std::unique_ptr<TTreeReaderValue<Float_t>> pileupPtHatMaxMC;
+  std::unique_ptr<TTreeReaderValue<Float_t>> generatorBinvarMC;
 
   std::unique_ptr<TTreeReaderValue<Int_t>> nScoutingMuonVtxReader;
   std::unique_ptr<TTreeReaderArray<Float_t>> scoutingMuonPtReader;
@@ -514,6 +518,8 @@ void analysisClass::Loop() {
     if (useStandardMC) {
       jetGenJetIdxMC = std::make_unique<TTreeReaderArray<Short_t>>(reader, "Jet_genJetIdx");
       genJetPtMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "GenJet_pt");
+      if (hasBranch(fChain, "Pileup_pthatmax")) pileupPtHatMaxMC = std::make_unique<TTreeReaderValue<Float_t>>(reader, "Pileup_pthatmax");
+      if (hasBranch(fChain, "Generator_binvar")) generatorBinvarMC = std::make_unique<TTreeReaderValue<Float_t>>(reader, "Generator_binvar");
     }
 
     if (hasBranch(fChain, "Jet_rawFactor")) { jetRawFactorMC = std::make_unique<TTreeReaderArray<Float_t>>(reader, "Jet_rawFactor"); }
@@ -1323,6 +1329,8 @@ void analysisClass::Loop() {
     fillVariableWithValue("NAK4PF", analysisSummary.nAk4Analysis);
     fillVariableWithValue("passGoodMuonBaseSelection", passGoodMuonBaseSelection ? 1.0 : 0.0);
     fillVariableWithValue("PassJSON", passJsonValue);
+    fillVariableWithValue("Pileup_pthatmax", pileupPtHatMaxMC ? **pileupPtHatMaxMC : -1.0);
+    fillVariableWithValue("Generator_binvar", generatorBinvarMC ? **generatorBinvarMC : -1.0);
 
     // Record hard-scatter matching for the leading corrected AK4 jets in MC.
     if (useStandardMC) {

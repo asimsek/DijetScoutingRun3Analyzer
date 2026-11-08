@@ -25,6 +25,11 @@ KJSON kinematics_contract() {
             {"flow","discard underflow; include overflow in final bin"},{"plots",plots}};
 }
 
+KJSON kinematics_pileup_veto() {
+    return {{"version",1},{"selection","Pileup_pthatmax <= Generator_binvar"},
+            {"normalization","unfiltered generated_events"}};
+}
+
 void k_write_json(const fs::path& path,const KJSON& value) {
     const fs::path temporary=path.string()+".tmp."+std::to_string(getpid());
     try {
@@ -63,7 +68,7 @@ struct KOptions {
     std::vector<std::string> inputs;
     std::string mcList,manifest,dataset,jec,output="kinematics";
     unsigned threads=8;
-    bool resume=false,force=false,plan=false,describe=false;
+    bool resume=false,force=false,plan=false,describe=false,pileupVeto=false;
 };
 
 KOptions k_parse(int argc,char** argv) {
@@ -80,11 +85,13 @@ KOptions k_parse(int argc,char** argv) {
         else if(arg=="--threads") {const auto n=std::stoll(value());if(n<1 || n>1024)throw std::runtime_error("Invalid threads");o.threads=n;}
         else if(arg=="--resume")o.resume=true;
         else if(arg=="--force")o.force=true;
+        else if(arg=="--pileup-veto")o.pileupVeto=true;
         else if(arg=="--plan")o.plan=true;
         else if(arg=="--describe")o.describe=true;
         else if(arg=="--help" || arg=="-h") {
             std::cout<<"Usage: reduce_kinematics (--input ROOT|DIR|@LIST | --mc-list LIST) --dataset NAME [--jec old|new]\n"
-                     <<"       [--output DIRECTORY|FILE.json] [--threads N] [--resume | --force]\n"
+                     <<"       [--output DIRECTORY|FILE.json] [--threads N] [--resume | --force] [--pileup-veto]\n"
+                     <<"       --pileup-veto stores both unfiltered and vetoed MC histograms in one scan.\n"
                      <<"       --plan prints a frozen input plan; --describe prints the analysis contract.\n"
                      <<"       Checkpoints are saved after each completed file.\n";std::exit(0);
         } else throw std::runtime_error("Unknown argument: "+arg);
@@ -107,16 +114,20 @@ void k_expand(const std::string& value,const fs::path& base,std::vector<std::str
 
 KJSON k_plan(const KOptions& o) {
     if(!o.manifest.empty()) {
-        if(!o.inputs.empty() || !o.mcList.empty() || !o.dataset.empty() || !o.jec.empty())
+        if(!o.inputs.empty() || !o.mcList.empty() || !o.dataset.empty() || !o.jec.empty() || o.pileupVeto)
             throw std::runtime_error("--manifest supplies the production inputs and labels");
         auto plan=k_read_json(o.manifest);
         if(plan.at("contract")!=kinematics_contract())throw std::runtime_error("Manifest/reducer analysis mismatch");
+        if(plan.contains("pileup_veto") && (plan.at("kind")!="mc" || plan.at("pileup_veto")!=kinematics_pileup_veto()))
+            throw std::runtime_error("Invalid pileup-veto manifest");
         return plan;
     }
     if(!k_label(o.dataset) || (!o.jec.empty() && o.jec!="old" && o.jec!="new"))throw std::runtime_error("Invalid dataset or JEC label");
     if(o.inputs.empty()==o.mcList.empty())throw std::runtime_error("Provide --input or --mc-list, exclusively");
+    if(o.pileupVeto && o.mcList.empty())throw std::runtime_error("--pileup-veto is only supported with --mc-list");
     KJSON plan={{"version",1},{"dataset",o.dataset},{"jec",o.jec},{"kind",o.mcList.empty()?"data":"mc"},
                 {"contract",kinematics_contract()},{"components",KJSON::array()},{"tasks",KJSON::array()}};
+    if(o.pileupVeto)plan["pileup_veto"]=kinematics_pileup_veto();
     if(o.mcList.empty()) {
         std::vector<std::string> files;
         for(const auto& input:o.inputs)k_expand(input,fs::current_path(),files);
@@ -146,7 +157,7 @@ KJSON k_empty_category(const std::vector<PlotRequest>& plots) {
     return {{"events",0},{"histograms",h}};
 }
 
-KJSON k_reduce_file(const KJSON& task,bool mc,const std::vector<PlotRequest>& plots) {
+KJSON k_reduce_file(const KJSON& task,bool mc,const std::vector<PlotRequest>& plots,bool pileupVeto=false) {
     const std::string path=task.at("path"),runtime=task.value("runtime",path);
     std::unique_ptr<TFile> file(TFile::Open(runtime.c_str()));
     if(!file || file->IsZombie() || file->TestBit(TFile::kRecovered))throw std::runtime_error("Cannot read complete ROOT file: "+path);
@@ -154,6 +165,11 @@ KJSON k_reduce_file(const KJSON& task,bool mc,const std::vector<PlotRequest>& pl
     if(!tree)throw std::runtime_error("Missing analysis tree: "+path);
     auto required=required_branches_for_plots(plots);
     const auto available=get_branch_names(*tree);
+    if(pileupVeto)for(const std::string name:{"Pileup_pthatmax","Generator_binvar"}) {
+        if(!available.count(name))throw std::runtime_error("--pileup-veto requires "+name+" in "+path+
+            "; regenerate the reduced MC nTuples with these fields saved");
+        required.insert(name);
+    }
     if(!mc)required.insert("PassJSON");
     const bool trigger=available.count("passHLT_PFScoutingHT");
     if(trigger || !mc)required.insert("passHLT_PFScoutingHT");
@@ -169,6 +185,8 @@ KJSON k_reduce_file(const KJSON& task,bool mc,const std::vector<PlotRequest>& pl
     std::vector<std::vector<std::vector<KCount>>> counts(3);
     std::array<KCount,3> totals{};
     for(auto& group:counts)for(const auto& plot:plots)group.emplace_back(nbins_for_spec(*plot.spec),0);
+    auto vetoCounts=pileupVeto?counts:decltype(counts){};
+    std::array<KCount,3> vetoTotals{};
     TTreeReader reader(tree);
     std::map<std::string,std::unique_ptr<TTreeReaderValue<double>>> values;
     for(const auto& name:required)values[name]=std::make_unique<TTreeReaderValue<double>>(reader,name.c_str());
@@ -178,20 +196,30 @@ KJSON k_reduce_file(const KJSON& task,bool mc,const std::vector<PlotRequest>& pl
     auto& deta=*values.at("deltaETAjj");auto& mass=*values.at("mjj");
     auto* json=mc?nullptr:values.at("PassJSON").get();
     auto* hlt=trigger?values.at("passHLT_PFScoutingHT").get():nullptr;
+    auto* pileup=pileupVeto?values.at("Pileup_pthatmax").get():nullptr;
+    auto* generator=pileupVeto?values.at("Generator_binvar").get():nullptr;
     std::vector<TTreeReaderValue<double>*> plotValues;
     for(const auto& plot:plots)plotValues.push_back(values.at(plot.name).get());
     KCount processed=0;
     while(reader.Next()) {
         if(processed==0)for(const auto& v:values)if(v.second->GetSetupStatus()<0)throw std::runtime_error("Invalid branch type: "+v.first+" in "+path);
         ++processed;
+        bool keep=false;
+        if(pileupVeto) {
+            const double pu=**pileup,hard=**generator;
+            if(!std::isfinite(pu) || !std::isfinite(hard) || pu<0 || hard<=0)
+                throw std::runtime_error("Invalid pileup/generator scale in "+path+" at entry "+std::to_string(processed-1));
+            keep=pu<=hard;
+        }
         if(!passes_base_selection(json?**json:1,!mc,*nj,*id1,*id2,*pt1,*pt2,*eta1,*eta2,*deta,*mass))continue;
         const auto category=hlt?(**hlt<=0.5?1:0):2;
         ++totals[category];
+        if(keep)++vetoTotals[category];
         for(std::size_t i=0;i<plots.size();++i) {
             const double value=**plotValues[i];
             if(!std::isfinite(value))throw std::runtime_error("Non-finite selected "+plots[i].name+" in "+path);
             const int b=find_bin_index(*plots[i].spec,value);
-            if(b>=0)++counts[category][i][b];
+            if(b>=0) {++counts[category][i][b];if(keep)++vetoCounts[category][i][b];}
         }
     }
     if(processed!=static_cast<KCount>(entries) || reader.GetEntryStatus()!=TTreeReader::kEntryBeyondEnd)
@@ -201,6 +229,11 @@ KJSON k_reduce_file(const KJSON& task,bool mc,const std::vector<PlotRequest>& pl
         auto group=k_empty_category(plots);group["events"]=totals[c];
         for(std::size_t i=0;i<plots.size();++i)group["histograms"][plots[i].name]=counts[c][i];
         result["categories"][categories[c]]=group;
+        if(pileupVeto) {
+            group["events"]=vetoTotals[c];
+            for(std::size_t i=0;i<plots.size();++i)group["histograms"][plots[i].name]=vetoCounts[c][i];
+            result["pileup_veto_categories"][categories[c]]=group;
+        }
     }
     return result;
 }
@@ -226,6 +259,7 @@ int main(int argc,char** argv) {
         const auto plan=k_plan(o);
         if(plan.at("version")!=1 || plan.at("tasks").empty() || !k_label(plan.at("dataset")))throw std::runtime_error("Invalid input plan");
         const bool mc=plan.at("kind")=="mc";
+        const bool pileupVeto=plan.contains("pileup_veto");
         if(!mc && plan.at("kind")!="data")throw std::runtime_error("Invalid input kind");
         std::set<std::string> components,files;
         for(const auto& c:plan.at("components"))if(!components.insert(c.at("id").get<std::string>()).second)throw std::runtime_error("Repeated component");
@@ -256,6 +290,7 @@ int main(int argc,char** argv) {
         for(unsigned i=0;i<indices.size();++i)indices[i]=i;
         std::atomic<unsigned> completed{0};std::mutex printing;
         std::cout<<"[INFO] "<<indices.size()<<" files, "<<o.threads<<" threads; checkpoint after each file: "<<checkpoint<<std::endl;
+        if(pileupVeto)std::cout<<"[INFO] One scan: unfiltered and Pileup_pthatmax <= Generator_binvar; generated-event normalization unchanged"<<std::endl;
         ROOT::TThreadExecutor executor(o.threads);
         auto results=executor.Map([&](unsigned index) {
             const auto& task=plan["tasks"][index];const fs::path path=checkpoint/(std::to_string(index)+".json");
@@ -263,14 +298,15 @@ int main(int argc,char** argv) {
             if(o.resume && fs::exists(path)) {
                 result=k_read_json(path);
                 if(result.at("file").at("path")!=task.at("path") || result.at("component")!=task.at("component") ||
-                   result.at("file").at("entries")!=result.at("file").at("processed"))throw std::runtime_error("Invalid checkpoint: "+path.string());
+                   result.at("file").at("entries")!=result.at("file").at("processed") ||
+                   result.contains("pileup_veto_categories")!=pileupVeto)throw std::runtime_error("Invalid checkpoint: "+path.string());
                 const std::string runtime=task.value("runtime",task.at("path").get<std::string>());
                 std::unique_ptr<TFile> file(TFile::Open(runtime.c_str()));
                 auto* tree=file && !file->IsZombie()?dynamic_cast<TTree*>(file->Get(kTreePathDefault)):nullptr;
                 if(!tree || result["file"]["uuid"]!=k_uuid(file->GetUUID()) || result["file"]["entries"]!=tree->GetEntries() ||
                    (mc && result["file"]["generated_events"]!=read_event_counter(*file,runtime)))
                     throw std::runtime_error("Completed input changed or is unreadable; restore it or use --force: "+runtime);
-            } else {result=k_reduce_file(task,mc,plots);k_write_json(path,result);}
+            } else {result=k_reduce_file(task,mc,plots,pileupVeto);k_write_json(path,result);}
             const auto done=++completed;
             if(done==indices.size() || done%10==0) {std::lock_guard<std::mutex> guard(printing);std::cout<<"[INFO] Files complete: "<<done<<'/'<<indices.size()<<std::endl;}
             return result;
@@ -278,13 +314,16 @@ int main(int argc,char** argv) {
         KJSON document={{"format","kinematics_summary"},{"schema_version",1},{"complete",true},{"dataset",dataset},
                         {"datasets",KJSON::array({dataset})},{"jec",jec},{"kind",plan["kind"]},{"contract",kinematics_contract()},
                         {"components",KJSON::array()}};
+        if(pileupVeto)document["pileup_veto"]=kinematics_pileup_veto();
         for(const auto& c:plan["components"]) {
             KJSON aggregate=c;aggregate["files"]=KJSON::array();aggregate["generated_events"]=0.0;aggregate["categories"]=KJSON::object();
             for(const std::string category:{"pass","fail","unavailable"})aggregate["categories"][category]=k_empty_category(plots);
+            if(pileupVeto)aggregate["pileup_veto_categories"]=aggregate["categories"];
             for(const auto& result:results)if(result.at("component")==c.at("id")) {
                 aggregate["files"].push_back(result["file"]);
                 aggregate["generated_events"]=aggregate["generated_events"].get<double>()+result["file"]["generated_events"].get<double>();
                 k_add_categories(aggregate["categories"],result["categories"]);
+                if(pileupVeto)k_add_categories(aggregate["pileup_veto_categories"],result["pileup_veto_categories"]);
             }
             if(!aggregate["files"].empty())document["components"].push_back(aggregate);
         }

@@ -28,6 +28,7 @@ def arguments():
     source.add_argument("--mc-list", help="QCD list: source and cross section in pb per line")
     parser.add_argument("--dataset")
     parser.add_argument("--jec", choices=("old", "new"))
+    parser.add_argument("--pileup-veto", action="store_true", help="Store unfiltered and pileup-vetoed MC histograms with unchanged generated-event normalization")
     parser.add_argument("--output", default="kinematics")
     parser.add_argument("--jobs", type=int, default=64, help="Disjoint file splits, capped at file count")
     parser.add_argument("--threads", type=int, default=4)
@@ -103,6 +104,8 @@ def prepare(args):
         raise ValueError("Provide --input or --mc-list")
     if args.force or (args.mc_list and args.jec):
         raise ValueError("--force is for --merge; --jec is for data")
+    if args.pileup_veto and not args.mc_list:
+        raise ValueError("--pileup-veto requires --mc-list")
     if min(args.jobs, args.threads, args.request_memory_mb, args.request_disk_mb) < 1:
         raise ValueError("Job counts and resources must be positive")
     if not re.fullmatch(r"CMSSW_[A-Za-z0-9_]+", args.cmssw_version) or not re.fullmatch(r"[A-Za-z0-9_]+", args.scram_arch):
@@ -136,6 +139,8 @@ def prepare(args):
         command += ["--input", value]
     if args.mc_list:
         command += ["--mc-list", args.mc_list]
+    if args.pileup_veto:
+        command.append("--pileup-veto")
     plan = json.loads(subprocess.check_output(command, text=True))
     tasks = plan["tasks"]
     local = {}
@@ -229,6 +234,8 @@ def checked_job(workdir, manifest, job):
     for key in ("dataset", "jec", "kind", "contract"):
         if doc[key] != manifest["plan"][key]:
             raise ValueError(f"Wrong {key} in split output")
+    if doc.get("pileup_veto") != manifest["plan"].get("pileup_veto"):
+        raise ValueError("Wrong pileup-veto coverage in split output")
     expected = {(row["path"], row["component"]) for row in job["tasks"]}
     found = {(row["path"], component["id"]) for component in doc["components"] for row in component["files"]}
     if found != expected:
@@ -268,7 +275,7 @@ def main():
     existing = args.merge or args.retry_failed or args.submit
     if existing is None:
         return prepare(args)
-    if args.input or args.mc_list or args.dataset or args.jec or args.workdir or args.no_submit:
+    if args.input or args.mc_list or args.dataset or args.jec or args.workdir or args.no_submit or args.pileup_veto:
         raise ValueError("Existing productions use their frozen inputs; do not supply new production options")
     if args.force and not args.merge:
         raise ValueError("--force is only used with --merge")

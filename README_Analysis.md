@@ -180,6 +180,12 @@ python3 condor_submit_kinematics_reduction.py --merge kinematics/condor_kinemati
 #### Plot Kinematics from JSON
 
 ```bash
+python3 plot_kinematics_from_json.py --data-input kinematics/2024C_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 7261.429260 --output-dir kinematics/plots/2024C_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024D_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 7974.648075 --output-dir kinematics/plots/2024D_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024E_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 11427.488702 --output-dir kinematics/plots/2024E_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024F_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 27093.899763 --output-dir kinematics/plots/2024F_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024G_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 38060.092930 --output-dir kinematics/plots/2024G_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024H_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 5487.977984 --output-dir kinematics/plots/2024H_new
 python3 plot_kinematics_from_json.py --data-input kinematics/2024I_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 11451.783064 --output-dir kinematics/plots/2024I_new
 ```
 
@@ -191,9 +197,9 @@ python3 plot_kinematics_from_json.py --data-input kinematics/2024I_new.json --mc
 **Combine reduced eras and plot with their summed luminosity:**
 
 ```bash
-python3 plot_kinematics_from_json.py --merge-json kinematics/2024{F,G,H,I}_new.json --dataset 2024F-I --output kinematics/2024F-I_new.json
+python3 plot_kinematics_from_json.py --merge-json kinematics/2024{C,D,E,F,G,H,I}_new.json --dataset 2024 --output kinematics/2024_new.json
 
-python3 plot_kinematics_from_json.py --data-input kinematics/2024F-I_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 82093.753741 --output-dir kinematics/plots/2024F-I_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 108757.319778 --output-dir kinematics/plots/2024_new
 ```
 
 Luminosity information is available on the **[PdmV Twiki Page](https://twiki.cern.ch/twiki/bin/viewauth/CMS/PdmVRun3Analysis#2024_Analysis_Summary_Table)**.

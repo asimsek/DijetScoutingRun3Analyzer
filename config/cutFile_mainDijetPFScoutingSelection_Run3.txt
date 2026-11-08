@@ -85,6 +85,8 @@ Jet_genJetIdx_j2                -inf         +inf      -      -      1       100
 GenJet_pt_j1                    -inf         +inf      -      -      1       500        -1    5000  SAVE
 GenJet_pt_j2                    -inf         +inf      -      -      1       500        -1    5000  SAVE
 leadingJetHardScatterMatched    -inf         +inf      -      -      1       2          0     2     SAVE
+Pileup_pthatmax                 -inf         +inf      -      -      1       500        -1    5000  SAVE
+Generator_binvar                -inf         +inf      -      -      1       500        -1    5000  SAVE
 
 # Wide-jet mass & phi
 massWJ_j1                       -inf         +inf      -      -      1       200        0     1000  SAVE

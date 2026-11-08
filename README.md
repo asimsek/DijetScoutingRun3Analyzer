@@ -338,6 +338,7 @@ c++ -O3 -march=native -DNDEBUG -o check_condor_outputs check_condor_outputs.cpp 
 > Use `--noPerFile`: skip per-job matching and do only total event comparison.<br>
 > Use `--threads N`: override the C++ worker count. If omitted, it uses hardware concurrency.<br>
 > Use `--resubmit --request-memory-mb 4096` to resubmit jobs for the missing files and request more memory for them.<br>
+> Use `--goodMuon` for muon-like nTuple sample production<br>
 > Only target EOS folder can be given (without `cjobs_` folder) to count the event number and compare with the dataset - even single root file can be given for this purpose.
 
 

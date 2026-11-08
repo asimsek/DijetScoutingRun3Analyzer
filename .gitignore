@@ -58,6 +58,8 @@ scripts/plot_trigger_efficiency_GoodMuon
 scripts/reduce_jec_comparison
 scripts/reduce_kinematics
 scripts/summaries
+scripts/kinematics
+scripts/inspect_qcd_spikes
 
 !Makefile
 !.gitignore
