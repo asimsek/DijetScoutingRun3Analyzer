@@ -716,8 +716,13 @@ void draw_cms_labels(TPad& pad, double lumi_pb) {
 
 double compute_maximum(const TH1D* a, const TH1D* b) {
   double maximum = 0.0;
-  if (a) maximum = std::max(maximum, a->GetMaximum());
-  if (b) maximum = std::max(maximum, b->GetMaximum());
+  for (const TH1D* hist : {a, b}) {
+    if (!hist) continue;
+    const TAxis* axis = hist->GetXaxis();
+    for (int i = std::max(1, axis->GetFirst()); i <= std::min(hist->GetNbinsX(), axis->GetLast()); ++i) {
+      maximum = std::max(maximum, hist->GetBinContent(i));
+    }
+  }
   return maximum;
 }
 
@@ -726,7 +731,8 @@ double compute_positive_minimum(const TH1D* a, const TH1D* b) {
   bool set = false;
   for (const TH1D* hist : {a, b}) {
     if (!hist) continue;
-    for (int i = 1; i <= hist->GetNbinsX(); ++i) {
+    const TAxis* axis = hist->GetXaxis();
+    for (int i = std::max(1, axis->GetFirst()); i <= std::min(hist->GetNbinsX(), axis->GetLast()); ++i) {
       const double value = hist->GetBinContent(i);
       if (value <= 0.0) continue;
       if (!set || value < minimum) {
@@ -1113,7 +1119,11 @@ void draw_plot(const TH1D* data_hist, const TH1D* mc_hist, const TH1D* ratio_his
   draw_first->GetXaxis()->SetLabelSize(use_ratio ? 0.0 : 0.045);
   draw_first->GetXaxis()->SetTitleSize(use_ratio ? 0.0 : 0.050);
   if (spec.display_range) {
-    draw_first->GetXaxis()->SetRangeUser(spec.display_range->first, spec.display_range->second);
+    for (const TH1D* hist : {data_hist, mc_hist}) {
+      if (hist) {
+        const_cast<TH1D*>(hist)->GetXaxis()->SetRangeUser(spec.display_range->first, spec.display_range->second);
+      }
+    }
   }
   const auto [ymin, ymax] = compute_auto_y_range(data_hist, mc_hist, spec.logy);
   draw_first->SetMinimum(ymin);

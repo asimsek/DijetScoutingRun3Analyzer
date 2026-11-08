@@ -180,7 +180,7 @@ python3 condor_submit_kinematics_reduction.py --merge kinematics/condor_kinemati
 #### Plot Kinematics from JSON
 
 ```bash
-python3 plot_kinematics_from_json.py --data-input kinematics/2024I_new.json --mc-input kinematics/QCD_2024.json --plot mjj --lumi-pb 11451.783064 --output-dir kinematics/plots/2024I_new
+python3 plot_kinematics_from_json.py --data-input kinematics/2024I_new.json --mc-input kinematics/QCD_2024.json --plot all --lumi-pb 11451.783064 --output-dir kinematics/plots/2024I_new
 ```
 
 > [!TIP]
