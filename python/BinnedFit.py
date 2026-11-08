@@ -180,11 +180,10 @@ def _is_fit_good(fr, edm_max=1e-3):
     status = fr.status() if hasattr(fr, "status") else 999
     cov_qual = fr.covQual() if hasattr(fr, "covQual") else -1
     edm = fr.edm() if hasattr(fr, "edm") else 1e9
-    return (status == 0) and (cov_qual >= 2) and (edm <= edm_max)
+    return ((status == 0) and (cov_qual == 3) and math.isfinite(edm)
+            and (0 <= edm <= edm_max) and math.isfinite(fr.minNll()))
 
 def _fit_rank_tuple(fr):
-    # Prefer converged fits, then valid MINUIT status, then better covariance,
-    # then lower EDM, and only then lower NLL.
     good = 0 if _is_fit_good(fr) else 1
     status = fr.status() if hasattr(fr, "status") else 999
     covq = fr.covQual() if hasattr(fr, "covQual") else -1
@@ -194,7 +193,7 @@ def _fit_rank_tuple(fr):
     nll = fr.minNll() if hasattr(fr, "minNll") else 1e99
     if not math.isfinite(nll):
         nll = 1e99
-    return (good, status, -covq, edm, nll)
+    return (good, nll, status, -covq, edm)
 
 def _set_var_value_clamped(var, value):
     if var is None:
@@ -301,7 +300,10 @@ def _widen_ranges(workspace, names, factor=2.0):
         except Exception:
             continue
 
-def _run_fit_ladder(pdf, data, fitRange='Full', useWeight=False, strategy=2, eps=1e-6, suppress_root_errors=False):
+def _make_fit_nll(pdf, data, fitRange):
+    return pdf.createNLL(data, rt.RooFit.Range(fitRange), rt.RooFit.Extended(True), rt.RooFit.Offset(True))
+
+def _run_fit_ladder(pdf, data, fitRange='Full', useWeight=False, strategy=2, eps=1e-6, suppress_root_errors=False, nll=None):
     old_error_level = rt.gErrorIgnoreLevel
     if suppress_root_errors and old_error_level < rt.kBreak:
         rt.gErrorIgnoreLevel = rt.kBreak
@@ -319,20 +321,27 @@ def _run_fit_ladder(pdf, data, fitRange='Full', useWeight=False, strategy=2, eps
                 rt.RooFit.Verbose(False),
             )
 
-        nll = pdf.createNLL(data, rt.RooFit.Range(fitRange), rt.RooFit.Extended(True), rt.RooFit.Offset(True))
+        if nll is None:
+            nll = _make_fit_nll(pdf, data, fitRange)
         m2 = rt.RooMinimizer(nll)
         m2.setStrategy(strategy)
         m2.setPrintLevel(-1)
         m2.setEps(eps)
         m2.setMaxFunctionCalls(100000)
         m2.setMaxIterations(100000)
-        # Retry ladder requested: simplex -> migrad -> hesse.
-        m2.minimize('Minuit2', 'simplex')
-        m2.minimize('Minuit2', 'migrad')
-        hesse_status = m2.minimize('Minuit2', 'hesse')
-        if hesse_status != 3:
-            m2.minimize('Minuit2', 'hesse')
-        return m2.save()
+        migrad_status = m2.minimize('Minuit2', 'migrad')
+        if migrad_status != 0:
+            m2.minimize('Minuit2', 'simplex')
+            m2.setStrategy(2)
+            m2.setEps(max(eps, 1e-3))
+            migrad_status = m2.minimize('Minuit2', 'migrad')
+        hesse_status = m2.hesse()
+        if hesse_status != 0:
+            hesse_status = m2.hesse()
+        result = m2.save()
+        if migrad_status != 0 and result.status() == 0:
+            result.setStatus(migrad_status)
+        return result
     finally:
         if suppress_root_errors:
             rt.gErrorIgnoreLevel = old_error_level
@@ -378,7 +387,7 @@ def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
         if not m:
             continue
         idx = int(m.group(1))
-        if idx >= 4:
+        if idx >= 3:
             v = _safe_workspace_var(workspace, n)
             if v is None:
                 continue
@@ -394,7 +403,7 @@ def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
         seeds.append(reduced)
 
     rng = random.Random(rng_seed)
-    for _ in range(max(0, n_starts - 1)):
+    for _ in range(max(0, n_starts - len(seeds))):
         s = {}
         for n in seed_names:
             v = _safe_workspace_var(workspace, n)
@@ -421,16 +430,13 @@ def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
                 else:
                     span = max(abs(v0) * 0.30, 0.5)
                 val = v0 + rng.uniform(-span, span)
-                # Avoid pathological negative seeds once we are in positive regime.
-                if (n.startswith('p1_') or n.startswith('p2_')) and v0 > 0 and val <= 0:
-                    val = max(0.2 * v0, 1e-3)
             if val < vmin:
                 val = vmin
             if val > vmax:
                 val = vmax
             s[n] = val
         seeds.append(s)
-    return seeds
+    return seeds[:n_starts]
 
 def _parse_shape_param_index(name, box):
     m = re.match(r'^p(\d+)_%s$' % re.escape(box), name)
@@ -442,7 +448,8 @@ def _get_shape_param_names(workspace, box):
     names = []
     for i in range(1, 10):
         n = 'p%d_%s' % (i, box)
-        if _safe_workspace_var(workspace, n) is not None:
+        var = _safe_workspace_var(workspace, n)
+        if var is not None and not var.isConstant():
             names.append(n)
     return names
 
@@ -552,12 +559,12 @@ def stagedBinnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, w
                 if v is None:
                     continue
                 if n in active_names:
-                    if n not in previously_active and n in initial_state:
-                        _set_var_value_clamped(v, initial_state[n]["value"])
                     try:
                         v.setConstant(False)
                     except Exception:
                         pass
+                    if n not in previously_active and n in initial_state:
+                        _set_var_value_clamped(v, initial_state[n]["value"])
                 else:
                     _set_var_value_clamped(v, 0.0)
                     try:
@@ -603,7 +610,10 @@ def stagedBinnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, w
 
 def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspace=None, box=None, n_starts=9, rng_seed=12345, verbose=False):
 
-    # Default path (existing behavior style, but with simplex->migrad->hesse ladder).
+    norm = _safe_workspace_var(workspace, 'Ntot_bkg_%s' % box)
+    if norm is not None and not norm.isConstant() and fitRange == 'Full' and data.sumEntries() > 0:
+        _set_var_value_clamped(norm, data.sumEntries())
+        norm.setError(math.sqrt(data.sumEntries()))
     if not robust:
         return _run_fit_ladder(pdf, data, fitRange, useWeight, strategy=2, eps=1e-6)
 
@@ -618,13 +628,16 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
         return _run_fit_ladder(pdf, data, fitRange, useWeight, strategy=2, eps=1e-6)
 
     base_ranges = _capture_ranges(workspace, seed_names)
-    # Anchor with one standard fit first; robust seeds are generated around this point.
+    if n_starts < 1:
+        raise ValueError('--robust-nstarts must be positive')
+    initial_seed = {n: _safe_workspace_var(workspace, n).getVal() for n in seed_names}
+    nll = None if useWeight else _make_fit_nll(pdf, data, fitRange)
     anchor_fr = None
     try:
         anchor_fr = _run_fit_ladder(
             pdf, data, fitRange, useWeight,
             strategy=2, eps=1e-6,
-            suppress_root_errors=True
+            suppress_root_errors=True, nll=nll
         )
     except Exception as ex:
         log_warn("robust anchor fit failed, continuing with config seeds: %s" % str(ex))
@@ -644,11 +657,13 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
         attempts = []
 
     seeds = _build_multistart_seeds(workspace, seed_names, n_starts=n_starts, rng_seed=rng_seed)
+    if initial_seed not in seeds:
+        seeds[-1] = initial_seed
 
     ladder_cfgs = [
-        {"strategy": 1, "eps": 1e-6, "widen": False},
-        {"strategy": 2, "eps": 1e-6, "widen": False},
-        {"strategy": 2, "eps": 1e-7, "widen": True},
+        {"strategy": 1, "eps": 1e-6},
+        {"strategy": 2, "eps": 1e-6},
+        {"strategy": 2, "eps": 1e-7},
     ]
 
     for i_seed, seed_vals in enumerate(seeds):
@@ -661,8 +676,6 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
         best_this_seed = None
         for i_try, cfg in enumerate(ladder_cfgs):
             _restore_ranges(workspace, base_ranges)
-            if cfg["widen"]:
-                _widen_ranges(workspace, seed_names, factor=1.6)
 
             try:
                 fr_try = _run_fit_ladder(
@@ -673,6 +686,7 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
                     strategy=cfg["strategy"],
                     eps=cfg["eps"],
                     suppress_root_errors=True,
+                    nll=nll,
                 )
             except Exception as ex:
                 log_warn(
@@ -714,12 +728,8 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
     if len(good_attempts) > 0:
         best_fr = min(good_attempts, key=lambda fr: fr.minNll())
     else:
-        if anchor_fr is not None:
-            best_fr = anchor_fr
-            log_warn("robust-fit found no fully good covariance/status solution; keeping anchor fit.")
-        else:
-            best_fr = min(attempts, key=_fit_rank_tuple)
-            log_warn("robust-fit found no fully good covariance/status solution; using best-ranked fallback candidate.")
+        best_fr = min(attempts, key=_fit_rank_tuple)
+        log_warn("robust-fit found no fully good covariance/status solution; using best-ranked fallback candidate.")
 
     _apply_fit_result_to_workspace(workspace, best_fr)
 
@@ -1088,6 +1098,9 @@ if __name__ == '__main__':
                 rng_seed=options.robustSeed,
                 verbose=options.verbose,
             )
+            log_info("Minimizer: status=%s, covQual=%s, EDM=%.6g" % (fr.status(), fr.covQual(), fr.edm()))
+            if not _is_fit_good(fr):
+                log_warn("Numerical convergence is not established; rerun with --robust-fit --verbose before interpreting the fit.")
             Utils.importToWS(w, fr)
             if options.verbose:
                 fr.Print('v')
@@ -1552,12 +1565,12 @@ if __name__ == '__main__':
                 print("  %-20s  %18.6g  %18.6g +/- %-10.6g" % (name, v_init, v_final, v_err))
         print("")
 
+    log_info("Fit completed: #chi^2/NDF = %d/%d = %.2f, Prob = %d%%" % (int(round(chi2_val)), ndf_val, chi2_over_ndf, prob_percent))
     if not options.verbose:
         if options.linearX:
             fit_pdf = options.outDir+"/fit_mjj_%s_%s_linearX.pdf"%(fitRegion.replace(',','_'),box)
         else:
             fit_pdf = options.outDir+"/fit_mjj_%s_%s.pdf"%(fitRegion.replace(',','_'),box)
-        log_info("Fit completed: #chi^2/NDF = %d/%d = %.2f, Prob = %d%%" % (int(round(chi2_val)), ndf_val, chi2_over_ndf, prob_percent))
         #log_info("Poisson-likelihood GOF (deviance): %.1f/%d = %.2f" % (poisson_deviance, poisson_bins, poisson_deviance_per_bin))
         log_info("Output plot: %s" % fit_pdf)
         log_info("Output ROOT: %s" % (options.outDir+"/"+outFileName))
