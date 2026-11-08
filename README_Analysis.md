@@ -19,10 +19,10 @@
 python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ -o ScoutingPFRun3_Run2024_ALL_reduced.txt
 
 ## 2024I
-python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced.txt
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced.txt
 
 ## QCD MC (Merged Samples)
-python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/merged -o QCDMC_2024_reduced.txt
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/merged -o QCDMC_2024_reduced.txt --xsecs 50to80=16730000.0 80to120=2506000.0 120to170=439800.0 170to300=113300.0 300to470=7581.0 470to600=623.3 600to800=178.7 800to1000=30.62 1000to1500=9.306 1500to2000=0.5015 2000to2500=0.04264 2500to3000=0.004454 3000=0.0005539
 ```
 
 > [!NOTE]

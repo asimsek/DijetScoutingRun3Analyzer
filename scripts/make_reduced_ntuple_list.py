@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import math
 import os
 import re
 from pathlib import Path
@@ -53,6 +54,58 @@ def derive_output_name(input_path: str) -> str:
     return f"{token}_reduced.txt"
 
 
+def normalize_qcd_bin(value: str) -> str:
+    match = re.fullmatch(r"([0-9]+)(?:to([0-9]+|Inf))?", value, re.IGNORECASE)
+    if not match:
+        raise ValueError(f"Invalid QCD pT bin: {value}; use 50to80 or 3000 (also 3000toInf)")
+    lower, upper = match.groups()
+    lower = int(lower)
+    if upper is None or upper.lower() == "inf":
+        return str(lower)
+    if int(upper) <= lower:
+        raise ValueError(f"Invalid QCD pT range: {value}")
+    return f"{lower}to{int(upper)}"
+
+
+def parse_xsecs(items: list[str] | None) -> dict[str, float]:
+    values = {}
+    for item in items or []:
+        label, separator, raw = item.partition("=")
+        if not separator:
+            raise ValueError(f"Invalid cross section: {item}; expected BIN=PB")
+        key = normalize_qcd_bin(label)
+        try:
+            value = float(raw)
+        except ValueError:
+            raise ValueError(f"Invalid cross section for {label}: {raw}") from None
+        if not math.isfinite(value) or value <= 0:
+            raise ValueError(f"Cross section for {label} must be finite and positive")
+        if key in values:
+            raise ValueError(f"Repeated cross section for QCD pT bin {key}")
+        values[key] = value
+    return values
+
+
+def qcd_list_lines(paths: list[str], xsecs: dict[str, float]) -> list[str]:
+    by_bin = {}
+    for path in paths:
+        remote = parse_remote(path)
+        name = Path(remote.path if remote else path).name
+        match = re.match(r"QCD_Bin-PT-([0-9]+(?:to(?:[0-9]+|Inf))?)(?=[_.-]|$)", name, re.IGNORECASE)
+        if not match:
+            raise ValueError(f"Cannot identify QCD pT bin from filename: {name}")
+        key = normalize_qcd_bin(match.group(1))
+        if key not in xsecs:
+            raise ValueError(f"Missing --xsecs value for QCD pT bin {key}: {name}")
+        if key in by_bin:
+            raise ValueError(f"Multiple ROOT files for QCD pT bin {key}; merge each sample into one file before using --xsecs")
+        by_bin[key] = path
+    missing = xsecs.keys() - by_bin.keys()
+    if missing:
+        raise ValueError("No ROOT file found for QCD pT bins: " + ", ".join(sorted(missing, key=natural_key)))
+    return [f"{by_bin[key]} {xsecs[key]}" for key in sorted(by_bin, key=natural_key)]
+
+
 def build_arg_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
@@ -69,11 +122,22 @@ def build_arg_parser() -> argparse.ArgumentParser:
         default=None,
         help="Output list filename. Defaults to <input-token>_reduced.txt.",
     )
+    parser.add_argument(
+        "--xsecs",
+        nargs="+",
+        metavar="BIN=PB",
+        help="QCD cross sections, e.g. 50to80=16730000.0 3000=0.0005539; requires one merged QCD_Bin-PT-BIN ROOT file per bin.",
+    )
     return parser
 
 
 def main() -> int:
-    args = build_arg_parser().parse_args()
+    parser = build_arg_parser()
+    args = parser.parse_args()
+    try:
+        xsecs = parse_xsecs(args.xsecs)
+    except ValueError as error:
+        parser.error(str(error))
     repo_root = Path(__file__).resolve().parents[1]
     output_dir = resolve_output_dir(repo_root)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -86,6 +150,11 @@ def main() -> int:
     output_path = output_dir / output_name
 
     lines = [to_xrootd_path(path) for path in root_files]
+    if xsecs:
+        try:
+            lines = qcd_list_lines(lines, xsecs)
+        except ValueError as error:
+            parser.error(str(error))
     output_path.write_text("\n".join(lines) + "\n")
 
     print(f"[INFO] Input path   : {normalize_path(args.input_path)}")
