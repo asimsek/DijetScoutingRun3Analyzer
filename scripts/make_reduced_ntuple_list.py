@@ -30,7 +30,14 @@ def discover_root_files(input_path: str) -> list[str]:
 
 
 def to_xrootd_path(path: str | Path) -> str:
-    return normalize_path(path)
+    normalized = normalize_path(path)
+    remote = parse_remote(normalized)
+    if remote and re.fullmatch(r"root://(?:cmseos|cmseosmgm\d+)\.fnal\.gov(?::1094)?", remote.endpoint, re.IGNORECASE):
+        storage_path = remote.path
+        if storage_path.startswith("/eos/uscms/store/"):
+            storage_path = storage_path[len("/eos/uscms"):]
+        return "root://cmseos.fnal.gov/" + storage_path
+    return normalized
 
 
 def derive_output_name(input_path: str) -> str:
