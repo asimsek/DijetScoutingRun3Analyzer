@@ -301,7 +301,223 @@ def _widen_ranges(workspace, names, factor=2.0):
             continue
 
 def _make_fit_nll(pdf, data, fitRange):
+    observables = pdf.getObservables(data)
+    components = pdf.pdfList() if pdf.InheritsFrom('RooAddPdf') else None
+    if (fitRange == 'Full' and data.InheritsFrom('RooDataHist')
+            and observables.getSize() == 1 and observables.find('th1x')
+            and components is not None and components.getSize() == 1
+            and components.at(0).ClassName().endswith('BinPdf')):
+        if not hasattr(rt, 'BinnedFitPoissonNLL'):
+            rt.gInterpreter.Declare(r'''
+#include <RooAbsPdf.h>
+#include <RooDataHist.h>
+#include <RooRealProxy.h>
+#include <RooRealVar.h>
+#include <cmath>
+#include <limits>
+#include <stdexcept>
+#include <vector>
+class BinnedFitPoissonNLL : public RooAbsReal {
+    RooRealProxy model;
+    RooRealVar* observable;
+    std::vector<double> centers, volumes, counts;
+public:
+    using RooAbsReal::getParameters;
+    BinnedFitPoissonNLL(const char* name, RooAbsPdf& pdf, RooRealVar& x, RooDataHist& data)
+        : RooAbsReal(name, name), model("model", "model", this, pdf), observable(&x) {
+        for (int i = 0; i < data.numEntries(); ++i) {
+            centers.push_back(data.get(i)->getRealValue(x.GetName()));
+            volumes.push_back(data.binVolume(i));
+            counts.push_back(data.weight());
+            if (!std::isfinite(counts.back()) || counts.back() < 0)
+                throw std::invalid_argument("The Poisson fit requires finite, nonnegative bin counts");
+        }
+    }
+    BinnedFitPoissonNLL(const BinnedFitPoissonNLL& other, const char* name = nullptr)
+        : RooAbsReal(other, name), model("model", this, other.model), observable(other.observable),
+          centers(other.centers), volumes(other.volumes), counts(other.counts) {}
+    TObject* clone(const char* name) const override { return new BinnedFitPoissonNLL(*this, name); }
+    double defaultErrorLevel() const override { return 0.5; }
+    bool getParameters(const RooArgSet*, RooArgSet& output, bool strip = true) const override {
+        RooArgSet obs(*observable);
+        return model.arg().getParameters(&obs, output, strip);
+    }
+    std::vector<double> expectedCounts() const {
+        const auto& pdf = static_cast<const RooAbsPdf&>(model.arg());
+        RooArgSet obs(*observable);
+        const long double total = pdf.expectedEvents(&obs);
+        const double previous = observable->getVal();
+        std::vector<double> values(counts.size());
+        long double sum = 0;
+        for (size_t i = 0; i < counts.size(); ++i) {
+            observable->setVal(centers[i]);
+            values[i] = pdf.getVal(&obs) * volumes[i];
+            sum += values[i];
+        }
+        observable->setVal(previous);
+        if (total < 0 || !(sum > 0) || !std::isfinite(total) || !std::isfinite(sum))
+            return std::vector<double>(counts.size(), std::numeric_limits<double>::quiet_NaN());
+        for (double& value : values) value = total * value / sum;
+        return values;
+    }
+    double evaluate() const override {
+        const auto means = expectedCounts();
+        long double result = 0;
+        for (size_t i = 0; i < counts.size(); ++i) {
+            const long double mu = means[i], n = counts[i];
+            if (mu < 0 || !std::isfinite(mu) || (mu == 0 && n > 0)) {
+                logEvalError("Invalid expected bin count");
+                return std::numeric_limits<double>::quiet_NaN();
+            }
+            if (n == 0) { result += mu; continue; }
+            const long double delta = (mu - n) / n;
+            if (std::abs(delta) < 1e-3L) {
+                long double term = delta * delta;
+                for (int k = 2; k <= 10; ++k) { result += n * term / k; term *= -delta; }
+            } else {
+                result += mu - n + n * (std::log(n) - std::log(mu));
+            }
+        }
+        return result;
+    }
+};
+''')
+        for component in _iter_roo_collection(components):
+            if hasattr(component, 'setAbsTol') and hasattr(component, 'setRelTol'):
+                component.setAbsTol(0.0)
+                component.setRelTol(1e-10)
+        return rt.BinnedFitPoissonNLL('nll_%s_%s' % (pdf.GetName(), data.GetName()),
+                                    pdf, observables.find('th1x'), data)
     return pdf.createNLL(data, rt.RooFit.Range(fitRange), rt.RooFit.Extended(True), rt.RooFit.Offset(True))
+
+def _check_binned_curvature(nll, result):
+    if not hasattr(nll, 'expectedCounts'):
+        return result
+    variables = nll.getParameters(rt.RooArgSet())
+    fitted = list(_iter_roo_collection(result.floatParsFinal()))
+    params = [variables.find(p.GetName()) for p in fitted]
+    size = len(params)
+    if not size or any(not p or p.hasMin() or p.hasMax() for p in params):
+        return result
+    center = [p.getVal() for p in fitted]
+    validated = False
+    try:
+        for p, value in zip(params, center):
+            p.setVal(value)
+        means = list(nll.expectedCounts())
+        if not means or any(not math.isfinite(mu) or mu <= 0 for mu in means):
+            return result
+        derivatives = []
+        for p, value in zip(params, center):
+            step = 1e-4 * max(abs(value), 0.1)
+            samples = []
+            for shift in (-2, -1, 1, 2):
+                p.setVal(value + shift * step)
+                samples.append(list(nll.expectedCounts()))
+            p.setVal(value)
+            derivatives.append([
+                math.fsum(c * math.log(sample[i] / means[i])
+                          for c, sample in zip((1, -8, 8, -1), samples)) / (12 * step)
+                for i in range(len(means))
+            ])
+        information = rt.TMatrixDSym(size)
+        for i in range(size):
+            for j in range(size):
+                information[i][j] = math.fsum(mu * derivatives[i][k] * derivatives[j][k]
+                                             for k, mu in enumerate(means))
+        scales = [math.sqrt(information[i][i]) for i in range(size)]
+        for i in range(size):
+            for j in range(size):
+                information[i][j] /= scales[i] * scales[j]
+        eig = rt.TMatrixDSymEigen(information)
+        eigenvalues, eigenvectors = eig.GetEigenValues(), eig.GetEigenVectors()
+        if min(eigenvalues) <= 1e-12 * max(eigenvalues):
+            return result
+        transform = [[eigenvectors[i][j] / (scales[i] * math.sqrt(eigenvalues[j]))
+                      for j in range(size)] for i in range(size)]
+
+        def evaluate(coordinates):
+            for i, p in enumerate(params):
+                p.setVal(center[i] + math.fsum(transform[i][j] * coordinates[j] for j in range(size)))
+            value = nll.getVal()
+            if not math.isfinite(value):
+                raise ValueError('Non-finite likelihood during curvature check')
+            return value
+
+        def curvature(step):
+            matrix = rt.TMatrixDSym(size)
+            gradient = []
+            coordinates = [0.0] * size
+            base = evaluate(coordinates)
+            for i in range(size):
+                values = []
+                for shift in (-2, -1, 1, 2):
+                    coordinates[i] = shift * step
+                    values.append(evaluate(coordinates))
+                coordinates[i] = 0
+                gradient.append(math.fsum(c * v for c, v in zip((1, -8, 8, -1), values)) / (12 * step))
+                matrix[i][i] = math.fsum((values[1], values[2], -2 * base)) / step**2
+                for j in range(i):
+                    values = []
+                    for si, sj in ((1, 1), (1, -1), (-1, -1), (-1, 1)):
+                        coordinates[i], coordinates[j] = si * step, sj * step
+                        values.append(evaluate(coordinates))
+                    coordinates[i] = coordinates[j] = 0
+                    matrix[i][j] = matrix[j][i] = math.fsum(c * v for c, v in zip((1, -1, 1, -1), values)) / (4 * step**2)
+            return matrix, gradient
+
+        step = min(0.01, 0.001 * math.sqrt(max(1.0, abs(evaluate([0.0] * size)) / 100.0)))
+        samples = [curvature(step * factor) for factor in (2.0, 1.0, 0.5)]
+        estimates = []
+        for k in (0, 1):
+            matrix = rt.TMatrixDSym(size)
+            for i in range(size):
+                for j in range(size):
+                    matrix[i][j] = (4 * samples[k + 1][0][i][j] - samples[k][0][i][j]) / 3
+            estimates.append(matrix)
+        difference = max(abs(estimates[0][i][j] - estimates[1][i][j])
+                         for i in range(size) for j in range(size))
+        eig = rt.TMatrixDSymEigen(estimates[0])
+        eigenvalues = eig.GetEigenValues()
+        if (difference > 1e-3 or min(eigenvalues) <= max(1e-6, 10 * size * difference)
+                or max(abs(a - b) for a, b in zip(samples[1][1], samples[2][1])) > 1e-4):
+            return result
+        inverse = rt.TMatrixDSym(estimates[0])
+        inverse.Invert()
+        gradient = samples[1][1]
+        edm = 0.5 * math.fsum(gradient[i] * inverse[i][j] * gradient[j]
+                             for i in range(size) for j in range(size))
+        if not math.isfinite(edm) or edm < 0 or edm > 1e-6:
+            return result
+        covariance = rt.TMatrixDSym(size)
+        finals = rt.RooArgList()
+        for i in range(size):
+            for j in range(size):
+                covariance[i][j] = math.fsum(transform[i][a] * inverse[a][b] * transform[j][b]
+                                            for a in range(size) for b in range(size))
+        if any(not math.isfinite(covariance[i][i]) or covariance[i][i] <= 0 for i in range(size)):
+            return result
+        for i, p in enumerate(params):
+            p.setVal(center[i])
+            p.setError(math.sqrt(covariance[i][i]))
+            finals.add(p)
+        result.setFinalParList(finals)
+        result.setCovarianceMatrix(covariance)
+        result.setCovQual(3)
+        result.setEDM(edm)
+        result.setMinNLL(nll.getVal())
+        result.setStatus(0)
+        validated = True
+    except (ValueError, ZeroDivisionError, OverflowError):
+        pass
+    finally:
+        for p, value in zip(params, center):
+            p.setVal(value)
+        if not validated and result.covQual() == 3:
+            result.setCovQual(1)
+            if result.status() == 0:
+                result.setStatus(1)
+    return result
 
 def _run_fit_ladder(pdf, data, fitRange='Full', useWeight=False, strategy=2, eps=1e-6, suppress_root_errors=False, nll=None):
     old_error_level = rt.gErrorIgnoreLevel
@@ -341,7 +557,7 @@ def _run_fit_ladder(pdf, data, fitRange='Full', useWeight=False, strategy=2, eps
         result = m2.save()
         if migrad_status != 0 and result.status() == 0:
             result.setStatus(migrad_status)
-        return result
+        return _check_binned_curvature(nll, result)
     finally:
         if suppress_root_errors:
             rt.gErrorIgnoreLevel = old_error_level
@@ -624,7 +840,26 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
         _set_var_value_clamped(norm, data.sumEntries())
         norm.setError(math.sqrt(data.sumEntries()))
     if not robust:
-        return _run_fit_ladder(pdf, data, fitRange, useWeight, strategy=2, eps=1e-6)
+        nll = None if useWeight else _make_fit_nll(pdf, data, fitRange)
+        names = _get_seedable_vars(workspace, box)
+        initial = {name: (_safe_workspace_var(workspace, name).getVal(),
+                          _safe_workspace_var(workspace, name).getError()) for name in names}
+        result = _run_fit_ladder(pdf, data, fitRange, useWeight, strategy=2, eps=1e-6, nll=nll)
+        bkg = workspace.pdf('%s_bkg' % box) if workspace is not None else None
+        if (not _is_fit_good(result) and not useWeight and bkg is not None
+                and bkg.ClassName() in ('RooModExpBinPdf', 'RooModExp6ParamBinPdf')
+                and 'p3_%s' % box in initial and 'p4_%s' % box in initial):
+            for name, (value, error) in initial.items():
+                if name in ('p3_%s' % box, 'p4_%s' % box):
+                    value = abs(value)
+                var = _safe_workspace_var(workspace, name)
+                _set_var_value_clamped(var, value)
+                var.setError(error)
+            log_info('Retrying the non-converged ModExp fit with an alternate curvature seed.')
+            retry = _run_fit_ladder(pdf, data, fitRange, useWeight, strategy=2, eps=1e-6, nll=nll)
+            result = min((result, retry), key=_fit_rank_tuple)
+            _apply_fit_result_to_workspace(workspace, result)
+        return result
 
     # Robust path: multi-start + retry ladder.
     if workspace is None or box is None:
