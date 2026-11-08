@@ -379,6 +379,15 @@ def _build_multistart_seeds(workspace, seed_names, n_starts=9, rng_seed=12345):
         return seeds
     seed_names = [n for n in seed_names if n in base]
     seeds.append(dict(base))
+
+    reflected = dict(base)
+    for n in seed_names:
+        m = re.match(r'^p(\d+)_', n)
+        if m and int(m.group(1)) >= 3:
+            v = _safe_workspace_var(workspace, n)
+            reflected[n] = min(v.getMax(), max(v.getMin(), -base[n]))
+    if reflected != base:
+        seeds.append(reflected)
     
     reduced = dict(base)
     changed = False
@@ -631,6 +640,7 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
     if n_starts < 1:
         raise ValueError('--robust-nstarts must be positive')
     initial_seed = {n: _safe_workspace_var(workspace, n).getVal() for n in seed_names}
+    initial_errors = {n: _safe_workspace_var(workspace, n).getError() for n in seed_names}
     nll = None if useWeight else _make_fit_nll(pdf, data, fitRange)
     anchor_fr = None
     try:
@@ -665,10 +675,12 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
         {"strategy": 2, "eps": 1e-6},
         {"strategy": 2, "eps": 1e-7},
     ]
+    likelihood_attempts = list(attempts)
 
     for i_seed, seed_vals in enumerate(seeds):
         for n, v in seed_vals.items():
             _set_var_value_clamped(_safe_workspace_var(workspace, n), v)
+            _safe_workspace_var(workspace, n).setError(initial_errors[n])
 
         if verbose:
             log_info("robust start %d/%d with seed: %s" % (i_seed + 1, len(seeds), seed_vals))
@@ -676,6 +688,8 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
         best_this_seed = None
         for i_try, cfg in enumerate(ladder_cfgs):
             _restore_ranges(workspace, base_ranges)
+            if best_this_seed is not None:
+                _apply_fit_result_to_workspace(workspace, best_this_seed)
 
             try:
                 fr_try = _run_fit_ladder(
@@ -698,6 +712,7 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
                 )
                 continue
 
+            likelihood_attempts.append(fr_try)
             if (best_this_seed is None) or (_fit_rank_tuple(fr_try) < _fit_rank_tuple(best_this_seed)):
                 best_this_seed = fr_try
 
@@ -730,6 +745,12 @@ def binnedFit(pdf, data, fitRange='Full', useWeight=False, robust=False, workspa
     else:
         best_fr = min(attempts, key=_fit_rank_tuple)
         log_warn("robust-fit found no fully good covariance/status solution; using best-ranked fallback candidate.")
+
+    finite_attempts = [fr for fr in likelihood_attempts if math.isfinite(fr.minNll())]
+    if good_attempts and finite_attempts:
+        lowest_fr = min(finite_attempts, key=lambda fr: fr.minNll())
+        if lowest_fr.minNll() < best_fr.minNll() - 1e-3:
+            log_warn("A lower-likelihood attempt did not converge; the selected converged fit may be a local minimum.")
 
     _apply_fit_result_to_workspace(workspace, best_fr)
 
@@ -1100,7 +1121,10 @@ if __name__ == '__main__':
             )
             log_info("Minimizer: status=%s, covQual=%s, EDM=%.6g" % (fr.status(), fr.covQual(), fr.edm()))
             if not _is_fit_good(fr):
-                log_warn("Numerical convergence is not established; rerun with --robust-fit --verbose before interpreting the fit.")
+                if options.robustFit:
+                    log_warn("Numerical convergence is not established after robust retries; the reported fit quality does not validate the minimum or parameter uncertainties.")
+                else:
+                    log_warn("Numerical convergence is not established; rerun with --robust-fit --verbose before interpreting the fit.")
             Utils.importToWS(w, fr)
             if options.verbose:
                 fr.Print('v')
