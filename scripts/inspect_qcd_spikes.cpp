@@ -23,7 +23,7 @@ std::vector<std::string> fields() {
         "deltaPHIjj","deltaETAjjAK4PF","deltaPHIjjAK4PF","passGoodMuonBaseSelection","PassJSON",
         "passHLT_PFScoutingHT","passHLT_PFScouting_SingleMuon","passL1ForPFScoutingHT",
         "leadingJetHardScatterMatched","Generator_binvar","Generator_scalePDF","Generator_weight","genWeight",
-        "Pileup_nTrueInt","Pileup_nPU","Pileup_pudensity","rho","fixedGridRhoFastjetAll","pthat","pThat","qScale"}) names.push_back(name);
+        "Pileup_nTrueInt","Pileup_nPU","Pileup_pthatmax","Pileup_pudensity","rho","fixedGridRhoFastjetAll","pthat","pThat","qScale"}) names.push_back(name);
     for(int jet : {1,2}) for(const std::string name : {"pTAK4PF","etaAK4PF","phiAK4PF","jetJecAK4PF","jetJecUncAK4PF",
         "Jet_genJetIdx","GenJet_pt","phiWJ","massWJ","neutrHadEnFrac","chargedHadEnFrac","photonEnFrac",
         "muEnFract","neutrElectromFrac","chargedMult","neutrMult","photonMult"}) names.push_back(name+"_j"+std::to_string(jet));
@@ -31,6 +31,9 @@ std::vector<std::string> fields() {
 }
 
 const J descriptions = {
+    {"pileup_scale_exceeds_generator","Pileup_pthatmax exceeds Generator_binvar; this candidate fails the optional pileup veto."},
+    {"pileup_comparison_unavailable","Pileup_pthatmax or Generator_binvar was not saved as a supported scalar branch."},
+    {"invalid_pileup_or_generator_scale","Pileup_pthatmax must be finite and nonnegative, and Generator_binvar must be finite and positive; no veto decision is assigned."},
     {"large_stored_jec","Stored AK4 JEC exceeds the diagnostic threshold; inspect correction inputs."},
     {"invalid_stored_jec","Stored AK4 JEC is nonpositive or nonfinite."},
     {"ak4_high_pt_before_jec_estimate","AK4 pT divided by stored JEC is already above the target lower threshold."},
@@ -202,6 +205,18 @@ J diagnose(const J& values,const J& cfg,const J& nonfinite) {
     const double threshold=cfg["pt_min"],responseLimit=cfg["response_warning"];
     if(!nonfinite.empty())flags.insert("nonfinite_observable");
     if(values.contains("event") && values["event"].is_number_float() && std::abs(get("event"))>=9007199254740992.0)flags.insert("event_id_precision_limit");
+    derived["pileup_pthatmax_over_generator_binvar"]=nullptr;
+    derived["passes_pileup_veto"]=nullptr;
+    if(!values.contains("Pileup_pthatmax") || !values.contains("Generator_binvar"))flags.insert("pileup_comparison_unavailable");
+    else {
+        const double pileup=get("Pileup_pthatmax"),generator=get("Generator_binvar");
+        if(!std::isfinite(pileup) || !std::isfinite(generator) || pileup<0 || generator<=0)flags.insert("invalid_pileup_or_generator_scale");
+        else {
+            derived["pileup_pthatmax_over_generator_binvar"]=pileup/generator;
+            derived["passes_pileup_veto"]=pileup<=generator;
+            if(pileup>generator)flags.insert("pileup_scale_exceeds_generator");
+        }
+    }
     bool complete=true;std::array<bool,2> valid{};
     for(int j:{1,2}) {
         const auto s="_j"+std::to_string(j);const double pt=get("pTAK4PF"+s),jec=get("jetJecAK4PF"+s),idx=get("Jet_genJetIdx"+s),gen=get("GenJet_pt"+s);
@@ -247,7 +262,7 @@ J diagnose(const J& values,const J& cfg,const J& nonfinite) {
         derived["wide_mjj_recomputed"]=mass;derived["wide_mjj_relative_difference"]=(get("mjj")-mass)/std::max(mass,1.0);
         if(std::abs(derived["wide_mjj_relative_difference"].get<double>())>cfg["mass_relative_tolerance"].get<double>())flags.insert("wide_mass_inconsistent");
     } else flags.insert("wide_mass_check_unavailable");
-    for(auto& item:derived.items())if(!std::isfinite(item.value().get<double>())) {item.value()=nullptr;flags.insert("nonfinite_observable");}
+    for(auto& item:derived.items())if(item.value().is_number() && !std::isfinite(item.value().get<double>())) {item.value()=nullptr;flags.insert("nonfinite_observable");}
     return {{"derived",derived},{"flags",flags}};
 }
 
