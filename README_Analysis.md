@@ -18,8 +18,11 @@
 ## Full 2024
 python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ -o ScoutingPFRun3_Run2024_ALL_reduced.txt
 
-## 2024I
-python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced.txt
+## 2024I (Jet Sample)
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced.txt
+
+## 2024I (Muon Sample)
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples_Muon/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced_Muon.txt
 
 ## QCD MC (Merged Samples)
 python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples_QCD/2024/merged -o QCDMC_2024_reduced.txt --xsecs 50to80=16730000.0 80to120=2506000.0 120to170=439800.0 170to300=113300.0 300to470=7581.0 470to600=623.3 600to800=178.7 800to1000=30.62 1000to1500=9.306 1500to2000=0.5015 2000to2500=0.04264 2500to3000=0.004454 3000=0.0005539
@@ -97,6 +100,12 @@ hadd -T -f ScoutingPFRun3_Run2024G_ScoutNano_v1_NANOAOD_ALLHisto.root Run2024G_m
 # Build only once
 c++ -std=c++17 plot_trigger_efficiency_GoodMuon.cpp -o plot_trigger_efficiency_GoodMuon $(root-config --cflags --libs)
 
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024C_reduced_Muon.txt --dataset-label 2024C --lumi-pb 7261.429260 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024C
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024D_reduced_Muon.txt --dataset-label 2024D --lumi-pb 7974.648075 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024D
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024E_reduced_Muon.txt --dataset-label 2024E --lumi-pb 11427.488702 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024E
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024F_reduced_Muon.txt --dataset-label 2024F --lumi-pb 27093.899763 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024F
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024G_reduced_Muon.txt --dataset-label 2024G --lumi-pb 38060.092930 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024G
+./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024H_reduced_Muon.txt --dataset-label 2024H --lumi-pb 5487.977984 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024H
 ./plot_trigger_efficiency_GoodMuon --input-list ../lists/reducedNtuple_lists/ScoutingPFRun3_Run2024I_reduced_Muon.txt --dataset-label 2024I --lumi-pb 11438.070507 --threads 8 --output-dir trigger_efficiency_hist_fromMuonTree_2024I
 ```
 

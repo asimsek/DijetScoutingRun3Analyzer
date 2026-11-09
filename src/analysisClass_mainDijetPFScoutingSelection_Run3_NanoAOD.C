@@ -130,11 +130,11 @@ const std::array<const char*, 24> kNanoInputBranchesMonitoring = {
     "DST_PFScouting_SingleMuon"};
 
 // L1 bits used to build the saved JetHT-side L1 decision flag.
-const std::array<const char*, 4> kRequiredL1DecisionBranches = {
+const std::array<const char*, 2> kRequiredL1DecisionBranches = {
     "L1_HTT280er",
     "L1_SingleJet180"};
 
-const std::array<const char*, 2> kVetoL1DecisionBranches = {};
+const std::array<const char*, 0> kVetoL1DecisionBranches = {};
 
 // Scouting muon inputs for the good-muon control sample and muon-corrected jets.
 // These branches support the muon-control-sample-like trigger-efficiency workflow.
