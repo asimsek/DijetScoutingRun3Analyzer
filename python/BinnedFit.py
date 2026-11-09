@@ -1433,6 +1433,8 @@ if __name__ == '__main__':
     rt.gStyle.SetOptStat(0)
     rt.gStyle.SetOptTitle(0)
     c = rt.TCanvas('c_fit','c_fit',700,800)
+    c.SetCanvasSize(700, 800)
+    rt.gStyle.SetPaperSize(20.0, 20.0 * 800.0 / 700.0)
     root_plot_path = os.path.join(options.outDir, 'Plots_%s.root' % box)
     rootFile = rt.TFile.Open(root_plot_path, 'recreate')
     if (not rootFile) or rootFile.IsZombie():
@@ -1496,7 +1498,6 @@ if __name__ == '__main__':
     # Build x-axis coordinates for plotting.
     x_tev = array('d', [edge / 1000.0 for edge in x])
     n_plot_bins = len(x) - 1
-    # In --linearX mode we keep true mass coordinates and only disable log-x.
     x_plot_edges = x_tev
     x_axis_title = "Dijet mass [TeV]"
 
@@ -1620,80 +1621,45 @@ if __name__ == '__main__':
         g_signals.append(g_signal)
         g_signal_residuals.append(g_signal_residual)
 
-    # Dynamic top-panel y-range with explicit headroom for text boxes.
-    y_min_candidates = []
-    y_max_candidates = []
-    for i in range(g_data_plot.GetN()):
-        y = g_data_plot.GetY()[i]
-        if y > 0:
-            y_min_candidates.append(max(y - g_data_plot.GetEYlow()[i], 1e-12))
-            y_max_candidates.append(y + g_data_plot.GetEYhigh()[i])
-    for ib in range(1, n_plot_bins + 1):
-        yb = h_background_plot.GetBinContent(ib)
-        if yb > 0:
-            y_min_candidates.append(yb)
-            y_max_candidates.append(yb)
-    for g_signal in g_signals:
-        for i in range(g_signal.GetN()):
-            ys = g_signal.GetY()[i]
-            if ys > 0:
-                y_min_candidates.append(ys)
-                y_max_candidates.append(ys)
-
-    y_data_min = min(y_min_candidates) if y_min_candidates else 1e-6
-    y_data_max = max(y_max_candidates) if y_max_candidates else 1.0
-    y_data_min = max(y_data_min, 1e-12)
-    y_data_max = max(y_data_max, y_data_min * 10.0)
-
-    # Add 25% padding at top and bottom in log-space.
-    log_span = math.log10(y_data_max) - math.log10(y_data_min)
-    pad_frac = 0.25
-    y_top_min = math.pow(10.0, math.log10(y_data_min) - pad_frac * log_span)
-    y_top_max = math.pow(10.0, math.log10(y_data_max) + pad_frac * log_span)
-    y_top_min = max(y_top_min, 1e-12)
-
     h_frame_top = rt.TH1D("h_frame_top", "", n_plot_bins, x_plot_edges)
-    h_frame_top.SetMinimum(y_top_min)
-    h_frame_top.SetMaximum(y_top_max)
+    h_frame_top.SetMinimum(0.0015)
+    h_frame_top.SetMaximum(5.0e7)
     h_frame_top.GetYaxis().SetTitle("d#sigma/dm_{jj} [pb/TeV]")
-    h_frame_top.GetYaxis().SetTitleSize(0.06)
-    h_frame_top.GetYaxis().SetLabelSize(0.053)
-    h_frame_top.GetYaxis().SetTitleOffset(1.35)
+    h_frame_top.GetYaxis().SetTitleSize(0.065)
+    h_frame_top.GetYaxis().SetLabelSize(0.055)
+    h_frame_top.GetYaxis().SetTitleOffset(1.15)
     h_frame_top.GetXaxis().SetLabelSize(0.0)
     h_frame_top.GetXaxis().SetTitleSize(0.0)
+    h_frame_top.GetXaxis().SetNdivisions(508)
     h_frame_top.GetYaxis().SetNdivisions(510)
 
     c.Clear()
     c.Divide(1, 2, 0, 0, 0)
 
-    use_logx = (not options.linearX) and (('PF' in box) or (w.var('mjj').getMax() > 2037))
-
     pad_1 = c.GetPad(1)
-    pad_1.SetPad(0.01, 0.34, 0.995, 0.99)
-    pad_1.SetLeftMargin(0.17)
-    pad_1.SetRightMargin(0.04)
-    pad_1.SetTopMargin(0.09)
+    pad_1.SetPad(0.0, 0.36, 1.0, 1.0)
+    pad_1.SetLeftMargin(0.185)
+    pad_1.SetRightMargin(0.025)
+    pad_1.SetTopMargin(0.075)
     pad_1.SetBottomMargin(0.02)
     pad_1.SetTickx(1)
     pad_1.SetTicky(1)
     pad_1.SetLogy(1)
-    if use_logx:
-        pad_1.SetLogx(1)
+    pad_1.SetLogx(0)
 
     pad_2 = c.GetPad(2)
-    pad_2.SetPad(0.01, 0.00, 0.995, 0.34)
-    pad_2.SetLeftMargin(0.17)
-    pad_2.SetRightMargin(0.04)
-    pad_2.SetTopMargin(0.03)
+    pad_2.SetPad(0.0, 0.0, 1.0, 0.36)
+    pad_2.SetLeftMargin(0.185)
+    pad_2.SetRightMargin(0.025)
+    pad_2.SetTopMargin(0.05)
     pad_2.SetBottomMargin(0.30)
     pad_2.SetTickx(1)
     pad_2.SetTicky(1)
-    if use_logx:
-        pad_2.SetLogx(1)
+    pad_2.SetLogx(0)
 
     pad_1.cd()
     h_frame_top.Draw("AXIS")
-    h_background_plot.Draw("HIST SAME")
+    h_background_plot.Draw("HIST L SAME")
     for g_signal in g_signals:
         g_signal.Draw("L SAME")
     g_data_plot.Draw("PZ SAME")
@@ -1703,26 +1669,29 @@ if __name__ == '__main__':
     latex.SetNDC()
     latex.SetTextFont(42)
     latex.SetTextSize(0.055)
-    latex.DrawLatex(0.69, 0.93, "%d fb^{-1} (%.1f TeV)" % (lumi/1000., w.var('sqrts').getVal()/1000.))
+    latex.SetTextAlign(31)
+    latex.DrawLatex(1.0 - pad_1.GetRightMargin(), 1.0 - pad_1.GetTopMargin() + 0.012,
+                    "%d fb^{-1} (%.1f TeV)" % (lumi/1000., w.var('sqrts').getVal()/1000.))
+    latex.SetTextAlign(11)
     latex.SetTextFont(62)
     latex.SetTextSize(0.070)
-    latex.DrawLatex(0.22, 0.82, "CMS")
+    latex.DrawLatex(0.23, 0.825, "CMS")
     latex.SetTextFont(52)
     latex.SetTextSize(0.050)
-    latex.DrawLatex(0.22, 0.76, "Preliminary")
+    latex.DrawLatex(0.23, 0.765, "Preliminary")
 
     # Legend
     n_leg_entries = 2 + len(g_signals)
     leg_y2 = 0.90
-    leg_line_h = 0.055
+    leg_line_h = 0.10
     leg_y1 = max(0.45, leg_y2 - n_leg_entries * leg_line_h)
-    legend = rt.TLegend(0.63, leg_y1, 0.95, leg_y2)
+    legend = rt.TLegend(0.62, leg_y1, 0.96, leg_y2)
     legend.SetTextFont(42)
     legend.SetFillStyle(0)
     legend.SetBorderSize(0)
-    legend.SetTextSize(0.045)
+    legend.SetTextSize(0.050)
     data_leg_text = "Data [%s]" % year_label if year_label else "Data"
-    legend.AddEntry(g_data_plot, data_leg_text, "pe")
+    legend.AddEntry(g_data_plot, data_leg_text, "lp")
     legend.AddEntry(h_background_plot, "Background fit", "l")
     for model, mass, g_signal in zip(models, masses, g_signals):
         legend.AddEntry(g_signal, "%s (%.1f TeV)" % (model, float(mass)/1000.0), "l")
@@ -1734,12 +1703,12 @@ if __name__ == '__main__':
     chi2_over_ndf = (chi2_val / ndf_val) if ndf_val > 0 else 0.0
     prob_percent = int(round(100.0 * rt.TMath.Prob(chi2_val, ndf_val))) if ndf_val > 0 else 0
 
-    stats_box = rt.TPaveText(0.20, 0.04, 0.55, 0.17, "NDC")
+    stats_box = rt.TPaveText(0.24, 0.06, 0.58, 0.20, "NDC")
     stats_box.SetFillStyle(0)
     stats_box.SetBorderSize(0)
     stats_box.SetTextAlign(11)
     stats_box.SetTextFont(42)
-    stats_box.SetTextSize(0.040)
+    stats_box.SetTextSize(0.043)
     stats_box.AddText("#chi^{2}/NDF = %d / %d = %.2f" % (int(round(chi2_val)), ndf_val, chi2_over_ndf))
     stats_box.AddText("Prob. = %d%%" % prob_percent)
     stats_box.Draw()
@@ -1747,41 +1716,37 @@ if __name__ == '__main__':
     # Selection text
     mjj_min_tev = w.var('mjj').getMin() / 1000.0
     mjj_max_tev = w.var('mjj').getMax() / 1000.0
-    cuts_box = rt.TPaveText(0.65, 0.04, 0.96, 0.24, "NDC")
+    cuts_box = rt.TPaveText(0.63, 0.06, 0.96, 0.28, "NDC")
     cuts_box.SetFillStyle(0)
     cuts_box.SetBorderSize(0)
     cuts_box.SetTextAlign(21)
     cuts_box.SetTextFont(42)
-    cuts_box.SetTextSize(0.040)
+    cuts_box.SetTextSize(0.043)
     cuts_box.AddText("Wide PF-jets" if "PF" in box else "Wide Calo-jets")
+    cuts_box.AddText("|#eta| < 2.5, |#Delta#eta| < 1.3")
     if mjj_max_tev > 2.5:
         cuts_box.AddText("m_{jj} > %.2f TeV" % mjj_min_tev)
     else:
         cuts_box.AddText("%.2f < m_{jj} < %.2f TeV" % (mjj_min_tev, mjj_max_tev))
-    cuts_box.AddText("|#eta| < 2.5, |#Delta#eta| < 1.3")
     cuts_box.Draw()
 
     pad_2.cd()
     h_residual_plot.SetFillColor(rt.kRed)
     h_residual_plot.SetLineColor(rt.kRed)
     h_residual_plot.SetLineWidth(1)
-    h_residual_plot.SetMinimum(-3.5)
-    h_residual_plot.SetMaximum(3.5)
+    h_residual_plot.SetMinimum(-3.2)
+    h_residual_plot.SetMaximum(3.2)
     h_residual_plot.GetYaxis().SetTitle("#frac{Data-Prediction}{Uncertainty}")
     h_residual_plot.GetXaxis().SetTitle(x_axis_title)
     h_residual_plot.GetYaxis().SetNdivisions(505)
-    h_residual_plot.GetYaxis().SetTitleSize(0.11)
-    h_residual_plot.GetYaxis().SetLabelSize(0.11)
-    h_residual_plot.GetYaxis().SetTitleOffset(0.58)
-    h_residual_plot.GetXaxis().SetTitleSize(0.12)
-    h_residual_plot.GetXaxis().SetLabelSize(0.11)
+    h_residual_plot.GetYaxis().SetTitleSize(0.10)
+    h_residual_plot.GetYaxis().SetLabelSize(0.095)
+    h_residual_plot.GetYaxis().SetTitleOffset(0.70)
+    h_residual_plot.GetXaxis().SetNdivisions(508)
+    h_residual_plot.GetXaxis().SetTitleSize(0.105)
+    h_residual_plot.GetXaxis().SetLabelSize(0.095)
     h_residual_plot.GetXaxis().SetTitleOffset(1.15)
     h_residual_plot.Draw("HIST")
-
-    if use_logx:
-        h_residual_plot.GetXaxis().SetNoExponent(True)
-        h_residual_plot.GetXaxis().SetMoreLogLabels(True)
-        h_residual_plot.GetXaxis().SetNdivisions(510)
 
     line0 = rt.TLine(x_plot_edges[0], 0.0, x_plot_edges[-1], 0.0)
     line0.SetLineColor(rt.kBlack)
