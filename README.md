@@ -404,7 +404,7 @@ brilcalc lumi -c "$CMS_PATH/SITECONF/local/JobConfig/site-local-config.xml" -u /
 
 
 ```bash
-python3 merge_samples.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/merged --sample-glob "QCD_Bin-PT-*"
+python3 merge_samples.py /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples_QCD/2024 --sample-glob "QCD_Bin-PT-*" --output-dir /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples_QCD/2024/merged
 ```
 
 > [!TIP]

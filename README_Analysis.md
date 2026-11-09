@@ -22,7 +22,7 @@ python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/
 python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/AliEren/nanoAODnTuples/2024/ScoutingPFRun3/ScoutingPFRun3_Run2024I_ScoutNano_v1/ -o ScoutingPFRun3_Run2024I_reduced.txt
 
 ## QCD MC (Merged Samples)
-python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples/2024/QCDSamples/merged -o QCDMC_2024_reduced.txt --xsecs 50to80=16730000.0 80to120=2506000.0 120to170=439800.0 170to300=113300.0 300to470=7581.0 470to600=623.3 600to800=178.7 800to1000=30.62 1000to1500=9.306 1500to2000=0.5015 2000to2500=0.04264 2500to3000=0.004454 3000=0.0005539
+python3 make_reduced_ntuple_list.py /eos/uscms/store/group/lpcjj/Run3PFScouting/nanoAODnTuples_QCD/2024/merged -o QCDMC_2024_reduced.txt --xsecs 50to80=16730000.0 80to120=2506000.0 120to170=439800.0 170to300=113300.0 300to470=7581.0 470to600=623.3 600to800=178.7 800to1000=30.62 1000to1500=9.306 1500to2000=0.5015 2000to2500=0.04264 2500to3000=0.004454 3000=0.0005539
 ```
 
 > [!NOTE]
@@ -253,13 +253,13 @@ python3 ../scripts/update_config_files.py --mass-start 565 --mass-end 2132 --tag
 ### CMS Dijet Function Family
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/dijet_3param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_3Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_3param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_3Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_4Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_4Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_5param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_5Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_5param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_5Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_6Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_dijet_2024I_M565_deta1p3_15March2026/dijet_6Param --fit-spectrum --staged-fit --robust-fit
 ```
 
 > [!NOTE]
@@ -274,26 +274,26 @@ python3 ../python/BinnedFit.py -c ../config/dijet_6param.config -l 11451.783064 
 ### Modified Exponential (ModExp) Function Family
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp3Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_3Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp3Param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_3Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp4Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_4Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp4Param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_4Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_5Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_5Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_ModExp6Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_6Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_ModExp6Param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modExp_2024I_M565_deta1p3_15March2026/modExp_6Param --fit-spectrum --staged-fit --robust-fit
 ```
 
 ### ATLAS Function Family
 
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas3Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_3Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas3Param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_3Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas4Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_4Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas4Param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_4Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_5Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_5Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_6Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_ATLAS_2024I_M565_deta1p3_15March2026/ATLAS_6Param --fit-spectrum --staged-fit --robust-fit
 ```
 
 
@@ -301,13 +301,13 @@ python3 ../python/BinnedFit.py -c ../config/dijet_Atlas6Param.config -l 11451.78
 
 
 ```bash
-python3 ../python/BinnedFit.py -c ../config/ModDijet_3param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_3Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_3param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_3Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/ModDijet_4param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_4Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_4param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_4Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/ModDijet_5param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_5Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_5param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_5Param --fit-spectrum --staged-fit --robust-fit
 
-python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 11451.783064 --year 2024I ../inputs/PFScouting2024I_deta1p3_23March2026/dataVsQCD_all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_6Param --fit-spectrum --staged-fit
+python3 ../python/BinnedFit.py -c ../config/ModDijet_6param.config -l 11451.783064 --year 2024I ../scripts/kinematics/plots/2024I_new/all_plots.root -b PFDijet2024 -d fits_modDijet_2024I_M565_deta1p3_15March2026/modDijet_6Param --fit-spectrum --staged-fit --robust-fit
 ```
 
 
