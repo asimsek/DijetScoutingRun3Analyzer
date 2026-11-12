@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 
 import argparse
+import hashlib
+import json
 import os
 import re
 import shlex
@@ -11,6 +13,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Tuple
+from urllib.parse import urlsplit
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from eos_utils import resolve_condor_proxy
@@ -210,6 +213,31 @@ def resolve_input_list_path(raw_path: str, config_path: Path, repo_root: Path, c
     return (config_path.parent / raw_path).resolve()
 
 
+def input_file_identity(entry: str) -> str:
+    if re.match(r"^(?:root|roots|https?)://", entry):
+        path = urlsplit(entry).path
+    elif entry.startswith("/"):
+        path = entry
+    else:
+        return entry
+    path = "/" + path.lstrip("/")
+    if path.startswith(("/store/data/", "/store/mc/", "/store/relval/")):
+        return path
+    return entry
+
+
+def ordered_input_files(files: List[str]) -> List[str]:
+    entries = {input_file_identity(entry): entry for entry in files}
+    return [DEFAULT_XROOTD_REDIRECTOR.rstrip("/") + "/" + identity
+            if identity.startswith(("/store/data/", "/store/mc/", "/store/relval/")) else entries[identity]
+            for identity in sorted(entries)]
+
+
+def input_mapping_fingerprint(chunks: List[List[str]]) -> str:
+    identities = [[input_file_identity(entry) for entry in chunk] for chunk in chunks]
+    return hashlib.sha256(json.dumps(identities, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+
 def ensure_das_input_list(
     cfg: JobConfig,
     cfg_path: Path,
@@ -227,6 +255,11 @@ def ensure_das_input_list(
     if not use_das and cfg.input_list.strip():
         input_list_path = resolve_input_list_path(cfg.input_list, cfg_path, repo_root, cmssw_base)
         if input_list_path.exists():
+            files = ordered_input_files(read_input_files(input_list_path))
+            text = "\n".join(files) + "\n"
+            if input_list_path.read_bytes() != text.encode("utf-8"):
+                input_list_path.write_text(text)
+                log_info(f"Normalized and sorted master input list: {input_list_path}")
             return input_list_path, info
         log_warn(f"InputList does not exist: {input_list_path}. Creating a DAS list.")
         use_das = True
@@ -243,15 +276,7 @@ def ensure_das_input_list(
     if not files_raw:
         raise RuntimeError(f"DAS returned no files for dataset: {cfg.dataset}")
 
-    files: List[str] = []
-    seen = set()
-    for entry in files_raw:
-        if entry.startswith("/store/"):
-            entry = f"{DEFAULT_XROOTD_REDIRECTOR}/{entry}"
-        if entry not in seen:
-            files.append(entry)
-            seen.add(entry)
-
+    files = ordered_input_files(files_raw)
     list_path.write_text("\n".join(files) + "\n")
 
     new_expr = f"lists/nanoAOD/PFScouting/{list_path.name}"
@@ -320,9 +345,53 @@ def read_input_files(input_list_path: Path) -> List[str]:
     files = input_lines(input_list_path.read_text())
     if not files:
         raise RuntimeError(f"Input list is empty: {input_list_path}")
-    if len(set(files)) != len(files):
+    if len({input_file_identity(entry) for entry in files}) != len(files):
         raise RuntimeError(f"Input list contains duplicate files: {input_list_path}")
     return files
+
+
+def read_production_chunks(
+    directory: Path,
+    name_token: str,
+    master_files: List[str],
+) -> Tuple[List[List[str]], List[bytes]]:
+    directory = directory.expanduser().resolve()
+    if not directory.is_dir():
+        raise RuntimeError(f"Original production split-list directory does not exist: {directory}")
+    pattern = re.compile(rf"{re.escape(name_token)}_n(0|[1-9]\d*)\.txt")
+    indexed = {}
+    for path in directory.glob("*.txt"):
+        match = pattern.fullmatch(path.name)
+        if not match:
+            raise RuntimeError(f"Unexpected split-list filename for {name_token}: {path.name}")
+        indexed[int(match[1])] = path
+    if not indexed or sorted(indexed) != list(range(len(indexed))):
+        raise RuntimeError("Original split lists must contain consecutive job indices starting at n0. "
+                           "Provide the complete production split-list directory.")
+    chunks = []
+    contents = []
+    seen = set()
+    for index in range(len(indexed)):
+        path = indexed[index]
+        raw = path.read_bytes()
+        files = input_lines(raw.decode("utf-8"))
+        if not files:
+            raise RuntimeError(f"Original split list is empty: {path}")
+        for entry in files:
+            identity = input_file_identity(entry)
+            if identity in seen:
+                raise RuntimeError(f"Duplicate input in original split list {path}: {entry}")
+            seen.add(identity)
+        chunks.append(files)
+        contents.append(raw)
+    expected = {input_file_identity(entry) for entry in master_files}
+    if seen != expected:
+        raise RuntimeError("Original split lists do not cover the configured master InputList: "
+                           f"{len(expected - seen)} missing and {len(seen - expected)} unexpected files. "
+                           "Use the complete split-list directory and master list from the original production.")
+    log_info(f"Reusing {len(chunks)} original job split lists from {directory}")
+    log_info("Preserving original list contents and job assignments; skipping DAS regeneration and Interval rechunking.")
+    return chunks, contents
 
 
 def build_cms_connect_requirements(scram_arch: str) -> str:
@@ -364,7 +433,10 @@ def write_chunk_lists(
     name_token: str,
     info: DatasetInfo,
     date_time: str,
+    original_contents: List[bytes] = None,
 ) -> List[str]:
+    if original_contents is not None and len(original_contents) != len(chunks):
+        raise RuntimeError("Original split-list contents do not match the number of jobs")
     list_dir = repo_root / "lists" / info.dataset_type / f"{name_token}_{date_time}"
     list_dir.mkdir(parents=True, exist_ok=False)
 
@@ -372,7 +444,10 @@ def write_chunk_lists(
     for idx, chunk in enumerate(chunks):
         file_name = f"{name_token}_n{idx}.txt"
         list_path = list_dir / file_name
-        list_path.write_text("\n".join(chunk) + "\n")
+        if original_contents is None:
+            list_path.write_text("\n".join(chunk) + "\n")
+        else:
+            list_path.write_bytes(original_contents[idx])
         rel_paths.append(list_path.relative_to(repo_root).as_posix())
     return rel_paths
 
@@ -611,7 +686,10 @@ def submit_jobs(condor_folder: Path, resume: bool = False) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Prepare and submit NanoAOD scouting Condor jobs.")
     parser.add_argument("-c", "--config", required=True, help="Path to job config file.")
-    parser.add_argument("--force-new-list", action="store_true", help="Force DAS list regeneration and config update.")
+    inputs = parser.add_mutually_exclusive_group()
+    inputs.add_argument("--force-new-list", action="store_true", help="Regenerate a sorted DAS list for a new production and update the config.")
+    inputs.add_argument("--reuse-job-lists", type=Path,
+                        help="Original split-list directory from either site; preserve job assignments (requires --no-submit and an existing master InputList).")
     parser.add_argument("--tree-name", default=DEFAULT_TREE_NAME, help=f"Input tree name (default: {DEFAULT_TREE_NAME}).")
     parser.add_argument("--cut-file", default=DEFAULT_CUT_FILE, help=f"Cut file path relative to repo root (default: {DEFAULT_CUT_FILE}).")
     parser.add_argument("--eos-path", default=DEFAULT_EOS_PATH, help=f"EOS output base path (default: {DEFAULT_EOS_PATH}).")
@@ -637,7 +715,10 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Prepare files but do not submit.",
     )
-    return parser.parse_args()
+    args = parser.parse_args()
+    if args.reuse_job_lists and not args.no_submit:
+        parser.error("--reuse-job-lists requires --no-submit; use check_condor_outputs to select missing/failed outputs before submitting.")
+    return args
 
 
 def main() -> None:
@@ -662,18 +743,27 @@ def main() -> None:
     log_info(f"Submission proxy: {proxy_path}")
 
     cfg = parse_config(cfg_path)
-    input_list_path, info = ensure_das_input_list(
-        cfg=cfg,
-        cfg_path=cfg_path,
-        repo_root=repo_root,
-        cmssw_base=cmssw_base,
-        force_new_list=args.force_new_list,
-    )
-
-    cfg = parse_config(cfg_path)
-    input_list_path = resolve_input_list_path(cfg.input_list, cfg_path, repo_root, cmssw_base)
-    input_files = read_input_files(input_list_path)
+    info = dataset_info(cfg.dataset, cfg.era)
     name_token = build_name_token(cfg.dataset, info)
+    original_contents = None
+    if args.reuse_job_lists:
+        if not cfg.input_list.strip():
+            raise RuntimeError("--reuse-job-lists requires an existing master InputList in the config")
+        input_list_path = resolve_input_list_path(cfg.input_list, cfg_path, repo_root, cmssw_base)
+        master_files = read_input_files(input_list_path)
+        chunks, original_contents = read_production_chunks(args.reuse_job_lists, name_token, master_files)
+        input_files = [entry for chunk in chunks for entry in chunk]
+    else:
+        input_list_path, info = ensure_das_input_list(
+            cfg=cfg,
+            cfg_path=cfg_path,
+            repo_root=repo_root,
+            cmssw_base=cmssw_base,
+            force_new_list=args.force_new_list,
+        )
+        input_files = read_input_files(input_list_path)
+        chunks = split_into_chunks(input_files, cfg.interval)
+    log_info(f"Input mapping SHA-256: {input_mapping_fingerprint(chunks)}")
     full_token = f"{info.dataset_type}_{info.year}_{info.reco_type}"
     if name_token != full_token:
         log_info(f"Dataset token shortened for filenames: {name_token}")
@@ -688,9 +778,8 @@ def main() -> None:
             raise RuntimeError("Condor production requires maxEvents=0; a positive limit would create incomplete ntuples")
 
     prepare_framework(repo_root, sample_file=input_files[0], tree_name=args.tree_name)
-    chunks = split_into_chunks(input_files, cfg.interval)
     condor_folder, date_time = create_condor_folder(script_dir, name_token)
-    list_rel_paths = write_chunk_lists(repo_root, chunks, name_token, info, date_time)
+    list_rel_paths = write_chunk_lists(repo_root, chunks, name_token, info, date_time, original_contents)
     job_list_dir = repo_root / Path(list_rel_paths[0]).parent
     cmssw_ver = build_cmssw_tarball(cmssw_base, condor_folder, repo_root, job_list_dir)
     cms_connect_requirements = build_cms_connect_requirements(args.scram_arch)
